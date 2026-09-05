@@ -3,8 +3,13 @@
     dm scan /Volumes/NAS/documents    reconcile the index against the NAS
     dm index                          process queued extraction jobs
     dm search "sprinkler valve"       deterministic keyword search
+    dm get expiry_date                direct answer with citation (Tier 1)
+    dm get gross_salary --where tax_year=2023
+    dm agg amount sum --where merchant=Costco
+    dm keys / dm values <key>         discovered vocabulary
+    dm correct <id> <key> <value>     hand-correct an extracted value
     dm status                         index health
-    dm note add / edit / show         native notes
+    dm note add / edit                native notes
     dm show <id>                      item detail
 """
 
@@ -15,10 +20,11 @@ import logging
 import sys
 from pathlib import Path
 
-from . import notes
+from . import corrections, notes
 from .config import Config
 from .db import connect
 from .index.indexer import Indexer
+from .query.fields import FieldQuery
 from .query.search import SearchEngine
 from .scan.scanner import ScanAborted, Scanner
 
@@ -47,6 +53,36 @@ def _build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("-n", "--limit", type=int, default=10)
     p_search.add_argument("--kind", choices=["document", "photo", "note"])
     p_search.add_argument("--explain", action="store_true", help="show ranking signals")
+
+    p_get = sub.add_parser("get", help="direct answer for a field (Tier 1)")
+    p_get.add_argument("key")
+    p_get.add_argument("--where", action="append", default=[],
+                       metavar="KEY=VALUE",
+                       help="constrain within the same record, repeatable")
+    p_get.add_argument("--type", dest="record_type", help="restrict record type")
+    p_get.add_argument("-n", "--limit", type=int, default=5)
+
+    p_agg = sub.add_parser("agg", help="aggregate a field across documents")
+    p_agg.add_argument("key")
+    p_agg.add_argument("op", choices=["sum", "avg", "count", "min", "max"])
+    p_agg.add_argument("--where", action="append", default=[], metavar="KEY=VALUE")
+    p_agg.add_argument("--type", dest="record_type")
+
+    p_keys = sub.add_parser("keys", help="field vocabulary discovered in the corpus")
+    p_keys.add_argument("prefix", nargs="?")
+
+    p_values = sub.add_parser("values", help="distinct values for a field")
+    p_values.add_argument("key")
+
+    p_correct = sub.add_parser("correct", help="hand-correct a field (outranks extractors)")
+    p_correct.add_argument("item_id", type=int)
+    p_correct.add_argument("key")
+    p_correct.add_argument("value")
+    p_correct.add_argument("--unit")
+    p_correct.add_argument("--remove", action="store_true",
+                           help="drop the correction instead of setting it")
+
+    sub.add_parser("corrections", help="list every hand-corrected value")
 
     sub.add_parser("status", help="index health")
 
@@ -93,6 +129,18 @@ def _dispatch(args, cfg: Config, conn) -> int:
         return _cmd_index(args, cfg, conn)
     if args.command == "search":
         return _cmd_search(args, conn)
+    if args.command == "get":
+        return _cmd_get(args, conn)
+    if args.command == "agg":
+        return _cmd_agg(args, conn)
+    if args.command == "keys":
+        return _cmd_keys(args, conn)
+    if args.command == "values":
+        return _cmd_values(args, conn)
+    if args.command == "correct":
+        return _cmd_correct(args, cfg, conn)
+    if args.command == "corrections":
+        return _cmd_corrections(conn)
     if args.command == "status":
         return _cmd_status(conn)
     if args.command == "show":
@@ -163,6 +211,116 @@ def _cmd_search(args, conn) -> int:
     return 0
 
 
+def _parse_where(pairs: list[str]) -> dict[str, str]:
+    where: dict[str, str] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise SystemExit(f"--where expects KEY=VALUE, got: {pair}")
+        key, value = pair.split("=", 1)
+        where[key.strip()] = value.strip()
+    return where
+
+
+def _cmd_get(args, conn) -> int:
+    answer = FieldQuery(conn).get(args.key, where=_parse_where(args.where),
+                                  record_type=args.record_type, limit=args.limit)
+    if not answer.values:
+        print(f"no value found for '{args.key}'"
+              + (f" with {args.where}" if args.where else ""))
+        print("\ntry: dm keys        (what fields exist)")
+        print("     dm search ...  (full-text instead)")
+        return 0
+
+    best = answer.best
+    unit = f" {best.unit}" if best.unit else ""
+    print(f"{answer.key}: {best.value}{unit}")
+    print(f"  source: {best.citation()}")
+    print(f"  via:    {best.source} (confidence {best.confidence:.2f})")
+
+    if len(answer.values) > 1:
+        if answer.is_unambiguous:
+            print(f"\n{len(answer.values)} documents agree.")
+        else:
+            # Never silently collapse disagreement into one answer.
+            print(f"\n{len(answer.values) - 1} other candidate(s):")
+            for value in answer.values[1:]:
+                extra = f" {value.unit}" if value.unit else ""
+                print(f"  {value.value}{extra}  — {value.citation()} [{value.source}]")
+    return 0
+
+
+def _cmd_agg(args, conn) -> int:
+    result, contributing = FieldQuery(conn).aggregate(
+        args.key, args.op, where=_parse_where(args.where),
+        record_type=args.record_type)
+
+    if result is None:
+        print(f"no numeric values for '{args.key}'")
+        return 0
+
+    unit = next((v.unit for v in contributing if v.unit), "") or ""
+    shown = int(result) if args.op == "count" else round(result, 2)
+    print(f"{args.op}({args.key}) = {shown} {unit}".rstrip())
+    # The number is auditable: every contributing document is listed (FR-8).
+    print(f"\nfrom {len(contributing)} document(s):")
+    for value in sorted(contributing, key=lambda v: v.item_id):
+        extra = f" {value.unit}" if value.unit else ""
+        print(f"  {value.value}{extra}  — {value.citation()}")
+    return 0
+
+
+def _cmd_keys(args, conn) -> int:
+    rows = FieldQuery(conn).list_keys(args.prefix)
+    if not rows:
+        print("no fields extracted yet — run: dm index")
+        return 0
+    width = max(len(k) for k, _ in rows)
+    for key, count in rows:
+        print(f"{key:<{width}}  {count}")
+    return 0
+
+
+def _cmd_values(args, conn) -> int:
+    rows = FieldQuery(conn).list_values(args.key)
+    if not rows:
+        print(f"no values for '{args.key}'")
+        return 0
+    width = max(len(v or "") for v, _ in rows)
+    for value, count in rows:
+        print(f"{value:<{width}}  {count}")
+    return 0
+
+
+def _cmd_correct(args, cfg: Config, conn) -> int:
+    if args.remove:
+        if corrections.remove_correction(conn, args.item_id, args.key):
+            print(f"removed correction {args.key} on item {args.item_id}")
+            print("re-run 'dm index --item {}' to restore the extracted value"
+                  .format(args.item_id))
+        else:
+            print(f"no correction for '{args.key}' on item {args.item_id}")
+        return 0
+
+    corrections.correct_field(conn, args.item_id, args.key, args.value,
+                              unit=args.unit)
+    print(f"set {args.key} = {args.value} on item {args.item_id}")
+    print("this value outranks every extractor and survives reindex")
+    return 0
+
+
+def _cmd_corrections(conn) -> int:
+    rows = corrections.list_corrections(conn)
+    if not rows:
+        print("no hand-corrected values")
+        return 0
+    print(f"{len(rows)} correction(s) — back these up; they cannot be regenerated\n")
+    for row in rows:
+        unit = f" {row['unit']}" if row["unit"] else ""
+        print(f"  item {row['item_id']}  {row['key']} = {row['value_text']}{unit}")
+        print(f"    {row['title']}")
+    return 0
+
+
 def _cmd_status(conn) -> int:
     rows = conn.execute(
         "SELECT extraction_status, COUNT(*) AS n FROM items "
@@ -171,6 +329,11 @@ def _cmd_status(conn) -> int:
     total = sum(int(r["n"]) for r in rows)
 
     passages = conn.execute("SELECT COUNT(*) AS n FROM passages").fetchone()["n"]
+    records = conn.execute("SELECT COUNT(*) AS n FROM records").fetchone()["n"]
+    fields = conn.execute("SELECT COUNT(*) AS n FROM record_fields").fetchone()["n"]
+    human = conn.execute(
+        "SELECT COUNT(*) AS n FROM records WHERE source = 'human'"
+    ).fetchone()["n"]
     deleted = conn.execute(
         "SELECT COUNT(*) AS n FROM items WHERE deleted_at IS NOT NULL"
     ).fetchone()["n"]
@@ -186,6 +349,7 @@ def _cmd_status(conn) -> int:
     for row in rows:
         print(f"          {row['extraction_status']}: {row['n']}")
     print(f"passages: {passages}")
+    print(f"records:  {records} ({fields} fields, {human} hand-corrected)")
     if jobs:
         print("jobs:     " + ", ".join(f"{r['state']}={r['n']}" for r in jobs))
     if last_scan:
@@ -238,6 +402,27 @@ def _cmd_show(args, conn) -> int:
         "SELECT COUNT(*) AS n FROM passages WHERE item_id = ?", (args.item_id,)
     ).fetchone()["n"]
     print(f"passages: {count}")
+
+    records = conn.execute(
+        "SELECT r.id, r.record_type, r.source, r.confidence, r.page "
+        "FROM records r WHERE r.item_id = ? ORDER BY r.id", (args.item_id,)
+    ).fetchall()
+    for record in records:
+        page = f" p.{record['page']}" if record["page"] else ""
+        print(f"\nrecord {record['id']}: {record['record_type']} "
+              f"[{record['source']} {record['confidence']:.2f}]{page}")
+        for f in conn.execute(
+            "SELECT key, value_text, value_num, value_date, unit "
+            "FROM record_fields WHERE record_id = ? ORDER BY key", (record["id"],)
+        ).fetchall():
+            typed = f["value_date"] or (
+                f["value_num"] if f["value_num"] is not None else None)
+            shown = f"{f['value_text']}"
+            if typed is not None and str(typed) != f["value_text"]:
+                shown += f"  → {typed}"
+            if f["unit"]:
+                shown += f" {f['unit']}"
+            print(f"    {f['key']}: {shown}")
 
     if args.text:
         row = conn.execute(

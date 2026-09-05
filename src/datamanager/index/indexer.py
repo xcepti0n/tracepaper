@@ -14,6 +14,7 @@ from pathlib import Path
 from ..config import Config
 from ..db import transaction, utcnow
 from ..extract import passages as passage_split
+from ..extract import records as record_extract
 from ..extract import text as text_extract
 
 log = logging.getLogger(__name__)
@@ -26,11 +27,14 @@ class IndexResult:
     partial: int = 0
     failed: int = 0
     passages: int = 0
+    records: int = 0
+    fields: int = 0
 
     def summary(self) -> str:
         return (f"processed={self.processed} indexed={self.indexed} "
                 f"partial={self.partial} failed={self.failed} "
-                f"passages={self.passages}")
+                f"passages={self.passages} records={self.records} "
+                f"fields={self.fields}")
 
 
 class Indexer:
@@ -134,16 +138,25 @@ class Indexer:
         )
 
         title = path.name
+        # Records are extracted from the WHOLE document, before any splitting:
+        # binding related facts is the entire point (FR-3).
+        found = record_extract.extract_records(extracted.text, title)
+
         with transaction(self.conn) as conn:
             version = self._open_version(conn, item_id, extracted.text)
             self._replace_passages(conn, item_id, version, parts, title)
+            counts = self._replace_records(conn, item_id, version, found,
+                                           extracted.pages)
             conn.execute(
-                "UPDATE items SET mime = ?, indexed_at = ?, extraction_status = ? "
-                "WHERE id = ?",
-                (mime, utcnow(), extracted.status, item_id),
+                "UPDATE items SET mime = ?, indexed_at = ?, enriched_at = ?, "
+                "extraction_status = ? WHERE id = ?",
+                (mime, utcnow(), utcnow() if found else None,
+                 extracted.status, item_id),
             )
 
         result.passages += len(parts)
+        result.records += counts[0]
+        result.fields += counts[1]
         if extracted.note:
             log.info("item %s (%s): %s", item_id, path.name, extracted.note)
         return extracted.status
@@ -162,20 +175,26 @@ class Indexer:
         item = self.conn.execute(
             "SELECT title FROM items WHERE id = ?", (item_id,)
         ).fetchone()
+        title = item["title"] if item else ""
         parts = passage_split.split(
             row["text"] or "",
             target_chars=self.cfg.passage_target_chars,
             overlap_chars=self.cfg.passage_overlap_chars,
         )
+        found = record_extract.extract_records(row["text"] or "", title)
+
         with transaction(self.conn) as conn:
-            self._replace_passages(conn, item_id, int(row["version"]), parts,
-                                   item["title"] if item else "")
+            self._replace_passages(conn, item_id, int(row["version"]), parts, title)
+            counts = self._replace_records(conn, item_id, int(row["version"]),
+                                           found, None)
             conn.execute(
-                "UPDATE items SET indexed_at = ?, extraction_status = 'complete' "
-                "WHERE id = ?",
-                (utcnow(), item_id),
+                "UPDATE items SET indexed_at = ?, enriched_at = ?, "
+                "extraction_status = 'complete' WHERE id = ?",
+                (utcnow(), utcnow() if found else None, item_id),
             )
         result.passages += len(parts)
+        result.records += counts[0]
+        result.fields += counts[1]
         return "complete"
 
     @staticmethod
@@ -211,6 +230,73 @@ class Indexer:
              text, utcnow()),
         )
         return next_version
+
+    @staticmethod
+    def _replace_records(conn: sqlite3.Connection, item_id: int, version: int,
+                         found: list, pages: list[str] | None) -> tuple[int, int]:
+        """Replace machine-extracted records, preserving human corrections.
+
+        Human rows are never deleted (FR-10, success criterion 7): a value the
+        user fixed by hand must survive a full reindex, including one run by a
+        better model later.
+        """
+        conn.execute(
+            "DELETE FROM records WHERE item_id = ? AND source != 'human'",
+            (item_id,),
+        )
+
+        # Keys a human has already settled. Re-extracting them would let a
+        # machine value outrank the correction at query time.
+        human_keys = {
+            row["key"] for row in conn.execute(
+                "SELECT rf.key FROM record_fields rf JOIN records r ON r.id = rf.record_id "
+                "WHERE r.item_id = ? AND r.source = 'human'", (item_id,)
+            ).fetchall()
+        }
+
+        now = utcnow()
+        record_count = 0
+        field_count = 0
+
+        for record in found:
+            fields = [f for f in record.fields if f.key not in human_keys]
+            if not fields:
+                continue
+
+            page = record.page
+            if page is None and pages and record.char_start is not None:
+                page = _page_for_offset(pages, record.char_start)
+
+            cur = conn.execute(
+                "INSERT INTO records (item_id, version, record_type, source, "
+                "confidence, page, char_start, char_end, model_id, "
+                "extractor_version, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (item_id, version, record.record_type, record.source,
+                 record.confidence, page, record.char_start, record.char_end,
+                 record.model_id, record_extract.EXTRACTOR_VERSION, now),
+            )
+            record_id = int(cur.lastrowid)
+            record_count += 1
+
+            for f in fields:
+                conn.execute(
+                    "INSERT INTO record_fields (record_id, key, value_text, "
+                    "value_num, value_date, unit, confidence, char_start, char_end) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (record_id, f.key, f.value_text, f.value_num, f.value_date,
+                     f.unit, f.confidence, f.char_start, f.char_end),
+                )
+                field_count += 1
+                # Vocabulary is discovered, not declared (FR-4).
+                conn.execute(
+                    "INSERT INTO key_vocabulary (key, canonical_key, occurrences) "
+                    "VALUES (?, ?, 1) ON CONFLICT(key) DO UPDATE SET "
+                    "occurrences = occurrences + 1",
+                    (f.key, f.key),
+                )
+
+        return record_count, field_count
 
     @staticmethod
     def _replace_passages(conn: sqlite3.Connection, item_id: int, version: int,
@@ -271,3 +357,14 @@ class Indexer:
                 "INSERT INTO passages_fts (rowid, text, title) VALUES (?, '', ?)",
                 (passage_id, title),
             )
+
+
+def _page_for_offset(pages: list[str], offset: int) -> int | None:
+    """Map a character offset in the joined text back to its page number."""
+    cursor = 0
+    for number, page_text in enumerate(pages, start=1):
+        end = cursor + len(page_text)
+        if offset <= end:
+            return number
+        cursor = end + 2      # the "\n\n" joiner used when pages were merged
+    return len(pages) or None
