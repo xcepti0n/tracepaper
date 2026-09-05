@@ -1,251 +1,323 @@
 # DataManager — Design
 
-Status: agreed 2026-09-04
+Status: agreed 2026-09-04 (revised)
 Implements: [01-requirements.md](01-requirements.md) · Rationale: [02-alternatives.md](02-alternatives.md)
 
-## 1. Architecture
+## 1. The shape of the solution
+
+Ingest reads each document **as a whole** and writes four layers. Queries read those
+layers with fixed algorithms.
 
 ```
-        NAS (read-only mount)                    Mac (Apple Silicon)
-     ┌────────────────────────┐              ┌──────────────────────────┐
-     │  /documents  /photos   │              │   Ingest Worker          │
-     └───────────┬────────────┘              │   ├─ text extract / OCR  │
-                 │ watch + scan              │   ├─ field extractors    │
-                 ▼                           │   ├─ embeddings          │
-     ┌────────────────────────┐   claim job  │   └─ Ollama (LLM/VLM)    │
-     │  Proxmox (always on)   │◄─────────────┤                          │
-     │  ┌──────────────────┐  │   write back └──────────────────────────┘
-     │  │  Scanner/Watcher │  │                    (may be offline)
-     │  ├──────────────────┤  │
-     │  │  Job Queue       │  │
-     │  ├──────────────────┤  │
-     │  │  SQLite index    │  │  ← fields · FTS5 · vectors · tags
-     │  ├──────────────────┤  │
-     │  │  Query Engine    │  │  ← NO MODEL, deterministic
-     │  ├────────┬─────────┤  │
-     │  │ REST   │  MCP    │  │
-     │  └───┬────┴────┬────┘  │
-     └──────┼─────────┼───────┘
-            ▼         ▼
-        Web UI     Agent
+                        ONE DOCUMENT (W-2, 2023)
+                                 │
+              ┌──────────────────┼──────────────────┐
+              ▼                  ▼                  ▼
+        ┌───────────┐     ┌───────────┐      ┌───────────┐
+        │  RECORD   │     │  EVENTS   │      │ PASSAGES  │
+        │ (bound)   │     │           │      │           │
+        │ tax_year  │     │ income    │      │ chunk 1   │
+        │  = 2023   │     │ event     │      │ chunk 2   │
+        │ employer  │     │ 2023      │      │ chunk 3   │
+        │  = ACME   │     │           │      │ +vectors  │
+        │ gross_sal │     └─────┬─────┘      └───────────┘
+        │  = 84,200 │           │                  │
+        └─────┬─────┘           │                  │
+              └────────┬────────┴──────────────────┘
+                       ▼
+                  ┌──────────┐
+                  │ ENTITIES │  ACME Corp ← "ACME", "Acme Corporation"
+                  └──────────┘
 ```
 
-The dashed boundary matters: **everything on the Proxmox side is model-free.** Ollama
-exists only inside the ingest worker. Stopping Ollama must not change any query result —
-that is success criterion 3.
+`tax_year` and `gross_salary` land in **one record**, bound while the whole document was
+in view. Chunking cannot separate them because the binding was made before chunking and
+stored resolved. That is the W-2 requirement (FR-3), and it is the reason this design
+exists.
 
-## 2. Data model
+Passages are produced **as well**, never instead — they are the floor that keeps
+unrecognized document types searchable (FR-7, NFR-9).
+
+## 2. Architecture
+
+```
+      NAS (read-only)                        Mac (Apple Silicon)
+   ┌──────────────────┐                ┌────────────────────────────┐
+   │ documents/photos │                │  Ingest Worker             │
+   └────────┬─────────┘                │  ├─ text extract / OCR     │
+            │ watch + scan             │  ├─ whole-doc understanding│
+            ▼                          │  ├─ record/event/entity    │
+   ┌──────────────────────┐  claim job │  ├─ passage embeddings     │
+   │ Proxmox (always on)  │◄───────────┤  └─ Ollama (LLM / VLM)     │
+   │  ┌────────────────┐  │ write back └────────────────────────────┘
+   │  │ Watcher + Queue│  │                  (may be offline)
+   │  ├────────────────┤  │
+   │  │ Index (SQLite) │  │  records · events · entities
+   │  │                │  │  passages · FTS5 · vectors
+   │  ├────────────────┤  │
+   │  │ Query Engine   │  │  ← NO MODEL. deterministic.
+   │  ├───────┬────────┤  │
+   │  │ REST  │  MCP   │  │
+   │  └───┬───┴───┬────┘  │
+   └──────┼───────┼───────┘
+          ▼       ▼
+       Web UI   Agent ──► (Tier 2: agent reasons over returned evidence)
+```
+
+Everything on the Proxmox side is **model-free**. Ollama lives only in the ingest worker.
+Stopping it must not change any query result (success criterion 5).
+
+## 3. Data model
 
 ### `items`
-The central table. One row per document, photo, or note.
+`id`, `kind` (`document`|`photo`|`note`), `uri` (null for notes), `content_hash`,
+`title`, `mime`, `size_bytes`, `created_at`, `modified_at`, `indexed_at`, `enriched_at`,
+`extraction_status` (`pending`|`partial`|`complete`|`failed`), `deleted_at`.
 
-| Column | Notes |
-|---|---|
-| `id` | stable primary key |
-| `kind` | `document` \| `photo` \| `note` |
-| `uri` | NAS path, or `null` for native notes |
-| `content_hash` | SHA-256 of bytes; drives change detection and dedup |
-| `title` | filename, or user-set for notes |
-| `mime`, `size_bytes`, `created_at`, `modified_at` | filesystem metadata |
-| `indexed_at` | when text extraction last completed |
-| `enriched_at` | when field/tag extraction last completed |
-| `extraction_status` | `pending` \| `partial` \| `complete` \| `failed` (NFR-4) |
-| `deleted_at` | soft delete; a vanished file is not destroyed data |
-
-Move detection: same `content_hash`, new `uri` → update the path only, skip
-re-extraction (FR-5).
+Same hash at a new path → update the path, skip re-extraction (FR-9).
 
 ### `item_versions`
-Every content change appends a row: `item_id`, `version`, `content_hash`, `text`,
-`valid_from`, `valid_to`. Serves note editing and re-ingest of changed files (FR-6),
-and makes "what did this look like before" answerable.
+`item_id`, `version`, `content_hash`, `text`, `valid_from`, `valid_to`. Note edits and
+changed-file re-ingest both append (FR-10).
 
-### `fields` — the structured layer, and the heart of FR-4
-| Column | Notes |
-|---|---|
-| `item_id` | |
-| `key` | `gross_salary`, `tax_year`, `merchant`, `amount`, … |
-| `value_text` | canonical string form |
-| `value_num`, `value_date` | typed forms, populated when applicable — these make range queries and aggregation possible |
-| `unit` | currency code etc. |
-| `source` | `human` \| `template` \| `pattern` \| `llm` |
-| `confidence` | 0.0–1.0 |
-| `page`, `char_start`, `char_end` | provenance — where in the document (FR-3) |
-| `model_id` | which model produced it, `null` for non-LLM sources |
+### `records` — bound fact groups (FR-3)
+One row per coherent fact-group found in a document. A W-2 produces one; a bank statement
+might produce one per transaction.
 
-Resolution order when several extractors produce the same key:
-`human` > `template` > `pattern` > `llm`, then higher confidence.
-A `human` row is never overwritten by re-ingest — that is success criterion 5.
+`id`, `item_id`, `record_type` (open vocabulary — `tax_form`, `passport`, `lease`,
+`flight_booking`, …), `source` (`human`|`template`|`pattern`|`llm`), `confidence`,
+`page`, `char_start`, `char_end`, `model_id`, `extractor_version`.
 
-Typed columns are what let a point query be a lookup rather than a search:
+### `record_fields` — the bound key/values
+`record_id`, `key`, `value_text`, `value_num`, `value_date`, `unit`, `confidence`,
+`char_start`, `char_end`.
 
-```sql
-SELECT value_num, item_id, page FROM fields
-WHERE key='gross_salary' AND item_id IN (
-  SELECT item_id FROM fields WHERE key='tax_year' AND value_num=2023
-)
-ORDER BY CASE source WHEN 'human' THEN 0 WHEN 'template' THEN 1
-                     WHEN 'pattern' THEN 2 ELSE 3 END, confidence DESC
-LIMIT 1;
-```
+**Keys are open vocabulary** (FR-4) — whatever the document contained. Typed columns
+(`value_num`, `value_date`) are populated when the value parses, which is what makes
+range filters and aggregation possible without a fixed schema.
 
-That is the whole of "what was my salary in 2023" — no model, sub-millisecond, and it
-cites its page.
+Because fields hang off a `record_id`, "the 2023 gross salary" is a single row group.
+There is no join across independently-extracted facts and therefore no way to pair the
+wrong year with the wrong number.
 
-### `tags`
-`item_id`, `namespace`, `value`, `source`, `confidence`.
-Namespaces keep facets clean and queryable: `person`, `place`, `year`, `occasion`,
-`doctype`, `topic`. Photos and documents share this table.
+### `key_vocabulary` — canonicalization (FR-4)
+`key`, `canonical_key`, `occurrences`, `pinned_by_user`.
+Extractors invent `gross_pay`, `gross_salary`, `wages`; this table maps them to one
+canonical key. Automatic proposals, user-confirmable, and user overrides are permanent.
 
-### `entities` / `entity_aliases`
-Canonical people, employers, merchants, places. Aliases collapse *ACME Corp* / *Acme
-Corporation* / *ACME* to one entity, so a query for one finds all. Human-curated,
-therefore permanent.
+### `events` (FR-5)
+`id`, `event_type` (open vocabulary), `occurred_on`, `occurred_precision`
+(`day`|`month`|`year`), `title`, `confidence`, `source`.
+`event_entities`: `event_id`, `entity_id`, `role` (`airline`, `merchant`, `landlord`, …).
+`event_evidence`: `event_id`, `item_id`, `record_id?`, `passage_id?`.
 
-### `face_clusters`
-`cluster_id`, `name` (null until you name it), `centroid`. Photo faces link to clusters.
-Naming a cluster retroactively names every photo in it and every future match (FR-7).
+One flight = one event, with evidence rows for the confirmation email, the boarding pass,
+and the statement line. Deduplicated on `(event_type, date, key entities)`.
 
-### `items_fts` — FTS5 virtual table
-Full text plus title and tag values, external-content against `item_versions`. Provides
-BM25.
+### `entities` / `entity_aliases` (FR-6)
+`entities`: `id`, `entity_type`, `canonical_name`, `attributes` (JSON).
+`entity_aliases`: `entity_id`, `alias`, `source`.
+`COSTCO WHSE #1234` and `Costco` resolve to one entity. User merges are permanent.
+
+### `passages` (FR-7)
+`id`, `item_id`, `version`, `ordinal`, `text`, `page`, `char_start`, `char_end`.
+Split on structure (headings, table rows, paragraphs) rather than blind fixed windows.
+
+### `passages_fts`
+FTS5 external-content over `passages` plus item title and tag values → BM25.
 
 ### `embeddings`
-`item_id`, `chunk_index`, `vector`, `model_id`, `dim`, `chunk_text`.
-Tagged with `model_id` so a model change is a targeted rebuild. **Fully derivable —
-this table can be dropped and recomputed** (per NFR-6 and decision D).
+`passage_id`, `vector`, `model_id`, `dim`.
+Tagged with `model_id`; **fully rebuildable and safe to drop** (NFR-6).
+
+### `tags`
+`item_id`, `namespace` (`person`|`place`|`year`|`occasion`|`doctype`|`topic`), `value`,
+`source`, `confidence`. Shared by documents and photos.
+
+### `face_clusters` (FR-11)
+`cluster_id`, `name` (null until named), `centroid`. Naming a cluster retroactively names
+every photo in it and every future match.
 
 ### `jobs`
 `id`, `item_id`, `type`, `state`, `attempts`, `last_error`, `claimed_by`, `claimed_at`.
-Types: `extract_text`, `ocr`, `extract_fields`, `embed`, `photo_exif`, `photo_faces`,
-`photo_caption`. Independent job types are what make each layer separately re-runnable.
+Types: `extract_text`, `ocr`, `extract_records`, `link_entities`, `derive_events`,
+`embed`, `photo_exif`, `photo_faces`, `photo_caption`.
+
+Separate job types are what let any single layer be re-run corpus-wide without touching
+the others.
 
 ### Human-authored layer (the only irreplaceable state, NFR-6)
-`fields` where `source='human'`, note content in `item_versions`, `face_clusters.name`,
-`entities`, and tags where `source='human'`. Backed up separately from the index; the
-rest is regenerable from the NAS.
+Rows where `source='human'`, note content, `face_clusters.name`, entity merges, pinned
+vocabulary. Backed up separately; everything else regenerates from the NAS.
 
-## 3. Ingest pipeline
-
-```
-discover → hash → text extract → chunk → [field extractors] → [embed] → index
-```
-
-1. **Discover** — watcher (inotify/FSEvents) plus a nightly reconciliation scan to catch
-   anything the watcher missed.
-2. **Hash** — unchanged hash ends the job immediately. Idempotent re-runs are free.
-3. **Text extract** — per MIME type: PDF text layer; OCR (Tesseract, or a local VLM for
-   hard scans) when the text layer is empty or garbage; CSV/XLSX to normalized rows;
-   DOCX; EML headers plus body.
-4. **Field extraction** — the C3 layer stack: template → pattern → LLM-for-gaps. The LLM
-   step is schema-constrained JSON; output that fails validation is dropped, never
-   stored.
-5. **Embed** — chunk (~512 tokens, overlapping) and embed on the Mac.
-6. **Index** — write fields, tags, FTS rows, vectors; set `extraction_status`.
-
-Steps 3–6 are separate job rows, so a partial failure retries in isolation and any
-single stage can be re-run corpus-wide without touching the others.
-
-**Photos** follow the same spine with a different stage set: EXIF → geocode → face
-embed/cluster → VLM caption. EXIF is exact and never re-derived.
-
-## 4. Query engine (deterministic)
-
-A query is parsed by **rules, not a model**:
+## 4. Ingest pipeline
 
 ```
-"salary 2023"        → field probe: key~salary, tax_year=2023
-"receipts over $500" → filter: doctype=receipt, amount > 500
-"photos goa 2019"    → filter: kind=photo, place=goa, year=2019
-"sprinkler valve"    → free text → BM25 + vector
+discover → hash → extract text → understand whole doc → records
+                                                      → events
+                                                      → entities
+                       └────────→ split passages ─────→ embed
 ```
+
+1. **Discover** — watcher (inotify/FSEvents) plus a nightly reconciliation scan.
+2. **Hash** — unchanged hash ends the job. Idempotent re-runs are free.
+3. **Text extract** — PDF text layer; OCR (Tesseract, VLM for hard scans) when the layer
+   is empty or garbage; CSV/XLSX to normalized rows; DOCX; EML headers and body.
+4. **Whole-document understanding** — the layered extractor stack, over the **full
+   document text**, never over chunks:
+   - **Human corrections** — absolute authority, never overwritten.
+   - **Templates** — known layouts (W-2, specific banks, airlines, government IDs).
+     Exact, free, instant.
+   - **Typed patterns** — dates, amounts, account tails, document numbers. Validated by
+     type, not just matched.
+   - **LLM (Ollama)** — for anything the layers above did not cover. Prompted for
+     *extraction against a JSON shape*, never for judgment or ranking. Output failing
+     validation is discarded, not stored.
+
+   All four emit **records** with fields already bound together.
+5. **Entity linking** — resolve names in records against `entities`, creating or aliasing.
+6. **Event derivation** — rules over records: a `flight_booking` record becomes a flight
+   event; a rent receipt becomes a payment event. Dedup against existing events.
+7. **Passages + embeddings** — split and embed on the Mac.
+
+Steps 4–7 are independent jobs. Improving the LLM re-runs step 4 only; templates,
+patterns, human corrections, entity merges, and cluster names all survive untouched.
+That is NFR-1 as a schema property rather than a promise.
+
+## 5. Query engine (deterministic)
+
+Query parsing is **rules over the query string plus the vocabulary the corpus actually
+produced** — no model. Because `key_vocabulary` and `entities` are already populated,
+mapping *"salary"* onto `gross_salary` or *"Alaska"* onto the airline entity is a lookup.
 
 ### Execution
-1. **Structured probe.** If the query maps to known field keys with concrete constraints,
-   run the SQL lookup. A confident hit returns a **direct answer** with citation, plus
-   supporting items. This is the FR-4 path.
-2. **Filters.** Any parsed facets (`year`, `doctype`, `person`, `place`) become SQL
-   `WHERE` clauses that constrain everything below.
-3. **BM25** over FTS5 on the remaining free text → ranked list A.
-4. **Vector search** over embeddings, same filters applied → ranked list B.
-5. **Fusion — Reciprocal Rank Fusion**, fixed `k=60`, no learned weights:
 
-   ```
-   score(d) = Σ  w_s / (k + rank_s(d))        s ∈ {bm25, vector}
-   ```
+**Step 1 — Parse.** Extract time constraints (`2023`, `last`), entity mentions
+(`Alaska Airlines`, `Costco`), key mentions (`salary`, `expiry`), and free text.
 
-   Then fixed deterministic boosts: exact field match, recency, human-verified fields.
-   All constants live in one config file and are shown in the UI's "why this ranked
-   here" panel (FR-9).
-6. **Tie-break by `item_id`** so ordering is total and stable — this is what makes
-   NFR-2 literally true rather than approximately true.
+**Step 2 — Structured probe (Tier 1).** If the query maps to known keys/event types with
+concrete constraints, query records and events directly:
 
-No step calls a model. Ollama being down changes nothing here.
+```sql
+-- "passport expiry date"
+SELECT rf.value_date, r.item_id, r.page
+FROM records r JOIN record_fields rf ON rf.record_id = r.id
+WHERE r.record_type = 'passport' AND rf.key = 'expiry_date'
+ORDER BY r.source_rank, r.confidence DESC;
 
-## 5. Interfaces
+-- "when did I last fly Alaska"
+SELECT e.occurred_on, ev.item_id
+FROM events e
+JOIN event_entities ee ON ee.event_id = e.id
+JOIN event_evidence ev ON ev.event_id = e.id
+WHERE e.event_type = 'flight' AND ee.entity_id = :alaska
+ORDER BY e.occurred_on DESC LIMIT 1;
+```
 
-### MCP tools (stable contracts, FR-8)
-- `search(query, filters?, limit?)` → ranked items with snippets and scores
-- `get_field(key, filters)` → typed value(s) with provenance — the point-query tool
-- `get_item(id)` → full record: text, fields, tags, versions
-- `list_values(key, filters?)` → distinct values, for "which years do I have?"
-- `aggregate(key, op, filters)` → sum/avg/count/min/max — "total spent on appliances"
-- `add_note(title, text, tags?)` / `update_note(id, text)`
-- `correct_field(item_id, key, value)` → writes a `human` field
+Both are direct answers with citations, no model, sub-millisecond. The year/salary
+pairing is safe because it was bound at ingest into one record.
 
-Deliberately, these tools return **data, not prose**. The agent narrates; DataManager
-never does. That is what keeps the contract stable across model generations — and lets
-a weaker model still get exact answers, since it only has to pick a tool and read a
-number.
+**Step 3 — Aggregation (FR-8).** Recognized aggregate intent sums over records/events and
+returns the total **plus every contributing row**, so the number is auditable.
 
-### REST + Web UI
-Same engine behind `/api/search`, `/api/items/{id}`, `/api/fields`, `/api/notes`.
-UI: search with facets, item detail with highlighted field provenance, an extraction
-review queue for low-confidence fields, face-cluster naming, note editor, and index
-health (pending jobs, failures, last scan).
+**Step 4 — Retrieval.** In parallel, always:
+- BM25 over `passages_fts` → list A
+- Vector search over `embeddings` → list B
+- Record/event matches → list C
 
-## 6. Technology choices
+**Step 5 — Fusion.** Reciprocal Rank Fusion, fixed `k=60`, no learned weights:
+
+```
+score(d) = Σ  w_s / (k + rank_s(d))     s ∈ {bm25, vector, structured}
+```
+
+Then fixed boosts: exact field match, human-verified, recency, entity match. All
+constants live in one config file and are exposed in the UI's "why this ranked here"
+panel (FR-13). **Tie-break by `item_id`** so ordering is total and stable (NFR-2).
+
+**Step 6 — Response.** Either a **direct answer** (Tier 1: value + citation) or an
+**evidence set** (Tier 2: ranked passages, records, events, entities). Never prose.
+
+### Tier 2 worked example — *"What card is best to pay at Costco?"*
+
+The engine does not answer this. It returns, deterministically:
+- entity `Costco` and all linked events (prior spend, with amounts and dates)
+- records of type `credit_card` → the cards held
+- passages from card terms/benefit documents matching cashback/rewards categories
+
+Same evidence set, same order, every time. The agent on top compares and concludes. The
+reasoning varies by model; **the evidence does not** — which is the guarantee that
+matters (NFR-2).
+
+## 6. Storage placement
+
+Index lives on the **Proxmox** box (SQLite file), not the NAS — SQLite over SMB/NFS is
+unreliable under concurrent access. It is fully rebuildable from the NAS (NFR-6); only
+the human-authored layer is backed up separately, to the NAS.
+
+## 7. Technology
 
 | Concern | Choice | Why |
 |---|---|---|
-| Language | Python 3.12 | best document/OCR/ML ecosystem |
-| DB | SQLite + FTS5 + sqlite-vec | one file, no daemon, all three search modes co-located (decision B) |
-| API | FastAPI + Uvicorn | typed, small, async |
+| Language | Python 3.12 | document/OCR/ML ecosystem |
+| Index | SQLite + FTS5 + sqlite-vec | records, text, vectors co-located; ~50 MB RAM, no daemon |
+| API | FastAPI + Uvicorn | typed, small |
 | MCP | official Python MCP SDK | |
-| Queue | SQLite-backed job table | no extra broker to run |
-| PDF | pypdf → pdfplumber → OCR fallback | cheapest path first |
-| OCR | Tesseract, VLM fallback for hard scans | |
-| Embeddings | local sentence-transformers on the Mac | swappable, `model_id`-tagged |
-| LLM | Ollama on the Mac, JSON-schema constrained | swappable without code change |
-| Faces | InsightFace embeddings + clustering | deterministic once clusters are named |
-| UI | server-rendered + htmx | no SPA build to maintain |
+| Queue | SQLite job table | no extra broker |
+| PDF | pypdf → pdfplumber → OCR | cheapest path first |
+| OCR | Tesseract, VLM fallback | |
+| Embeddings | sentence-transformers on Mac | swappable, `model_id`-tagged |
+| LLM | Ollama, JSON-shape constrained | swappable, no code change |
+| Faces | InsightFace + clustering | deterministic once named |
+| UI | server-rendered + htmx | no SPA build |
 
-Every model-touching row above is data-tagged with its `model_id` and re-runnable in
-isolation. That is the mechanism behind NFR-1 — not a promise, a schema property.
+Every model-touching row is tagged with `model_id` and re-runnable in isolation.
 
-## 7. Build order
+## 8. Interfaces
 
-1. **M1 — Skeleton.** Schema, scanner, hashing, text extraction for PDF/txt/md/CSV,
-   FTS5 keyword search, CLI. *Searchable corpus, zero models.*
-2. **M2 — Structured fields.** Template + pattern extractors, `fields` table, point-query
-   path, `get_field`. *"Salary in 2023" works.*
-3. **M3 — Interfaces.** REST API, MCP server, web UI, correction flow.
-4. **M4 — Semantic layer.** Chunking, embeddings, vector search, RRF fusion.
-5. **M5 — Photos.** EXIF, geocoding, face clustering + naming, VLM captions.
-6. **M6 — LLM gap-filling.** Ollama extractor for uncovered documents, confidence
-   thresholds, review queue.
-7. **M7 — Hardening.** Watcher, incremental updates, reconciliation, backup of the
-   human-authored layer, reproducibility test suite.
+### MCP tools (stable contracts, FR-12)
+- `search(query, filters?, limit?)` → ranked evidence with citations
+- `get_value(key, filters)` → Tier 1 direct answer with provenance
+- `get_events(type?, entity?, date_range?)` → events with evidence
+- `get_entity(name)` → canonical entity, aliases, linked records and events
+- `aggregate(key|event_type, op, filters)` → total plus contributing rows
+- `get_item(id)` → full record: text, records, events, tags, versions
+- `list_keys()` / `list_values(key)` → discovered vocabulary
+- `add_note` / `update_note` / `correct_value`
 
-M1–M3 deliver the core promise with no model involved anywhere. Semantic search and LLM
-extraction arrive as enhancements to a system that already works without them — which is
-the point.
+Tools return **data, not prose**. A weaker model only has to pick a tool and read a
+value — which is what keeps the contract stable across model generations.
 
-## 8. Open questions
+### REST + Web UI
+Same engine. UI: search with facets, item detail with highlighted provenance, review
+queue for low-confidence records, entity merge, key vocabulary management, face-cluster
+naming, note editor, index health.
 
-- OCR quality threshold that triggers the VLM fallback — needs calibration on real scans.
-- Whether CSV/XLSX rows should become individual items or stay one item with row-level
-  provenance. Leaning: one item, row-level provenance.
-- Face clustering re-run policy as new photos arrive (incremental assign vs. periodic
-  full recluster).
-- Retention for `item_versions` on high-churn files.
+## 9. Build order
+
+1. **M1 — Floor.** Schema, scanner, hashing, text extraction, passages, FTS5, CLI.
+   *Every document searchable by keyword. No models.*
+2. **M2 — Records.** Template + pattern extractors, bound records, `get_value`.
+   *Passport expiry works, no LLM.*
+3. **M3 — Entities + events.** Linking, aliases, event derivation. *"Last Alaska flight"
+   works.*
+4. **M4 — Interfaces.** REST, MCP, web UI, correction flow.
+5. **M5 — Semantic.** Embeddings, vector search, RRF fusion.
+6. **M6 — LLM extraction.** Ollama for uncovered documents, open-vocabulary keys,
+   canonicalization, review queue. *Coverage extends to arbitrary document types.*
+7. **M7 — Aggregation + Tier 2.** Aggregates with audit trails, evidence-set assembly.
+8. **M8 — Photos.** EXIF, geocoding, faces, captions.
+9. **M9 — Hardening.** Watcher, incremental updates, reconciliation, backup,
+   reproducibility suite.
+
+M1 alone replaces "open files by hand" with working search. M2–M3 deliver direct answers
+with no LLM anywhere.
+
+## 10. Open questions
+
+- OCR quality threshold that triggers VLM fallback — calibrate on real scans.
+- Statement line items: one record per transaction vs. one per statement. Leaning
+  per-transaction, for event derivation.
+- Event dedup strictness across evidence types (email vs. boarding pass vs. statement).
+- Incremental face clustering vs. periodic full recluster.
+- `item_versions` retention on high-churn files.

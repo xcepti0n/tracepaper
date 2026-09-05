@@ -4,15 +4,62 @@ Short, dated records. Full reasoning lives in [02-alternatives.md](02-alternativ
 
 ---
 
-### D-001 — Structured extraction at ingest; deterministic search at query
+### D-001 — Whole-document binding at ingest; deterministic retrieval at query
+**2026-09-04 · Accepted (revised)**
+
+Ingest reads each document as a whole and writes bound records, events, entities, and
+passages. Queries read those with fixed algorithms — no model.
+
+Rejected: agent-browses-filesystem (non-reproducible); classic RAG — **chunking destroys
+fact associations**, so a W-2's `tax_year` and `gross_salary` land in different chunks
+and no retrieved passage can say which year the number belongs to.
+
+*Consequence:* facts that belong together are stored already paired. A better model is a
+re-ingest; query code, API, and tool contracts do not change.
+
+---
+
+### D-001a — Two-tier answer contract
 **2026-09-04 · Accepted**
 
-Models enrich data offline; the query path is SQL + BM25 + vectors with a fixed fusion
-formula. Rejected: agent-browses-filesystem (non-reproducible), classic RAG (answer
-produced by the model at query time, weak on point facts and aggregation).
+Tier 1 returns a **value plus citation** where the fact is written in a document
+(*passport expiry*) — no LLM. Tier 2 returns a **complete, reproducibly-ordered evidence
+set** where it is not (*best card at Costco*), for a caller's LLM to reason over.
 
-*Consequence:* a better model is a re-ingest. No query code, API, or tool contract
-changes.
+*Consequence:* the determinism guarantee attaches to the evidence set, which the engine
+controls. DataManager never generates prose.
+
+---
+
+### D-001b — Open vocabulary, not a closed schema
+**2026-09-04 · Accepted**
+
+Extractors emit whatever keys a document actually contains; `key_vocabulary`
+canonicalizes synonyms, with user pinning. Supersedes the earlier predefined key list.
+
+*Consequence:* a document type never seen before yields records with zero code changes.
+
+---
+
+### D-001c — Records, events, and entities as retrieval units
+**2026-09-04 · Accepted**
+
+Many questions ask about something that *happened*, where the document is incidental.
+One flight event links a confirmation email, a boarding pass, and a statement line.
+Entities collapse aliases (`COSTCO WHSE #1234` → `Costco`).
+
+*Consequence:* "when did I last fly Alaska" is a filter-and-sort, not a document search.
+
+---
+
+### D-001d — Passage layer as the floor
+**2026-09-04 · Accepted**
+
+Every item is also split into passages indexed by BM25 and embeddings, regardless of
+whether any extractor understood it.
+
+*Consequence:* with no structured extraction at all, the system degrades to good search
+rather than to nothing (NFR-9).
 
 ---
 
@@ -32,7 +79,8 @@ not a rewrite.
 ### D-003 — Layered extraction: human > template > pattern > LLM
 **2026-09-04 · Accepted**
 
-All extractors write to one `fields` table tagged with `source` and `confidence`.
+All extractors emit **bound records** (`records` + `record_fields`) tagged with `source`
+and `confidence` — never loose, independently-extracted fields.
 Regex handles regular formats exactly and free; the LLM only fills gaps, constrained to
 schema-validated JSON.
 
@@ -41,7 +89,7 @@ corrections outrank everything and survive reindex.
 
 ---
 
-### D-004 — Semantic search included, but as the third signal
+### D-004 — Semantic search included, as one signal within the passage floor
 **2026-09-04 · Accepted**
 
 Structured fields first, BM25 second, vectors third, fused by Reciprocal Rank Fusion
@@ -84,3 +132,15 @@ on change.
 
 *Consequence:* no separate subsystem for personal notes, and notes are searchable by the
 same tools as documents.
+
+---
+
+### D-008 — Index stored on Proxmox, not the NAS
+**2026-09-04 · Accepted**
+
+SQLite over SMB/NFS is unreliable under concurrent access. The index lives on the
+always-on Proxmox host.
+
+*Consequence:* the index is fully rebuildable from the NAS; only the human-authored layer
+(corrections, notes, entity merges, face names, pinned vocabulary) is irreplaceable, and
+it is backed up separately to the NAS.

@@ -1,139 +1,204 @@
 # DataManager — Requirements
 
-Status: agreed 2026-09-04
+Status: agreed 2026-09-04 (revised)
 Owner: vaiibhav
 
 ## 1. Problem
 
-Personal data lives on a NAS as an unstructured pile of files: tax documents, receipts,
-invoices, statements, manuals, photos. Finding a specific fact ("what was my salary in
-2023", "how much did I pay for the dishwasher, and where") means remembering which file
-it is in and opening it by hand.
+A lifetime of personal documents sits on a NAS: ID cards, passports, visas, leases, rent
+receipts, tax forms, appointments, flight confirmations, card statements, manuals,
+warranties, photos. There is **no search today**. Finding anything means remembering
+which file holds it, locating that file by hand, and opening it.
 
-Handing the whole pile to an LLM agent and letting it browse does not solve this. It is
-slow, it is non-reproducible (same question, different answer), it degrades on large
-corpora, and the quality of every answer is bound to the quality of whatever model is
-current. Rebuilding prompts on every model release is not acceptable.
+Two things that do not solve this:
+
+- **Letting an agent browse the files.** Slow, non-reproducible, degrades on large
+  corpora, and every answer is bound to whatever model is current.
+- **Plain search over document text** — keyword or semantic. It retrieves *passages that
+  look relevant*, which is not the same as the fact being asked for. Worked example
+  below.
+
+### Why plain search fails — the W-2 case
+
+On a W-2, the tax year sits in a header box and gross salary sits in Box 1. They are
+physically far apart with unrelated boxes between them. Chunk the document for
+embeddings and the two land in different chunks. Search *"2023 salary"* and you match a
+chunk holding one or the other; the retrieved passage cannot say which year the number
+belongs to. A model reading it may take the number off the wrong form entirely.
+
+**The association between `tax_year` and `gross_salary` has to be made once, at ingest,
+while the whole document is in view — and stored already resolved.** No amount of
+query-time cleverness recovers a link that was destroyed by chunking.
+
+This is the central requirement. Everything else follows from it.
 
 ## 2. Goal
 
-A **deterministic search system** over personal data. Same query, same results, every
-time, independent of which model is installed. Models are used to *enrich* data at
-ingest time; they are never in the query path.
+Transform an unstructured pile into a **searchable, queryable representation**, so that:
 
-## 3. Core principle — the ingest/query split
+- Facts that are written in a document are **returned directly**, with a citation, and
+  with no model involved.
+- Questions that require reasoning get a **complete, reproducible evidence set** to
+  reason over.
 
-This is the single design rule everything else follows from:
+The transformation is the product. The stored index is a rebuildable by-product.
+
+## 3. The contract — two tiers
+
+### Tier 1 — Direct answer (no LLM)
+The answer is a value present in a document.
+
+> *"What is my passport expiry date?"* · *"How much tax did I pay in 2023?"* ·
+> *"When did I last fly Alaska Airlines?"*
+
+Returns the **value plus its citation** (document, page, passage). Deterministic, no
+model loaded. If several documents could answer, all candidates are returned ranked, not
+silently collapsed to one.
+
+### Tier 2 — Evidence for reasoning (LLM on top)
+The answer is not written anywhere and must be worked out.
+
+> *"What card is best for me to pay at Costco?"*
+
+Returns **all relevant context**: which cards are held, their benefit terms, prior Costco
+spend. An LLM — or the user — draws the conclusion.
+
+**The guarantee is on the evidence set, not the prose.** The same question returns the
+same evidence, in the same order, every time. Only the final reasoning step varies by
+model, and it is the caller's, not DataManager's.
+
+DataManager never generates prose. It returns values and evidence.
+
+## 4. Core principle
 
 > **Models write. Algorithms read.**
 
-- **Ingest (offline, model-assisted):** extract text, OCR scans, derive structured
-  fields, assign tags, compute embeddings. Slow, batched, retryable, tolerant of being
-  offline for days. May use an LLM.
-- **Query (online, fully deterministic):** SQL filters, BM25 full-text ranking, vector
-  similarity, and a fixed fusion formula. No model is loaded, no prompt is evaluated,
-  no network call is made. Identical inputs give byte-identical outputs.
+- **Ingest (offline, model-assisted):** understand each document as a whole; bind related
+  facts together; emit records, events, entities, passages, embeddings. Slow, batched,
+  retryable, may use an LLM.
+- **Query (online, deterministic):** filters, BM25, vector similarity, fixed fusion. No
+  prompt evaluated, no model loaded, no network call. Identical inputs, identical
+  outputs.
 
-Consequence: a better model in 2028 is a **re-ingest**, not a rewrite. The query engine,
-the API, the UI, and the agent tool contracts do not change.
+A better model in 2028 is a **re-ingest**. Query code, API contracts, MCP tools, and UI
+do not change.
 
-## 4. Functional requirements
+## 5. Functional requirements
 
 ### FR-1 — Item model
-The indexed unit is an **item**, not a file. Two kinds:
-- **File-backed** — a PDF, image, CSV, email, office doc on the NAS.
-- **Native note** — text typed directly into DataManager (something learned, a fact worth
-  keeping). No file on disk; DataManager owns the content.
+The indexed unit is an **item**: a file-backed document or photo, or a **native note**
+typed directly into DataManager. One identity, tag, and search model for both.
 
-Both kinds share one identity, tag, field, and search model.
+### FR-2 — Document types
+PDF (text and scanned), images (JPEG/PNG/HEIC), plain text, Markdown, CSV/TSV, XLSX,
+DOCX, EML. Unknown types are indexed by filename and metadata — never rejected.
 
-### FR-2 — Document types (initial)
-PDF (text + scanned), plain text, Markdown, CSV/TSV, XLSX, DOCX, images
-(JPEG/PNG/HEIC), EML. Unknown types are indexed by filename and metadata only, never
-rejected.
+### FR-3 — Whole-document binding (the W-2 requirement)
+Extraction operates on the **full document**, not on chunks. Facts that belong together
+are bound into one **record** at ingest: a W-2 yields a single record carrying
+`tax_year`, `employer`, `gross_salary`, `federal_withheld` together. A passport yields
+one record with `passport_number`, `expiry_date`, `nationality`.
 
-### FR-3 — Structured field extraction
-Documents yield typed key/value facts, not just text: `employer`, `tax_year`,
-`gross_salary`, `merchant`, `purchase_date`, `amount`, `currency`, `account_last4`,
-`document_type`. Every field carries its extractor, its confidence, and a pointer back
-to the exact page/line it came from.
+Once bound, retrieving one field never risks pairing it with another document's value.
 
-### FR-4 — Answering point queries
-"What was my salary in 2023" must resolve to a **field lookup**, not a document list:
-one number, with the source document and page cited. Not a ranked list of PDFs to read.
+### FR-4 — Open vocabulary
+There is **no fixed list of field keys**. Extractors emit whatever facts a document
+actually contains. A document type never seen before yields records without new code.
+Synonymous keys discovered across the corpus are canonicalized over time; the user can
+rename and merge keys.
 
-### FR-5 — Incremental and event-driven updates
-- New file on the NAS → indexed without a full rescan.
-- Changed file → re-indexed, previous version retained.
-- Deleted/moved file → index reflects it; move is not re-extraction.
-- Full reindex is always available and always safe to run.
+Rationale: a lifetime of heterogeneous documents has no enumerable schema. A closed
+schema means code changes forever — the exact treadmill this project exists to avoid.
 
-### FR-6 — Update and correction
-- Native notes are editable in place, with version history.
-- Extracted fields are correctable by hand; a human correction outranks any extractor
-  and **survives re-ingest** permanently.
-- Tags can be added, removed, renamed, and merged.
+### FR-5 — Events
+Many questions ask about something that **happened**, where the document is merely where
+it was recorded. A flight is an event whether the evidence is a confirmation email, a
+boarding pass PDF, or a card statement line.
 
-### FR-7 — Photos
-Photos are indexed by derived tags, not stored or copied. Tag sources, independent and
-separately re-runnable:
-- **EXIF** — timestamp, GPS, camera, orientation. Exact, free, never re-derived.
-- **Geocoding** — GPS → place names (city, region, country, POI).
-- **Faces** — local embedding + clustering. Clusters are named once by the user; that
-  name is permanent and applies to every future photo matched to the cluster.
-- **Caption/objects** — a local VLM produces a caption and object tags for the fuzzy
-  "occasion" dimension.
+Events carry `type`, `date`, participating entities, and links to every piece of
+supporting evidence. *"When did I last fly Alaska"* is: filter events, sort by date,
+return with citation.
 
-Target queries: "photos from Goa in 2019", "photos with <person> at a wedding".
+### FR-6 — Entities and aliases
+People, organizations, merchants, places, and accounts are canonical entities. Aliases
+collapse *COSTCO WHSE #1234* on a statement to the same entity as *Costco* in an email.
+Required for "everything about X" and for Tier 2 evidence gathering.
 
-### FR-8 — Two front doors, one engine
-- **MCP server** — typed tools for an agent (`search`, `get_field`, `get_item`,
-  `list_values`). Tool contracts are stable across model generations.
-- **Web UI** — browse, search, correct extractions, name face clusters, write notes.
+### FR-7 — Passage layer
+Every item is also split into passages, each independently retrievable by keyword and by
+embedding. This is the **floor**: any document, including types no extractor understands,
+is searchable at the passage level. When structured extraction is thin, the system
+degrades to good search rather than to nothing.
 
-Both call the same query engine. Neither may embed model calls.
+### FR-8 — Aggregation
+Sum, count, min, max, and latest over records and events — *"how much tax did I pay in
+2023"*, *"total rent paid last year"*. Every contributing document is listed so the
+number can be audited.
 
-### FR-9 — Ranking
-Results are ranked by a fixed, documented, inspectable formula. The UI can show why a
-result ranked where it did. No learned reranker in the default query path.
+### FR-9 — Incremental updates
+New file indexed without a full rescan. Changed file re-indexed with prior version
+retained. Moved file detected by content hash — a path change, not re-extraction.
+Deleted file soft-deleted. Full reindex always available and always safe.
 
-## 5. Non-functional requirements
+### FR-10 — Correction
+Native notes editable with version history. Extracted values correctable by hand; a
+human correction outranks every extractor and **survives re-ingest permanently**. Tags
+and keys can be added, renamed, and merged.
+
+### FR-11 — Photos
+Indexed by derived tags; images are never copied or stored. Tag sources, independently
+re-runnable: **EXIF** (timestamp, GPS, camera — exact), **geocoding** (GPS → place
+names), **face clustering** (named once by the user, permanent thereafter), **VLM
+caption** for the fuzzy "occasion" dimension.
+
+### FR-12 — Two front doors, one engine
+**MCP tools** for agents and a **web UI** for the user, both over the same query engine.
+Neither embeds model calls. Tool contracts stay stable across model generations.
+
+### FR-13 — Ranking
+Fixed, documented, inspectable formula. The UI can show why a result ranked where it
+did. No learned reranker in the default query path.
+
+## 6. Non-functional requirements
 
 | ID | Requirement |
 |----|-------------|
-| NFR-1 | **Model independence.** No prompt, model name, or model output shape is referenced at query time. Swapping the ingest model changes data, never code or contracts. |
-| NFR-2 | **Reproducibility.** A query run twice on an unchanged index returns identical, identically-ordered results. |
-| NFR-3 | **Privacy.** Default is fully local. No document content leaves the LAN unless explicitly enabled per-source. |
-| NFR-4 | **Availability.** The search service stays up when the ingest machine is off. Pending enrichment is visible, never silently missing. |
-| NFR-5 | **Scale.** 10k–100k items comfortably; photos may dominate the count. |
-| NFR-6 | **Recoverability.** The index is fully rebuildable from the NAS plus a small human-authored layer (notes, corrections, face names). That layer is backed up separately and is the only irreplaceable state. |
-| NFR-7 | **Read-only source.** DataManager never writes to, moves, or renames NAS originals. |
-| NFR-8 | **Resource budget.** Always-on footprint on the Proxmox host: < 1 GB RAM, no GPU, no JVM. |
+| NFR-1 | **Model independence.** No prompt, model name, or model-output shape is referenced at query time. Swapping the ingest model changes data, never code or contracts. |
+| NFR-2 | **Reproducibility.** A query run twice against an unchanged index returns identical, identically-ordered results — including Tier 2 evidence sets. |
+| NFR-3 | **Privacy.** Fully local by default. No document content leaves the LAN unless explicitly enabled per-source. |
+| NFR-4 | **Availability.** Search stays up when the ingest machine is off. Pending enrichment is visible, never silently missing. |
+| NFR-5 | **Scale.** 10k–100k items; photos may dominate the count. |
+| NFR-6 | **Recoverability.** The index is fully rebuildable from the NAS plus a small human-authored layer (notes, corrections, face names, entity merges). That layer is the only irreplaceable state and is backed up separately. |
+| NFR-7 | **Read-only source.** NAS originals are never modified, moved, or renamed. |
+| NFR-8 | **Resource budget.** Always-on footprint: < 1 GB RAM, no GPU, no JVM. |
+| NFR-9 | **Graceful degradation.** With no structured extraction at all, passage search still works over the entire corpus. |
 
-## 6. Deployment context
+## 7. Deployment context
 
-- **NAS** — the files. Mounted read-only (SMB/NFS).
-- **Proxmox server** — 16 GB RAM, already running other services. Hosts the always-on
-  layer: database, search API, web UI, MCP server, file watcher. No models.
-- **Mac (Apple Silicon)** — hosts Ollama and other model work. Runs the ingest worker,
-  which pulls jobs from a queue. Expected to be intermittently offline; this is normal
-  operation, not an outage.
+- **NAS** — the documents. Mounted read-only.
+- **Proxmox server** — 16 GB, already running other services. Always-on layer: index,
+  query engine, REST API, web UI, MCP server, file watcher. **No models.**
+- **Mac (Apple Silicon)** — Ollama and the ingest worker. Expected to be intermittently
+  offline; that is normal operation, not an outage.
 
-## 7. Explicit non-goals
+## 8. Non-goals
 
-- Not a document management system. Originals stay where they are, untouched.
-- Not a chat interface. DataManager returns data; an agent may narrate it.
-- Not a general web search or RAG-over-the-internet tool.
-- No multi-user accounts, sharing, or permissions in v1. Single trusted user on a LAN.
+- Not a document management system — originals stay untouched.
+- Not a chat interface. DataManager returns values and evidence; callers narrate.
+- Tier 2 conclusions are **out of scope for the engine** — it supplies evidence, not
+  verdicts.
+- No multi-user accounts or permissions in v1.
 - No cloud dependency in the default path.
 
-## 8. Success criteria
+## 9. Success criteria
 
-1. "What was my salary in 2023?" → a number, with source document and page, in under a
-   second, with no model loaded.
-2. A new file dropped on the NAS is keyword-searchable within a minute and
-   field-searchable once the ingest worker next runs.
-3. Ollama is stopped and every query in the test suite still returns identical results.
-4. The extraction model is swapped for a different one, ingest is re-run, and no query
-   code, API contract, or UI code changes.
-5. A hand-corrected field still holds its corrected value after a full reindex.
+1. *"Passport expiry date"* → the date, with document and page, no model loaded.
+2. *"How much tax did I pay in 2023"* → a number, plus every document that contributed.
+3. *"When did I last fly Alaska"* → a date and the source, regardless of whether the
+   evidence was an email, a PDF, or a statement line.
+4. *"Best card at Costco"* → cards held, their relevant terms, and prior Costco spend —
+   the same evidence set every time.
+5. Ollama stopped: every query in the test suite returns identical results.
+6. Extraction model swapped and re-ingested: no query code, contract, or UI change.
+7. A hand-corrected value survives a full reindex.
+8. A document type no extractor understands is still findable by passage search.

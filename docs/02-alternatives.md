@@ -1,6 +1,6 @@
 # DataManager — Alternatives Considered
 
-Status: agreed 2026-09-04
+Status: agreed 2026-09-04 (revised)
 
 Records what was evaluated and why the chosen option won, so the decision can be
 revisited later against the reasoning rather than from scratch.
@@ -23,13 +23,17 @@ Give an agent read access and let it `find`/`grep`/open files as it reasons.
 The standard vector-store pipeline.
 
 - **For:** well-trodden, many libraries, good on "explain this topic" questions.
-- **Against:** the answer is produced *by the model at query time*, so it is neither
-  deterministic nor model-independent — precisely NFR-1 and NFR-2. Bad at point facts:
-  "salary in 2023" retrieves chunks that look salary-ish and the model may read the
-  wrong year off the wrong form. Bad at aggregation ("total spent on appliances").
-  Retrieval quality silently drifts when the embedding model changes.
-- **Verdict:** rejected as the primary architecture. Vector search is kept as one
-  *ranking signal* (see D), not as the answer mechanism.
+- **Against:** **chunking destroys fact associations.** On a W-2 the tax year is in a
+  header box and gross salary is in Box 1; they land in different chunks, and no
+  retrieved chunk can say which year the number belongs to. The model then reads a
+  number off the wrong form. This is not a tuning problem — the link is gone before
+  retrieval starts. Also: the answer is produced *by the model at query time*, so it is
+  neither reproducible nor model-independent (NFR-1, NFR-2); aggregation across
+  documents is impossible; retrieval quality drifts silently when the embedding model
+  changes.
+- **Verdict:** rejected as the architecture. Passage retrieval is kept as the **floor**
+  (FR-7) and vectors as one ranking signal — but facts are bound at ingest, before
+  chunking, and stored resolved.
 
 ### A3 — Pure rules/regex extraction, no model anywhere
 Hand-written patterns per document type.
@@ -41,20 +45,81 @@ Hand-written patterns per document type.
 - **Verdict:** rejected standalone — but retained as the **highest-priority extractor**
   inside the chosen design, because when a pattern does match it is exact and free.
 
-### A4 — Structured extraction at ingest, deterministic search at query ✅ **CHOSEN**
-Models read each item once, offline, and write typed fields, tags, and embeddings into
-a database. Queries are SQL + BM25 + vector similarity fused by a fixed formula.
+### A4 — Whole-document binding at ingest; deterministic retrieval at query ✅ **CHOSEN**
+Ingest reads each document **as a whole** and writes bound records, events, entities, and
+passages. Queries read those layers with fixed algorithms.
 
-- **For:** satisfies NFR-1 and NFR-2 directly — no model in the query path. Point facts
-  become field lookups, which is the right primitive for FR-4. Aggregation is just SQL.
-  A better model later is a re-ingest with no code change. Extraction cost is paid once
-  per item, not once per query.
-- **Against:** more upfront build than A1/A2. Extraction errors are baked into the index
-  until re-ingest (mitigated by confidence scores, provenance, and human correction that
-  survives reindex — FR-6). Needs a schema, which needs maintenance as new document
-  types appear.
-- **Verdict:** chosen. The costs are real but bounded and one-time; the alternatives'
-  costs recur on every query and every model release.
+- **For:** the binding happens while the full document is in view, so `tax_year` and
+  `gross_salary` are stored already paired — the failure in A2 cannot occur. Direct
+  answers need no model (Tier 1). Aggregation is arithmetic over records. Passages remain
+  as a floor so unrecognized document types stay searchable. A better model later is a
+  re-ingest with no code change.
+- **Against:** more upfront build. Extraction errors persist until re-ingest (mitigated
+  by confidence, provenance, and human corrections that survive reindex — FR-10). Open
+  vocabulary needs canonicalization machinery.
+- **Verdict:** chosen. Costs are one-time and bounded; the alternatives' costs recur on
+  every query and every model release.
+
+---
+
+## A5. Answer contract — what the engine returns
+
+### A5.1 — Engine returns a natural-language answer
+Rejected. Requires a model at query time, making output non-reproducible and rebinding
+quality to the current model — NFR-1 and NFR-2 both fail.
+
+### A5.2 — Engine returns only ranked documents
+Rejected. *"Passport expiry date"* has its answer written in the document; returning a
+file to open by hand is the status quo this project replaces.
+
+### A5.3 — Two tiers: direct answer where the fact exists, evidence set otherwise ✅ **CHOSEN**
+Tier 1 returns the value plus citation, deterministically, no model. Tier 2 returns a
+complete, reproducibly-ordered evidence set for a caller's LLM to reason over.
+
+- **For:** matches the two real query shapes. *"Passport expiry"* needs no LLM;
+  *"best card at Costco"* has no answer written anywhere and needs one. The determinism
+  guarantee attaches to the **evidence set**, which is the part the engine controls.
+- **Against:** callers must handle two response shapes; the Tier 1/Tier 2 boundary is a
+  judgment call for ambiguous queries (resolved by rules over query structure and
+  extraction confidence, never by a model).
+- **Verdict:** chosen. DataManager never generates prose.
+
+---
+
+## A6. Schema vocabulary
+
+### A6.1 — Closed schema (predefined field keys)
+Rejected. A lifetime of IDs, leases, visas, appointments, receipts, and statements has no
+enumerable key set. Every unfamiliar document type would need a code change — the exact
+treadmill the project exists to avoid.
+
+### A6.2 — Open vocabulary with canonicalization ✅ **CHOSEN**
+Extractors emit whatever keys the document contains; `key_vocabulary` maps synonyms
+(`gross_pay` / `wages` / `gross_salary`) to a canonical key, with user pinning.
+
+- **For:** new document types need no code. Query-time key mapping stays a deterministic
+  lookup because the vocabulary is materialized at ingest.
+- **Against:** vocabulary drift needs periodic curation; the review UI is real work.
+- **Verdict:** chosen.
+
+---
+
+## A7. The unit of retrieval
+
+### A7.1 — Documents
+Insufficient alone. *"When did I last fly Alaska"* asks about something that **happened**;
+the evidence might be a confirmation email, a boarding pass, or a statement line, and the
+user does not care which.
+
+### A7.2 — Documents + records + events + entities ✅ **CHOSEN**
+Events carry type, date, entities, and links to every supporting document. Entities
+collapse aliases (`COSTCO WHSE #1234` → `Costco`).
+
+- **For:** answers date/history questions directly; assembles Tier 2 evidence coherently;
+  one event survives having three different documents as evidence.
+- **Against:** event dedup across evidence types is fiddly (an open question in the
+  design).
+- **Verdict:** chosen.
 
 ---
 
@@ -104,8 +169,8 @@ reimplementation plus a data copy, with no change to the API, MCP tools, or UI.
 - **Verdict:** rejected as the sole mechanism.
 
 ### C3 — Layered: deterministic first, model as fallback ✅ **CHOSEN**
-Extractors run in priority order and all write to the same `fields` table with a
-`source` and `confidence`:
+Extractors run in priority order and all emit **bound records** (`records` +
+`record_fields`) carrying a `source` and `confidence`:
 
 1. **Human correction** — absolute authority, never overwritten (FR-6).
 2. **Format/template rules** — known layouts (W-2, 1099, specific banks and utilities).
@@ -134,7 +199,7 @@ adequately, so a better model improves recall at the margin instead of being req
 
 The question was raised explicitly, so the reasoning is recorded.
 
-**Yes — as the third signal, never the first.**
+**Yes — as one retrieval signal, and as part of the passage floor (FR-7).**
 
 - Structured fields answer point queries *exactly*. For "salary in 2023", vector search
   is actively worse: it returns things that resemble salary text, and resemblance is not
