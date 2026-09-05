@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Index data — regenerable, never committed
+*.db
+*.db-wal
+*.db-shm
+data/
+index/
+
+# Local config / secrets
+.env
+config.local.*
+
+# OS
+.DS_Store
