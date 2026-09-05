@@ -28,6 +28,48 @@ DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 _model_cache: dict[str, object] = {}
 
+# An embedding model is not inference: it is a deterministic function from text
+# to a vector, and the same query embeds identically forever. So it IS allowed
+# in the query path -- unlike an LLM, which is confined to ingest.
+#
+# What is not allowed is loading it *during a request*: a cold load reaches the
+# network and can take tens of seconds, and doing that inside a web worker
+# crashed it. Services call `preload()` at startup and then forbid lazy loading,
+# so a search either uses a resident model or falls back to keyword search --
+# never blocks on a download.
+_allow_lazy_load = True
+
+
+def set_lazy_load(enabled: bool) -> None:
+    """Allow or forbid loading a model on demand.
+
+    The web service and MCP server forbid it, so a search can never block on a
+    model download or crash a worker mid-request.
+    """
+    global _allow_lazy_load
+    _allow_lazy_load = enabled
+
+
+def preload(model_id: str = DEFAULT_MODEL) -> bool:
+    """Load the model up front, outside any request. Returns success.
+
+    Downloads it on first use, then caches to disk (~90 MB for the default),
+    so later starts are offline and fast.
+    """
+    return load_model(model_id, force=True) is not None
+
+
+def local_path(model_id: str = DEFAULT_MODEL) -> str | None:
+    """Where the model is cached on disk, if it has been downloaded."""
+    from pathlib import Path
+    cache = Path.home() / ".cache" / "huggingface" / "hub"
+    folder = cache / f"models--{model_id.replace('/', '--')}"
+    return str(folder) if folder.exists() else None
+
+
+def is_loaded(model_id: str = DEFAULT_MODEL) -> bool:
+    return model_id in _model_cache
+
 
 @dataclass
 class EmbedResult:
@@ -48,10 +90,12 @@ def available() -> bool:
         return False
 
 
-def load_model(model_id: str = DEFAULT_MODEL):
-    """Load and cache the embedding model. Returns None when unavailable."""
+def load_model(model_id: str = DEFAULT_MODEL, *, force: bool = False):
+    """Return the cached model, loading it only when that is permitted."""
     if model_id in _model_cache:
         return _model_cache[model_id]
+    if not force and not _allow_lazy_load:
+        return None
     try:
         from sentence_transformers import SentenceTransformer
         model = SentenceTransformer(model_id)
@@ -106,7 +150,7 @@ def embed_pending(conn: sqlite3.Connection, *, model_id: str = DEFAULT_MODEL,
     if not rows:
         return result
 
-    model = load_model(model_id)
+    model = load_model(model_id, force=True)
     if model is None:
         result.skipped = len(rows)
         return result

@@ -142,8 +142,15 @@ def _search_tab(conn: sqlite3.Connection, query: str, limit: int,
                         "sprinkler valve, Costco, passport…", semantic)]
 
     if not query:
-        out.append('<p class="hint">Full text across every document, plus '
-                   'semantic matching for wording you do not remember exactly.</p>')
+        from . import embed
+        if semantic and not embed.is_loaded():
+            out.append('<p class="hint">Keyword search only — no embedding model '
+                       'loaded. Run <code>dm embed</code>, then restart the '
+                       'server.</p>')
+        else:
+            out.append('<p class="hint">Full text across every document, plus '
+                       'semantic matching for wording you do not remember '
+                       'exactly.</p>')
         return "".join(out)
 
     response = SearchEngine(conn).search(query, limit=limit, semantic=semantic)

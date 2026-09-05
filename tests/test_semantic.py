@@ -132,3 +132,63 @@ def test_dropping_embeddings_is_safe(conn, cfg, nas):
     assert SearchEngine(conn).search("recoverable content").hits, \
         "search must survive losing every vector"
     assert embed.embed_pending(conn).embedded >= 1, "and rebuild them"
+
+
+@requires_model
+def test_fused_signals_all_contribute_to_the_score(conn, cfg, nas):
+    """Every signal shown must be part of the score.
+
+    The keyword pass's raw bm25 is on a different scale and does not feed the
+    fused score. Carrying it into the explain panel showed a large number next
+    to a tiny score, which reads as a bug.
+    """
+    build(conn, cfg, nas, {"a.txt": "irrigation solenoid replaced in the front zone"})
+    embed.embed_pending(conn)
+
+    hit = SearchEngine(conn).search("sprinkler valve", semantic=True).hits[0]
+
+    assert "bm25" not in hit.signals, "a non-contributing signal must not be shown"
+    contributing = sum(v for k, v in hit.signals.items() if not k.startswith("_"))
+    assert contributing > 0
+
+
+@requires_model
+def test_fused_scores_are_readable(conn, cfg, nas):
+    """Raw RRF scores are ~0.01-0.03 and round to 0.00 in any display."""
+    build(conn, cfg, nas, {f"doc{i}.txt": "water leak near the driveway"
+                           for i in range(3)})
+    embed.embed_pending(conn)
+
+    hits = SearchEngine(conn).search("plumbing repair", semantic=True).hits
+
+    assert hits
+    assert hits[0].score == pytest.approx(1.0), "top hit should read as 1.0"
+    assert all(0 < h.score <= 1.0 for h in hits)
+    assert all(h.signals.get("_raw_rrf", 0) > 0 for h in hits), \
+        "the raw value stays available for auditing"
+
+
+def test_query_path_never_loads_a_model_on_demand(conn, cfg, nas, monkeypatch):
+    """A service must not block on a model download mid-request.
+
+    An embedding model is deterministic and welcome in the query path -- but it
+    is loaded at startup, never inside a request, where a cold load reaches the
+    network and crashed the worker.
+    """
+    build(conn, cfg, nas, {"a.txt": "some searchable content"})
+
+    loads: list[str] = []
+    real_load = embed.load_model
+
+    def spy(model_id=embed.DEFAULT_MODEL, *, force=False):
+        loads.append(model_id)
+        return real_load(model_id, force=force)
+
+    monkeypatch.setattr(embed, "load_model", spy)
+    embed.set_lazy_load(False)
+    try:
+        embed._model_cache.clear()
+        hits = SearchEngine(conn).search("searchable content", semantic=True).hits
+        assert hits, "search must still work, falling back to keyword"
+    finally:
+        embed.set_lazy_load(True)

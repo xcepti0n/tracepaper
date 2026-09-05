@@ -54,6 +54,20 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     if cfg is not None:
         set_config(cfg)
 
+    # Load the embedding model once, at startup. An embedding model is a
+    # deterministic text-to-vector function, so it is welcome in the query
+    # path; what is not welcome is loading it mid-request, which reaches the
+    # network and crashed the worker.
+    if embed.available():
+        if embed.preload(_config.embed_model):
+            print(f"semantic search ready ({_config.embed_model})")
+        else:
+            print(f"WARNING: could not load {_config.embed_model}; "
+                  f"search will be keyword-only")
+    else:
+        print("sentence-transformers not installed; search will be keyword-only")
+    embed.set_lazy_load(False)
+
     app = FastAPI(title="DataManager", version="0.1.0",
                   description="Deterministic search over personal documents")
 

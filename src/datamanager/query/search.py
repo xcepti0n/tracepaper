@@ -227,7 +227,11 @@ class SearchEngine:
 
         fused: list[RankedHit] = []
         for passage_id, hit in by_id.items():
-            signals = dict(hit.signals)
+            # Start clean: the keyword pass's raw bm25 is on a different scale
+            # and does NOT contribute to the fused score. Carrying it over made
+            # the explain panel show a large number next to a tiny score, which
+            # reads as a bug. Its rank is what matters here, via rrf_bm25.
+            signals: dict[str, float] = {}
             score = 0.0
 
             if passage_id in keyword_ranks:
@@ -253,7 +257,18 @@ class SearchEngine:
             ))
 
         fused.sort(key=lambda h: (-h.score, h.passage_id))
-        return fused[:limit]
+        fused = fused[:limit]
+
+        # RRF produces scores around 0.01-0.03, which are unreadable and round
+        # to 0.00 in any display. Rescale so the best hit is 1.0 and the rest
+        # are relative to it. Order is untouched, and the raw contributions
+        # stay in `signals` for auditing.
+        if fused and fused[0].score > 0:
+            top = fused[0].score
+            for hit in fused:
+                hit.signals["_raw_rrf"] = hit.score
+                hit.score = hit.score / top
+        return fused
 
     def _load_hits(self, passage_ids: list[int], query: str,
                    kind: str | None) -> list[RankedHit]:

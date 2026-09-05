@@ -209,6 +209,11 @@ TOOLS: list[dict[str, Any]] = [
 class Handler:
     def __init__(self, cfg: Config):
         self.cfg = cfg
+        # As with the web service: load once here, never inside a tool call.
+        from . import embed
+        if embed.available():
+            embed.preload(cfg.embed_model)
+        embed.set_lazy_load(False)
 
     def _conn(self):
         return connect(self.cfg.db_path)
