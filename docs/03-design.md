@@ -346,9 +346,8 @@ naming, note editor, index health.
 
 ## 9. Build order
 
-1. **M1 — Floor.** Schema, reconciliation scanner, hashing, text extraction, passages,
-   FTS5, CLI.
-   *Every document searchable by keyword. No models.*
+1. **M1 — Floor.** ✅ **Shipped.** Schema, reconciliation scanner, hashing, text
+   extraction, passages, FTS5, CLI. *Every document searchable by keyword. No models.*
 2. **M2 — Records.** Template + pattern extractors, bound records, `get_value`.
    *Passport expiry works, no LLM.*
 3. **M3 — Entities + events.** Linking, aliases, event derivation. *"Last Alaska flight"

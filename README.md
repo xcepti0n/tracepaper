@@ -78,7 +78,19 @@ churn the corpus through re-extraction.
 
 ## Status
 
-Design agreed. Implementation starts at M1 (design doc §9).
+**M1 shipped** — working keyword search over a NAS tree, no models involved.
+60 tests passing. Next: M2 (bound records, direct answers).
 
-M1 alone replaces "open files by hand" with working search over everything.
-M2–M3 add direct answers with no LLM involved.
+```bash
+pip install -e ".[formats,dev]"
+
+dm scan /Volumes/NAS/documents --index    # reconcile, extract, index
+dm search "gross salary" --explain        # deterministic search + ranking
+dm status                                 # index health, pending work
+dm note add "Sprinkler repair" --text "Replaced the irrigation solenoid."
+```
+
+Handles PDF (text layer, OCR flagged when absent), DOCX, XLSX, CSV/TSV, EML,
+Markdown, plain text; unknown formats fall back to filename indexing rather
+than being rejected. Scanned PDFs stay findable by name and are marked
+`partial` so pending OCR is visible, never silently missing.
