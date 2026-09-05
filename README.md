@@ -78,42 +78,62 @@ churn the corpus through re-extraction.
 
 ## Status
 
-**M1 + M2 shipped** — keyword search *and* Tier 1 direct answers, no models
-involved anywhere. 95 tests passing. Next: M3 (entities and events).
+**All milestones shipped.** 172 tests passing. Ready for you to test.
 
 ```bash
-pip install -e ".[formats,dev]"
+python3 -m venv .venv
+.venv/bin/pip install -e ".[formats,semantic,web,ocr-macos]"   # ocr on Linux
 
-dm scan /Volumes/NAS/documents --index    # reconcile, extract, index
+cp datamanager.example.toml datamanager.toml    # set roots and db_path
+.venv/bin/dm scan --index --embed
+.venv/bin/dm serve                              # http://127.0.0.1:8823
+```
 
+See [docs/DEPLOY.md](docs/DEPLOY.md) for the Proxmox deployment.
+
+### What it does
+
+```bash
 # Tier 1 — a value with a citation, no LLM
 dm get gross_salary --where tax_year=2023
 dm get expiry_date
-dm agg gross_salary sum                   # total + every contributing document
+dm agg amount sum --where merchant=Costco     # total + every contributing doc
 
-# Discovered vocabulary — no schema was declared
+# Events — things that happened, whatever document recorded them
+dm events --entity "Alaska Airlines" --last
+
+# Search — keyword and semantic, fused deterministically
+dm search "sprinkler valve" --explain          # finds "irrigation solenoid"
+
+# Tier 2 — evidence for an LLM to reason over, never a verdict
+dm ask "which card is best at Costco" --entity Costco --json
+
+# Vocabulary discovered from your documents, not declared
 dm keys
 dm values tax_year
 
-dm search "sprinkler valve" --explain     # full text, with ranking signals
-dm correct 12 gross_salary 92000.00       # outranks extractors, survives reindex
-dm status
+# Corrections outrank every extractor, permanently
+dm correct 12 gross_salary 92000.00
+dm backup /mnt/nas/backups/human-layer.json    # the irreplaceable part
+
+dm serve            # web UI + REST API
+dm-mcp index.db     # 11 typed tools for an agent
 ```
 
-What a direct answer looks like:
+### Formats
 
-```
-$ dm get gross_salary --where tax_year=2023
-gross_salary: 91500.0 USD
-  source: W2_2023_ACME.txt (/Volumes/NAS/tax/W2_2023_ACME.txt)
-  via:    template (confidence 1.00)
-```
+PDF (text layer, OCR when scanned), images and screenshots (OCR), DOCX, XLSX,
+CSV/TSV, EML, Markdown, plain text. Anything unrecognised is indexed by
+filename rather than rejected, and photos additionally carry EXIF tags.
 
-The year and the salary were bound into one record at ingest, while the whole
-document was in view — so constraining on one and reading the other can never
-cross documents.
-
-Handles PDF (text layer, OCR flagged when absent), DOCX, XLSX, CSV/TSV, EML,
-Markdown, plain text; unknown formats fall back to filename indexing rather
-than being rejected. Scanned PDFs stay findable by name and are marked
-`partial` so pending OCR is visible, never silently missing.
+| Milestone | |
+|---|---|
+| M1 Floor — scanner, extraction, passages, keyword search | ✅ |
+| M2 Records — bound facts, Tier 1 answers, corrections | ✅ |
+| M3 Entities and events | ✅ |
+| M4 REST API, web UI, MCP server | ✅ |
+| M5 Semantic search with RRF fusion | ✅ |
+| M6 LLM gap-filling for prose | ✅ |
+| M7 Aggregation and Tier 2 evidence | ✅ |
+| M8 Photos — EXIF, tags, face clusters | ✅ |
+| M9 Hardening — backup, restore, reproducibility | ✅ |
