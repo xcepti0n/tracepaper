@@ -33,6 +33,8 @@ DEFAULT_VANISH_GUARD = 0.5
 
 @dataclass(frozen=True)
 class Config:
+    # Where the index is written. Kept separate from the scanned roots so the
+    # source tree stays strictly read-only (NFR-7).
     db_path: Path = Path("data/index.db")
     roots: tuple[Path, ...] = ()
     excludes: tuple[str, ...] = DEFAULT_EXCLUDES
@@ -42,6 +44,18 @@ class Config:
     follow_symlinks: bool = False
     passage_target_chars: int = 1200
     passage_overlap_chars: int = 150
+
+    # LLM gap-filling at ingest (M6). Off unless explicitly enabled.
+    llm_enabled: bool = False
+    llm_endpoint: str = "http://localhost:11434"
+    llm_model: str = "llama3.2"
+    llm_timeout: int = 120
+    # Only documents yielding fewer than this many fields go to the model, so
+    # the expensive layer runs on the documents that actually need it.
+    llm_min_fields: int = 3
+
+    embed_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+
     extra: dict = field(default_factory=dict)
 
     @staticmethod
@@ -71,5 +85,18 @@ class Config:
                     "passage_overlap_chars"):
             if key in scan:
                 updates[key] = scan[key]
+
+        llm = data.get("llm", {})
+        for toml_key, cfg_key in (("enabled", "llm_enabled"),
+                                  ("endpoint", "llm_endpoint"),
+                                  ("model", "llm_model"),
+                                  ("timeout", "llm_timeout"),
+                                  ("min_fields", "llm_min_fields")):
+            if toml_key in llm:
+                updates[cfg_key] = llm[toml_key]
+
+        semantic = data.get("semantic", {})
+        if "model" in semantic:
+            updates["embed_model"] = semantic["model"]
 
         return replace(cfg, **updates, extra=data)

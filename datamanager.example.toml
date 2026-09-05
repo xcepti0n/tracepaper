@@ -1,0 +1,65 @@
+# DataManager configuration.
+#
+# Copy to datamanager.toml and edit. Every value shown is the default, so you
+# only need the lines you actually change.
+
+[index]
+# Where the index lives. This is the ONLY place DataManager writes.
+#
+# Keep it on a different path from the scanned roots. On a Synology, that means
+# a separate share or folder -- the source tree is opened read-only and is
+# never modified, moved, or renamed (NFR-7).
+#
+# Do not put this on an SMB/NFS mount: SQLite is unreliable over network
+# filesystems under concurrent access. Local disk on the machine running the
+# service, backed up to the NAS.
+db_path = "/var/lib/datamanager/index.db"
+
+[scan]
+# Folders to index, read-only. Multiple roots are fine.
+roots = ["/mnt/nas/documents"]
+
+# Names skipped anywhere in the tree. Synology and macOS scatter these
+# everywhere and none of them are content.
+excludes = ["@eaDir", "#recycle", "#snapshot", ".DS_Store", ".Trashes",
+            ".Spotlight-V100", ".fseventsd", "__MACOSX", ".git", "@tmp",
+            "desktop.ini", "Thumbs.db"]
+
+# Files larger than this are skipped (bytes). 512 MB.
+max_file_bytes = 536870912
+
+# A file must be missing from this many consecutive scans before it is
+# soft-deleted, so one bad scan cannot empty the index.
+miss_threshold = 3
+
+# A scan aborts rather than soft-deleting if fewer than this fraction of known
+# paths are still visible. Catches an unmounted share.
+vanish_guard = 0.5
+
+follow_symlinks = false
+
+# Passage size for search. Larger keeps more context per hit; smaller makes
+# hits more precise.
+passage_target_chars = 1200
+passage_overlap_chars = 150
+
+[semantic]
+# Embedding model for semantic search. Changing this is a re-index, never a
+# migration: vectors are stored tagged with the model that produced them.
+model = "sentence-transformers/all-MiniLM-L6-v2"
+
+[llm]
+# Optional gap-filling for free prose -- a contractor's quote in an email, a
+# letter, meeting notes -- where no `Label: value` pattern exists.
+#
+# Used at INGEST ONLY. Never called at query time, so turning this off changes
+# no search result. Leave it disabled and everything still works; you simply
+# get fewer structured fields from prose documents.
+enabled = false
+endpoint = "http://localhost:11434"
+model = "llama3.2"
+timeout = 120
+
+# Only documents yielding fewer than this many fields go to the model, so the
+# expensive layer runs on the documents that actually need it.
+min_fields = 3

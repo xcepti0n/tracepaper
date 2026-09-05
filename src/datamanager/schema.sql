@@ -245,6 +245,32 @@ CREATE TABLE IF NOT EXISTS tags (
 
 CREATE INDEX IF NOT EXISTS idx_tags_ns ON tags(namespace, value);
 
+-- ---------------------------------------------------------------- photos
+-- Face clusters (FR-11). A cluster is named once by hand and that name then
+-- applies to every photo matched to it, past and future -- human-authored
+-- data that survives any re-run of the photo pipeline.
+
+CREATE TABLE IF NOT EXISTS face_clusters (
+    cluster_id INTEGER PRIMARY KEY,
+    name       TEXT,
+    centroid   BLOB,
+    face_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS faces (
+    id         INTEGER PRIMARY KEY,
+    item_id    INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    cluster_id INTEGER REFERENCES face_clusters(cluster_id) ON DELETE SET NULL,
+    embedding  BLOB,
+    bbox       TEXT,
+    confidence REAL NOT NULL DEFAULT 1.0,
+    model_id   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_faces_item    ON faces(item_id);
+CREATE INDEX IF NOT EXISTS idx_faces_cluster ON faces(cluster_id);
+
 -- ------------------------------------------------------------------ jobs
 
 CREATE TABLE IF NOT EXISTS jobs (

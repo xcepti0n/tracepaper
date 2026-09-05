@@ -540,12 +540,16 @@ EXTRACTORS: list[Extractor] = [
 ]
 
 
-def extract_records(text: str, title: str = "") -> list[Record]:
+def extract_records(text: str, title: str = "", *,
+                    llm_config=None, min_fields: int = 3) -> list[Record]:
     """Run every matching extractor over the whole document.
 
     Records from higher-precedence sources win per key; lower-precedence
     extractors only fill gaps. Nothing is discarded silently -- a lower-ranked
     record keeps any key its betters did not supply.
+
+    The LLM layer (M6) runs last and only when the deterministic layers came up
+    thin, so the expensive path is reserved for prose that needs it.
     """
     if not text.strip():
         return []
@@ -562,7 +566,18 @@ def extract_records(text: str, title: str = "") -> list[Record]:
             log.exception("extractor %r failed on %r", extractor.name, title)
             continue
 
-    return _merge(produced)
+    merged = _merge(produced)
+
+    # Free prose yields little or nothing above. Ask the model only then.
+    harvested = sum(len(r.fields) for r in merged)
+    if llm_config is not None and harvested < min_fields:
+        try:
+            from . import llm
+            merged = _merge(produced + llm.extract(text, llm_config))
+        except Exception:
+            log.exception("LLM extraction failed on %r", title)
+
+    return merged
 
 
 def _merge(records: list[Record]) -> list[Record]:

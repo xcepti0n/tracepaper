@@ -16,6 +16,7 @@ from .. import vocabulary
 from ..config import Config
 from ..db import transaction, utcnow
 from ..extract import passages as passage_split
+from ..extract import photos as photo_extract
 from ..extract import records as record_extract
 from ..extract import text as text_extract
 
@@ -32,18 +33,27 @@ class IndexResult:
     records: int = 0
     fields: int = 0
     events: int = 0
+    tags: int = 0
 
     def summary(self) -> str:
         return (f"processed={self.processed} indexed={self.indexed} "
                 f"partial={self.partial} failed={self.failed} "
                 f"passages={self.passages} records={self.records} "
-                f"fields={self.fields} events={self.events}")
+                f"fields={self.fields} events={self.events} tags={self.tags}")
 
 
 class Indexer:
     def __init__(self, conn: sqlite3.Connection, cfg: Config):
         self.conn = conn
         self.cfg = cfg
+
+    def _llm_config(self):
+        """The LLM gap-filler config, or None when disabled."""
+        if not self.cfg.llm_enabled:
+            return None
+        from ..extract.llm import LlmConfig
+        return LlmConfig(endpoint=self.cfg.llm_endpoint, model=self.cfg.llm_model,
+                         timeout=self.cfg.llm_timeout, enabled=True)
 
     def run_pending(self, limit: int | None = None) -> IndexResult:
         """Process queued extract_text jobs."""
@@ -143,7 +153,9 @@ class Indexer:
         title = path.name
         # Records are extracted from the WHOLE document, before any splitting:
         # binding related facts is the entire point (FR-3).
-        found = record_extract.extract_records(extracted.text, title)
+        found = record_extract.extract_records(
+            extracted.text, title, llm_config=self._llm_config(),
+            min_fields=self.cfg.llm_min_fields)
 
         with transaction(self.conn) as conn:
             version = self._open_version(conn, item_id, extracted.text)
@@ -151,6 +163,15 @@ class Indexer:
             counts = self._replace_records(conn, item_id, version, found,
                                            extracted.pages)
             derived = event_derive.derive_for_item(conn, item_id)
+
+            # Photos also carry derived tags: EXIF is exact and free (FR-11).
+            tagged = 0
+            if photo_extract.is_photo(path):
+                conn.execute("UPDATE items SET kind = 'photo' WHERE id = ?",
+                             (item_id,))
+                tagged = photo_extract.store_tags(
+                    conn, item_id, photo_extract.extract_tags(path))
+
             conn.execute(
                 "UPDATE items SET mime = ?, indexed_at = ?, enriched_at = ?, "
                 "extraction_status = ? WHERE id = ?",
@@ -162,6 +183,7 @@ class Indexer:
         result.records += counts[0]
         result.fields += counts[1]
         result.events += derived
+        result.tags += tagged
         if extracted.note:
             log.info("item %s (%s): %s", item_id, path.name, extracted.note)
         return extracted.status
@@ -186,7 +208,9 @@ class Indexer:
             target_chars=self.cfg.passage_target_chars,
             overlap_chars=self.cfg.passage_overlap_chars,
         )
-        found = record_extract.extract_records(row["text"] or "", title)
+        found = record_extract.extract_records(
+            row["text"] or "", title, llm_config=self._llm_config(),
+            min_fields=self.cfg.llm_min_fields)
 
         with transaction(self.conn) as conn:
             self._replace_passages(conn, item_id, int(row["version"]), parts, title)

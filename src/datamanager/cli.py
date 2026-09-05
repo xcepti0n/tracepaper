@@ -20,10 +20,11 @@ import logging
 import sys
 from pathlib import Path
 
-from . import corrections, embed, entities, events, notes, vocabulary
+from . import backup, corrections, embed, entities, events, notes, vocabulary
 from .config import Config
 from .db import connect
 from .index.indexer import Indexer
+from .query.evidence import EvidenceQuery
 from .query.fields import FieldQuery
 from .query.search import SearchEngine
 from .scan.scanner import ScanAborted, Scanner
@@ -95,6 +96,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("corrections", help="list every hand-corrected value")
 
+    p_ask = sub.add_parser(
+        "ask", help="gather evidence for a question (Tier 2 — no answer, just evidence)")
+    p_ask.add_argument("question", nargs="+")
+    p_ask.add_argument("--entity", help="focus on a merchant, employer, airline")
+    p_ask.add_argument("--key", action="append", default=[],
+                       help="include this field, repeatable")
+    p_ask.add_argument("-n", "--limit", type=int, default=8)
+    p_ask.add_argument("--json", action="store_true",
+                       help="machine-readable, for an agent to reason over")
+
     p_events = sub.add_parser("events", help="things that happened, with evidence")
     p_events.add_argument("--type", dest="event_type",
                           help="flight, purchase, payment, income, ...")
@@ -117,7 +128,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p_vocab.add_argument("--merge", nargs=2, metavar=("FROM_KEY", "TO_KEY"),
                          help="merge one key into another, rewriting stored rows")
 
+    p_backup = sub.add_parser(
+        "backup", help="export the human-authored layer (the only irreplaceable state)")
+    p_backup.add_argument("path", type=Path)
+    p_backup.add_argument("--restore", action="store_true",
+                          help="restore from this file instead of writing it")
+
     sub.add_parser("status", help="index health")
+
+    p_serve = sub.add_parser("serve", help="run the web UI and REST API")
+    p_serve.add_argument("--host", default="127.0.0.1",
+                         help="0.0.0.0 to reach it from other machines")
+    p_serve.add_argument("--port", type=int, default=8823)
+    p_serve.add_argument("--reload", action="store_true")
 
     p_show = sub.add_parser("show", help="show one item")
     p_show.add_argument("item_id", type=int)
@@ -176,12 +199,18 @@ def _dispatch(args, cfg: Config, conn) -> int:
         return _cmd_correct(args, cfg, conn)
     if args.command == "corrections":
         return _cmd_corrections(conn)
+    if args.command == "ask":
+        return _cmd_ask(args, conn)
     if args.command == "events":
         return _cmd_events(args, conn)
     if args.command == "entities":
         return _cmd_entities(args, conn)
     if args.command == "vocab":
         return _cmd_vocab(args, conn)
+    if args.command == "serve":
+        return _cmd_serve(args, cfg, conn)
+    if args.command == "backup":
+        return _cmd_backup(args, conn)
     if args.command == "status":
         return _cmd_status(conn)
     if args.command == "show":
@@ -392,6 +421,52 @@ def _cmd_corrections(conn) -> int:
     return 0
 
 
+def _cmd_ask(args, conn) -> int:
+    question = " ".join(args.question)
+    evidence = EvidenceQuery(conn).gather(
+        question, entity=args.entity, keys=args.key, limit=args.limit)
+
+    if args.json:
+        import json
+        print(json.dumps(evidence.as_dict(), indent=2))
+        return 0
+
+    if evidence.is_empty:
+        print("no evidence found")
+        return 0
+
+    print(f"evidence for: {question}\n")
+    if evidence.entities:
+        print(f"entities: {', '.join(evidence.entities)}\n")
+
+    if evidence.facts:
+        print("facts:")
+        for fact in evidence.facts:
+            unit = f" {fact.unit}" if fact.unit else ""
+            print(f"  {fact.key}: {fact.value}{unit}")
+            print(f"    {fact.citation()} [{fact.source}]")
+        print()
+
+    if evidence.events:
+        print("events:")
+        for event in evidence.events:
+            print(f"  {event.date or '—'}  {event.detail}")
+            print(f"    {event.citation()}")
+        print()
+
+    if evidence.passages:
+        print("passages:")
+        for passage in evidence.passages:
+            print(f"  {passage.detail}")
+            print(f"    {passage.citation()}")
+        print()
+
+    # The engine returns evidence, never a verdict. The reasoning step belongs
+    # to the caller, and that boundary is what keeps results reproducible.
+    print("DataManager returns evidence, not conclusions — reason over the above.")
+    return 0
+
+
 def _cmd_events(args, conn) -> int:
     limit = 1 if args.last else args.limit
     rows = events.query(conn, event_type=args.event_type, entity=args.entity,
@@ -479,6 +554,55 @@ def _cmd_vocab(args, conn) -> int:
         pin = " (pinned)" if row["pinned_by_user"] else ""
         arrow = "" if row["key"] == row["canonical_key"] else f" → {row['canonical_key']}"
         print(f"  {row['key']}{arrow}  [{row['occurrences']}]{pin}")
+    return 0
+
+
+def _cmd_serve(args, cfg: Config, conn) -> int:
+    try:
+        import uvicorn
+    except ImportError:
+        print("fastapi and uvicorn are required: pip install -e '.[web]'",
+              file=sys.stderr)
+        return 1
+
+    from .api import create_app
+
+    # The serving process opens its own per-request connections.
+    conn.close()
+
+    print(f"DataManager → http://{args.host}:{args.port}")
+    print(f"index: {cfg.db_path}")
+    if args.host == "127.0.0.1":
+        print("(bind --host 0.0.0.0 to reach it from other machines)")
+
+    uvicorn.run(create_app(cfg), host=args.host, port=args.port,
+                log_level="warning")
+    return 0
+
+
+def _cmd_backup(args, conn) -> int:
+    if args.restore:
+        applied = backup.restore_backup(conn, args.path)
+        print(f"restored from {args.path}:")
+        for name, count in applied.items():
+            if count:
+                print(f"  {name}: {count}")
+        if applied.get("unmatched"):
+            print(f"\n{applied['unmatched']} correction(s) had no matching "
+                  f"document — scan first, then restore again.")
+        return 0
+
+    counts = backup.write_backup(conn, args.path)
+    total = sum(counts.values())
+    print(f"wrote {args.path}")
+    for name, count in counts.items():
+        if count:
+            print(f"  {name}: {count}")
+    if total == 0:
+        print("  (nothing authored by hand yet)")
+    else:
+        print("\nEverything else regenerates from the source folder. "
+              "Keep this file safe.")
     return 0
 
 

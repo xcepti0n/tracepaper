@@ -1,0 +1,284 @@
+"""REST API, MCP tools and Tier 2 evidence (FR-12, requirements §3)."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from datamanager.index.indexer import Indexer
+from datamanager.mcp_server import TOOLS, Handler
+from datamanager.query.evidence import EvidenceQuery
+from datamanager.scan.scanner import Scanner
+
+W2 = """Form W-2 Wage and Tax Statement
+Tax Year: 2023
+Employer name: ACME Corporation
+1 Wages, tips, other compensation 91500.00
+"""
+
+FLIGHT = """From: noreply@alaskaair.com
+Subject: Alaska Airlines itinerary
+Confirmation code: ABC123
+Flight AS 1234, SEA to PDX
+Departure date: 2023-04-15
+"""
+
+
+@pytest.fixture
+def populated(conn, cfg, nas):
+    (nas / "w2.txt").write_text(W2)
+    (nas / "flight.eml").write_text(FLIGHT)
+    Scanner(conn, cfg).scan(nas)
+    Indexer(conn, cfg).run_pending()
+    return conn
+
+
+@pytest.fixture
+def client(populated, cfg):
+    fastapi = pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from datamanager.api import create_app
+
+    return TestClient(create_app(cfg))
+
+
+# ------------------------------------------------------------------- REST
+
+def test_ui_renders(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "DataManager" in response.text
+
+
+def test_api_search(client):
+    data = client.get("/api/search",
+                      params={"q": "wages", "semantic": False}).json()
+    assert data["total"] >= 1
+    assert data["hits"][0]["title"] == "w2.txt"
+    assert "signals" in data["hits"][0], "ranking must stay inspectable"
+
+
+def test_api_get_with_constraint(client):
+    """The binding property, over HTTP."""
+    data = client.get("/api/get", params={"key": "gross_salary",
+                                          "where": ["tax_year=2023"]}).json()
+    assert data["found"]
+    assert data["values"][0]["value"] == 91500.0
+    assert data["values"][0]["citation"]
+
+
+def test_api_get_missing_key(client):
+    data = client.get("/api/get", params={"key": "no_such_field"}).json()
+    assert data["found"] is False
+
+
+def test_api_aggregate_lists_contributors(client):
+    data = client.get("/api/aggregate",
+                      params={"key": "gross_salary", "op": "sum"}).json()
+    assert data["result"] == 91500.0
+    assert data["contributing"], "a total must be auditable"
+
+
+def test_api_events(client):
+    data = client.get("/api/events", params={"entity": "Alaska Airlines"}).json()
+    assert data["events"]
+    assert data["events"][0]["evidence"], "an event must cite its documents"
+
+
+def test_api_item_detail(client):
+    item_id = client.get("/api/search",
+                         params={"q": "wages", "semantic": False}
+                         ).json()["hits"][0]["item_id"]
+    data = client.get(f"/api/items/{item_id}").json()
+    assert data["records"]
+    assert data["text"]
+
+
+def test_api_unknown_item_is_404(client):
+    assert client.get("/api/items/99999").status_code == 404
+
+
+def test_api_correction_round_trip(client):
+    item_id = client.get("/api/search",
+                         params={"q": "wages", "semantic": False}
+                         ).json()["hits"][0]["item_id"]
+
+    posted = client.post("/api/correct", json={
+        "item_id": item_id, "key": "gross_salary", "value": "92000"})
+    assert posted.json()["ok"]
+
+    data = client.get("/api/get", params={"key": "gross_salary"}).json()
+    assert data["values"][0]["source"] == "human"
+
+
+def test_api_note_creation(client):
+    created = client.post("/api/notes", json={
+        "title": "Test note", "text": "irrigation solenoid replaced"}).json()
+    assert created["ok"]
+
+    found = client.get("/api/search",
+                       params={"q": "irrigation solenoid",
+                               "semantic": False}).json()
+    assert found["total"] >= 1
+
+
+def test_api_status_reports_pending(client):
+    data = client.get("/api/status").json()
+    assert data["items"] >= 2
+    assert "pending" in data, "pending work must be visible (NFR-4)"
+
+
+# -------------------------------------------------------------------- MCP
+
+def test_every_tool_has_a_schema():
+    for tool in TOOLS:
+        assert tool["name"] and tool["description"]
+        assert tool["inputSchema"]["type"] == "object"
+
+
+def test_mcp_get_value(populated, cfg):
+    result = Handler(cfg).call("get_value", {"key": "gross_salary",
+                                             "where": {"tax_year": 2023}})
+    assert result["found"]
+    assert result["values"][0]["value"] == 91500.0
+
+
+def test_mcp_search(populated, cfg):
+    result = Handler(cfg).call("search", {"query": "wages", "semantic": False})
+    assert result["total"] >= 1
+
+
+def test_mcp_events(populated, cfg):
+    result = Handler(cfg).call("get_events", {"entity": "Alaska Airlines"})
+    assert result["events"]
+
+
+def test_mcp_list_keys(populated, cfg):
+    result = Handler(cfg).call("list_keys", {})
+    assert any(k["key"] == "gross_salary" for k in result["keys"])
+
+
+def test_mcp_unknown_tool_errors_cleanly(populated, cfg):
+    assert "error" in Handler(cfg).call("no_such_tool", {})
+
+
+def test_mcp_bad_arguments_do_not_crash(populated, cfg):
+    """A malformed call must return an error, never take the server down."""
+    result = Handler(cfg).call("get_value", {})
+    assert "error" in result
+
+
+def test_mcp_results_are_json_serialisable(populated, cfg):
+    """Every tool result crosses the wire as JSON."""
+    handler = Handler(cfg)
+    for name, args in [("search", {"query": "wages"}),
+                       ("get_value", {"key": "gross_salary"}),
+                       ("get_events", {}),
+                       ("list_keys", {}),
+                       ("gather_evidence", {"question": "acme"})]:
+        json.dumps(handler.call(name, args))
+
+
+# ----------------------------------------------------------------- Tier 2
+
+def test_evidence_gathering_returns_no_verdict(populated):
+    """Tier 2 hands back evidence; the reasoning belongs to the caller."""
+    evidence = EvidenceQuery(populated).gather("what do I know about ACME",
+                                               entity="ACME Corporation")
+    assert not evidence.is_empty
+    assert evidence.facts
+    payload = evidence.as_dict()
+    assert set(payload) == {"question", "entities", "facts", "events", "passages"}
+    assert "answer" not in payload and "conclusion" not in payload
+
+
+def test_evidence_is_reproducible(populated):
+    """NFR-2 extends to Tier 2: the same question, the same evidence."""
+    query = EvidenceQuery(populated)
+    runs = [json.dumps(query.gather("acme salary", entity="ACME Corporation",
+                                    semantic=False).as_dict())
+            for _ in range(3)]
+    assert all(run == runs[0] for run in runs)
+
+
+def test_evidence_facts_carry_citations(populated):
+    evidence = EvidenceQuery(populated).gather("acme", entity="ACME Corporation")
+    for fact in evidence.facts:
+        assert fact.citation()
+
+
+# ------------------------------------------------------------------ backup
+
+def test_human_layer_survives_a_rebuilt_index(populated, cfg, nas, tmp_path):
+    """NFR-6: everything else regenerates; this layer must be restorable.
+
+    Simulates the real disaster: the index is lost and rebuilt from the source
+    folder, where every row id differs.
+    """
+    from datamanager import backup, corrections, notes
+    from datamanager.db import connect
+    from datamanager.query.fields import FieldQuery
+
+    item_id = int(populated.execute(
+        "SELECT id FROM items WHERE title = 'w2.txt'").fetchone()["id"])
+    corrections.correct_field(populated, item_id, "gross_salary", "92000")
+    notes.create_note(populated, "Sprinkler repair", "irrigation solenoid")
+    Indexer(populated, cfg).run_pending()
+
+    backup_file = tmp_path / "human.json"
+    counts = backup.write_backup(populated, backup_file)
+    assert counts["corrections"] == 1
+    assert counts["notes"] == 1
+    populated.close()
+
+    rebuilt_path = tmp_path / "rebuilt.db"
+    rebuilt = connect(rebuilt_path)
+    rebuilt_cfg = replace(cfg, db_path=rebuilt_path)
+    Scanner(rebuilt, rebuilt_cfg).scan(nas)
+    Indexer(rebuilt, rebuilt_cfg).run_pending()
+
+    assert FieldQuery(rebuilt).get("gross_salary").best.value == 91500.0, \
+        "a fresh index starts from the extracted value"
+
+    applied = backup.restore_backup(rebuilt, backup_file)
+
+    assert applied["corrections"] == 1
+    best = FieldQuery(rebuilt).get("gross_salary").best
+    assert best.value == 92000.0, "the correction must come back"
+    assert best.source == "human"
+    assert rebuilt.execute(
+        "SELECT COUNT(*) AS n FROM items WHERE kind = 'note'"
+    ).fetchone()["n"] == 1
+    rebuilt.close()
+
+
+def test_backup_matches_documents_that_moved(populated, cfg, nas, tmp_path):
+    """A file that moved since the backup is still matched, by content hash."""
+    from datamanager import backup, corrections
+    from datamanager.db import connect
+    from datamanager.query.fields import FieldQuery
+
+    item_id = int(populated.execute(
+        "SELECT id FROM items WHERE title = 'w2.txt'").fetchone()["id"])
+    corrections.correct_field(populated, item_id, "gross_salary", "92000")
+    backup_file = tmp_path / "human.json"
+    backup.write_backup(populated, backup_file)
+    populated.close()
+
+    archive = nas / "archive"
+    archive.mkdir()
+    (nas / "w2.txt").rename(archive / "w2_filed.txt")
+
+    rebuilt_path = tmp_path / "rebuilt.db"
+    rebuilt = connect(rebuilt_path)
+    rebuilt_cfg = replace(cfg, db_path=rebuilt_path)
+    Scanner(rebuilt, rebuilt_cfg).scan(nas)
+    Indexer(rebuilt, rebuilt_cfg).run_pending()
+
+    assert backup.restore_backup(rebuilt, backup_file)["corrections"] == 1
+    assert FieldQuery(rebuilt).get("gross_salary").best.value == 92000.0
+    rebuilt.close()

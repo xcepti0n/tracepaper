@@ -33,12 +33,19 @@ ocr = [
 semantic = [
     "sentence-transformers>=3.0",
 ]
+# Web UI and REST API.
+web = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+]
 dev = [
     "pytest>=8.0",
+    "httpx>=0.27",
 ]
 
 [project.scripts]
 dm = "datamanager.cli:main"
+dm-mcp = "datamanager.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
