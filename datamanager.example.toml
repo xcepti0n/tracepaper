@@ -57,7 +57,7 @@ model = "sentence-transformers/all-MiniLM-L6-v2"
 # get fewer structured fields from prose documents.
 enabled = false
 endpoint = "http://localhost:11434"
-model = "llama3.2"
+model = "gemma4:e4b-mlx"     # MLX build; small and fast on Apple Silicon
 timeout = 120
 
 # Only documents yielding fewer than this many fields go to the model, so the

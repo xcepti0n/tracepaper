@@ -48,7 +48,7 @@ class Config:
     # LLM gap-filling at ingest (M6). Off unless explicitly enabled.
     llm_enabled: bool = False
     llm_endpoint: str = "http://localhost:11434"
-    llm_model: str = "llama3.2"
+    llm_model: str = "gemma4:e4b-mlx"
     llm_timeout: int = 120
     # Only documents yielding fewer than this many fields go to the model, so
     # the expensive layer runs on the documents that actually need it.

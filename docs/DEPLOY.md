@@ -182,7 +182,7 @@ stopping Ollama changes no search result.
 [llm]
 enabled = true
 endpoint = "http://mac.local:11434"
-model = "llama3.2"
+model = "gemma4:e4b-mlx"
 ```
 
 ---

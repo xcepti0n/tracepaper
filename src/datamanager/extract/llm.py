@@ -35,7 +35,7 @@ from .records import Field, Record, normalize_key, parse_amount, parse_date
 log = logging.getLogger(__name__)
 
 DEFAULT_ENDPOINT = "http://localhost:11434"
-DEFAULT_MODEL = "llama3.2"
+DEFAULT_MODEL = "gemma4:e4b-mlx"
 DEFAULT_TIMEOUT = 120
 
 # Prose is sent whole so facts stay bound (FR-3), but a very long document is
