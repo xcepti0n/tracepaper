@@ -295,6 +295,150 @@ class PassportExtractor(Extractor):
                        source=self.source, confidence=0.9)]
 
 
+class FlightExtractor(Extractor):
+    """Flight confirmations (template layer).
+
+    Airlines vary wildly in layout, so this matches on the facts a booking
+    always carries -- a confirmation code, a flight number, a route -- rather
+    than on any one carrier's format.
+    """
+
+    name = "flight"
+    source = "template"
+
+    _AIRLINES = {
+        "alaska": "Alaska Airlines", "alaskaair": "Alaska Airlines",
+        "united": "United Airlines", "delta": "Delta Air Lines",
+        "american": "American Airlines", "southwest": "Southwest Airlines",
+        "jetblue": "JetBlue", "lufthansa": "Lufthansa", "emirates": "Emirates",
+        "british airways": "British Airways", "air canada": "Air Canada",
+        "air india": "Air India", "indigo": "IndiGo", "klm": "KLM",
+        "qatar": "Qatar Airways", "singapore airlines": "Singapore Airlines",
+    }
+
+    def matches(self, text: str, title: str) -> bool:
+        blob = f"{title}\n{text}".lower()
+        signals = (
+            "confirmation" in blob or "itinerary" in blob or "boarding pass" in blob,
+            bool(re.search(r"\bflight\b", blob)),
+            bool(re.search(r"\b[A-Z]{3}\b\s*(?:to|-|→)\s*\b[A-Z]{3}\b", text)),
+        )
+        return sum(bool(s) for s in signals) >= 2
+
+    def extract(self, text: str, title: str) -> list[Record]:
+        fields: list[Field] = []
+        blob = f"{title}\n{text}"
+
+        for needle, canonical in self._AIRLINES.items():
+            if needle in blob.lower():
+                fields.append(Field(key="airline", value_text=canonical))
+                break
+
+        m = re.search(r"(?:confirmation|booking|reservation)\s*"
+                      r"(?:code|number|no\.?|#|ref(?:erence)?)?\s*[:\-]?\s*"
+                      r"\b([A-Z0-9]{5,8})\b", text, re.IGNORECASE)
+        if m:
+            fields.append(Field(key="confirmation_number", value_text=m.group(1),
+                                char_start=m.start(1), char_end=m.end(1)))
+
+        m = re.search(r"\bflight\s*(?:number|no\.?|#)?\s*[:\-]?\s*"
+                      r"\b([A-Z]{2}\s?\d{1,4})\b", text, re.IGNORECASE)
+        if m:
+            fields.append(Field(key="flight_number",
+                                value_text=m.group(1).replace(" ", ""),
+                                char_start=m.start(1), char_end=m.end(1)))
+
+        m = re.search(r"\b([A-Z]{3})\b\s*(?:to|-|→|–)\s*\b([A-Z]{3})\b", text)
+        if m:
+            fields.append(Field(key="origin", value_text=m.group(1)))
+            fields.append(Field(key="destination", value_text=m.group(2)))
+            fields.append(Field(key="route",
+                                value_text=f"{m.group(1)}-{m.group(2)}"))
+
+        for key, label in (("departure_date", r"depart(?:ure|s|ing)?"),
+                           ("return_date", r"return(?:ing)?")):
+            m = _labelled(text, rf"(?:{label})(?:\s*date)?")
+            if m and m.group(1):
+                iso = parse_date(m.group(1))
+                if iso:
+                    fields.append(Field(key=key, value_text=m.group(1).strip(),
+                                        value_date=iso,
+                                        char_start=m.start(1), char_end=m.end(1)))
+
+        # A booking with no date and no code is not a booking.
+        keys = {f.key for f in fields}
+        if not (keys & {"confirmation_number", "flight_number"}):
+            return []
+        return [Record(record_type="flight_booking", fields=fields,
+                       source=self.source, confidence=0.85)]
+
+
+class ReceiptExtractor(Extractor):
+    """Purchase receipts and invoices (template layer)."""
+
+    name = "receipt"
+    source = "template"
+
+    def matches(self, text: str, title: str) -> bool:
+        blob = f"{title}\n{text}".lower()
+        has_total = bool(re.search(r"\b(?:total|amount due|balance due|grand total)\b",
+                                   blob))
+        has_marker = bool(re.search(r"\b(?:receipt|invoice|order|purchase|"
+                                    r"transaction|subtotal|tax)\b", blob))
+        return has_total and has_marker
+
+    def extract(self, text: str, title: str) -> list[Record]:
+        fields: list[Field] = []
+
+        # Prefer the most specific total label present.
+        for key, label in (("amount", r"(?:grand\s*total|total\s*due|balance\s*due)"),
+                           ("amount", r"\btotal\b"),
+                           ("subtotal", r"\bsub[\s-]?total\b"),
+                           ("tax", r"\b(?:tax|vat|gst)\b")):
+            if any(f.key == key for f in fields):
+                continue
+            m = re.search(rf"{label}\s*[:\-]?\s*([$€£₹]?\s*[\d,]+\.?\d{{0,2}})",
+                          text, re.IGNORECASE)
+            if m:
+                value, unit = parse_amount(m.group(1))
+                if value is not None:
+                    fields.append(Field(key=key, value_text=m.group(1).strip(),
+                                        value_num=value, unit=unit,
+                                        char_start=m.start(1), char_end=m.end(1)))
+
+        for key, label in (("invoice_number",
+                            r"(?:invoice|receipt)\s*(?:number|no\.?|#|id)"),
+                           ("order_number", r"order\s*(?:number|no\.?|#|id)")):
+            m = _labelled(text, label, r"([A-Za-z0-9][A-Za-z0-9\-]{3,24})")
+            if m and m.group(1):
+                fields.append(Field(key=key, value_text=m.group(1).strip(),
+                                    char_start=m.start(1), char_end=m.end(1)))
+
+        m = _labelled(text, r"(?:date|date\s*of\s*(?:purchase|service|issue))")
+        if m and m.group(1):
+            iso = parse_date(m.group(1))
+            if iso:
+                fields.append(Field(key="document_date", value_text=m.group(1).strip(),
+                                    value_date=iso,
+                                    char_start=m.start(1), char_end=m.end(1)))
+
+        m = _labelled(text, r"(?:merchant|vendor|store|sold\s*by|payee)")
+        if m and m.group(1):
+            fields.append(Field(key="merchant", value_text=m.group(1).strip(),
+                                char_start=m.start(1), char_end=m.end(1)))
+        else:
+            # Receipts usually lead with the merchant name on the first line.
+            first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+            if first and len(first) <= 60 and not re.search(r"\d{3,}", first):
+                fields.append(Field(key="merchant", value_text=first,
+                                    confidence=0.5))
+
+        if not any(f.key == "amount" for f in fields):
+            return []
+        return [Record(record_type="receipt", fields=fields,
+                       source=self.source, confidence=0.8)]
+
+
 class GenericLabelExtractor(Extractor):
     """Open-vocabulary fallback (FR-4).
 
@@ -390,6 +534,8 @@ def normalize_key(label: str) -> str:
 EXTRACTORS: list[Extractor] = [
     W2Extractor(),
     PassportExtractor(),
+    FlightExtractor(),
+    ReceiptExtractor(),
     GenericLabelExtractor(),
 ]
 

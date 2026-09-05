@@ -20,7 +20,7 @@ import logging
 import sys
 from pathlib import Path
 
-from . import corrections, notes
+from . import corrections, entities, events, notes, vocabulary
 from .config import Config
 from .db import connect
 from .index.indexer import Indexer
@@ -84,6 +84,28 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("corrections", help="list every hand-corrected value")
 
+    p_events = sub.add_parser("events", help="things that happened, with evidence")
+    p_events.add_argument("--type", dest="event_type",
+                          help="flight, purchase, payment, income, ...")
+    p_events.add_argument("--entity", help="Alaska Airlines, Costco, ...")
+    p_events.add_argument("--since", help="ISO date lower bound")
+    p_events.add_argument("--until", help="ISO date upper bound")
+    p_events.add_argument("--last", action="store_true",
+                          help="only the most recent match")
+    p_events.add_argument("-n", "--limit", type=int, default=20)
+
+    p_entities = sub.add_parser("entities", help="people, merchants, organizations")
+    p_entities.add_argument("name", nargs="?", help="look one up by any alias")
+    p_entities.add_argument("--type", dest="entity_type")
+    p_entities.add_argument("--merge", nargs=2, metavar=("SOURCE_ID", "TARGET_ID"),
+                            help="merge two entities permanently")
+
+    p_vocab = sub.add_parser("vocab", help="key vocabulary and merges")
+    p_vocab.add_argument("--suggest", action="store_true",
+                         help="show keys whose canonical form differs")
+    p_vocab.add_argument("--merge", nargs=2, metavar=("FROM_KEY", "TO_KEY"),
+                         help="merge one key into another, rewriting stored rows")
+
     sub.add_parser("status", help="index health")
 
     p_show = sub.add_parser("show", help="show one item")
@@ -141,6 +163,12 @@ def _dispatch(args, cfg: Config, conn) -> int:
         return _cmd_correct(args, cfg, conn)
     if args.command == "corrections":
         return _cmd_corrections(conn)
+    if args.command == "events":
+        return _cmd_events(args, conn)
+    if args.command == "entities":
+        return _cmd_entities(args, conn)
+    if args.command == "vocab":
+        return _cmd_vocab(args, conn)
     if args.command == "status":
         return _cmd_status(conn)
     if args.command == "show":
@@ -321,6 +349,96 @@ def _cmd_corrections(conn) -> int:
     return 0
 
 
+def _cmd_events(args, conn) -> int:
+    limit = 1 if args.last else args.limit
+    rows = events.query(conn, event_type=args.event_type, entity=args.entity,
+                        since=args.since, until=args.until, limit=limit)
+    if not rows:
+        print("no matching events")
+        print("\ntry: dm events            (everything)")
+        print("     dm entities          (which names are known)")
+        return 0
+
+    for row in rows:
+        when = row["occurred_on"] or "undated"
+        if row["occurred_precision"] == "year" and row["occurred_on"]:
+            when = row["occurred_on"][:4]
+        print(f"{when}  {row['title'] or row['event_type']}")
+
+        people = events.event_entities(conn, int(row["id"]))
+        if people:
+            joined = ", ".join(f"{p['canonical_name']} ({p['role']})" for p in people)
+            print(f"    {joined}")
+        # An event is only as good as the documents behind it (FR-5).
+        for ev in events.evidence(conn, int(row["id"])):
+            print(f"    evidence: {ev['title']}  [item {ev['item_id']}]")
+        print()
+    return 0
+
+
+def _cmd_entities(args, conn) -> int:
+    if args.merge:
+        source_id, target_id = int(args.merge[0]), int(args.merge[1])
+        entities.merge(conn, source_id, target_id)
+        print(f"merged entity {source_id} into {target_id} (permanent)")
+        return 0
+
+    if args.name:
+        found = entities.find(conn, args.name)
+        if not found:
+            print(f"no entity matching '{args.name}'")
+            return 0
+        for row in found:
+            print(f"[{row['id']}] {row['canonical_name']}  ({row['entity_type']})")
+            known = entities.aliases(conn, int(row["id"]))
+            if len(known) > 1:
+                print(f"    also known as: {', '.join(known)}")
+            evs = events.query(conn, entity=args.name, limit=10)
+            for ev in evs:
+                print(f"    {ev['occurred_on'] or '—'}  {ev['title']}")
+        return 0
+
+    rows = entities.list_all(conn, args.entity_type)
+    if not rows:
+        print("no entities yet — run: dm index")
+        return 0
+    for row in rows:
+        print(f"[{row['id']:>4}] {row['canonical_name']:<40} "
+              f"{row['entity_type']:<14} events={row['event_count']}")
+    return 0
+
+
+def _cmd_vocab(args, conn) -> int:
+    if args.merge:
+        moved = vocabulary.merge(conn, args.merge[0], args.merge[1])
+        print(f"merged '{args.merge[0]}' into '{args.merge[1]}' "
+              f"({moved} field(s) rewritten)")
+        return 0
+
+    if args.suggest:
+        rows = vocabulary.suggestions(conn)
+        if not rows:
+            print("no merge candidates")
+            return 0
+        print("keys whose canonical form differs (use: dm vocab --merge FROM TO)\n")
+        for key, canonical, count in rows:
+            print(f"  {key:<40} → {canonical:<30} seen {count}x")
+        return 0
+
+    rows = conn.execute(
+        "SELECT key, canonical_key, occurrences, pinned_by_user "
+        "FROM key_vocabulary ORDER BY occurrences DESC, key"
+    ).fetchall()
+    if not rows:
+        print("vocabulary is empty — run: dm index")
+        return 0
+    for row in rows:
+        pin = " (pinned)" if row["pinned_by_user"] else ""
+        arrow = "" if row["key"] == row["canonical_key"] else f" → {row['canonical_key']}"
+        print(f"  {row['key']}{arrow}  [{row['occurrences']}]{pin}")
+    return 0
+
+
 def _cmd_status(conn) -> int:
     rows = conn.execute(
         "SELECT extraction_status, COUNT(*) AS n FROM items "
@@ -350,6 +468,9 @@ def _cmd_status(conn) -> int:
         print(f"          {row['extraction_status']}: {row['n']}")
     print(f"passages: {passages}")
     print(f"records:  {records} ({fields} fields, {human} hand-corrected)")
+    event_count = conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"]
+    entity_count = conn.execute("SELECT COUNT(*) AS n FROM entities").fetchone()["n"]
+    print(f"events:   {event_count} across {entity_count} entities")
     if jobs:
         print("jobs:     " + ", ".join(f"{r['state']}={r['n']}" for r in jobs))
     if last_scan:

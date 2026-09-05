@@ -180,7 +180,10 @@ CREATE TABLE IF NOT EXISTS entity_aliases (
     alias     TEXT NOT NULL,
     alias_norm TEXT NOT NULL,
     source    TEXT NOT NULL,
-    UNIQUE (alias_norm, entity_id)
+    -- Keyed on the surface form: "Costco" and "COSTCO WHOLESALE #1234"
+    -- normalise alike but are both worth keeping, since they are what the UI
+    -- shows and what explains why two records matched.
+    UNIQUE (alias, entity_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_alias_norm ON entity_aliases(alias_norm);

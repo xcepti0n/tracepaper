@@ -11,6 +11,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import events as event_derive
 from .. import vocabulary
 from ..config import Config
 from ..db import transaction, utcnow
@@ -30,12 +31,13 @@ class IndexResult:
     passages: int = 0
     records: int = 0
     fields: int = 0
+    events: int = 0
 
     def summary(self) -> str:
         return (f"processed={self.processed} indexed={self.indexed} "
                 f"partial={self.partial} failed={self.failed} "
                 f"passages={self.passages} records={self.records} "
-                f"fields={self.fields}")
+                f"fields={self.fields} events={self.events}")
 
 
 class Indexer:
@@ -148,6 +150,7 @@ class Indexer:
             self._replace_passages(conn, item_id, version, parts, title)
             counts = self._replace_records(conn, item_id, version, found,
                                            extracted.pages)
+            derived = event_derive.derive_for_item(conn, item_id)
             conn.execute(
                 "UPDATE items SET mime = ?, indexed_at = ?, enriched_at = ?, "
                 "extraction_status = ? WHERE id = ?",
@@ -158,6 +161,7 @@ class Indexer:
         result.passages += len(parts)
         result.records += counts[0]
         result.fields += counts[1]
+        result.events += derived
         if extracted.note:
             log.info("item %s (%s): %s", item_id, path.name, extracted.note)
         return extracted.status
@@ -188,6 +192,7 @@ class Indexer:
             self._replace_passages(conn, item_id, int(row["version"]), parts, title)
             counts = self._replace_records(conn, item_id, int(row["version"]),
                                            found, None)
+            derived = event_derive.derive_for_item(conn, item_id)
             conn.execute(
                 "UPDATE items SET indexed_at = ?, enriched_at = ?, "
                 "extraction_status = 'complete' WHERE id = ?",
@@ -196,6 +201,7 @@ class Indexer:
         result.passages += len(parts)
         result.records += counts[0]
         result.fields += counts[1]
+        result.events += derived
         return "complete"
 
     @staticmethod
