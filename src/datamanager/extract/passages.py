@@ -34,7 +34,9 @@ def split(text: str, *, pages: list[str] | None = None,
     if not text.strip():
         return []
 
-    if pages and len(pages) > 1:
+    # Any paged source keeps page provenance, including a single-page PDF: a
+    # Tier 1 answer is a value *plus its citation*, and "page 1" is part of it.
+    if pages:
         return _split_paged(pages, target_chars, overlap_chars)
 
     blocks = _blocks(text, 0)

@@ -139,3 +139,17 @@ def test_headings_start_new_passages():
     joined = [p.text for p in parts]
     assert any("Salary" in t for t in joined)
     assert any("Deductions" in t for t in joined)
+
+
+def test_single_page_source_still_carries_page_number():
+    """A Tier 1 answer is a value plus its citation; 'page 1' is part of that."""
+    parts = passages.split("only page content here", pages=["only page content here"])
+    assert parts
+    assert all(p.page == 1 for p in parts)
+
+
+def test_plain_text_has_no_page_number():
+    """A .txt file has no pages; inventing one would be a false citation."""
+    parts = passages.split("some plain text\n\nanother block")
+    assert parts
+    assert all(p.page is None for p in parts)
