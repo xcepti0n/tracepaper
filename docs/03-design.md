@@ -45,12 +45,12 @@ unrecognized document types searchable (FR-7, NFR-9).
    ┌──────────────────┐                ┌────────────────────────────┐
    │ documents/photos │                │  Ingest Worker             │
    └────────┬─────────┘                │  ├─ text extract / OCR     │
-            │ watch + scan             │  ├─ whole-doc understanding│
+            │ periodic scan            │  ├─ whole-doc understanding│
             ▼                          │  ├─ record/event/entity    │
    ┌──────────────────────┐  claim job │  ├─ passage embeddings     │
    │ Proxmox (always on)  │◄───────────┤  └─ Ollama (LLM / VLM)     │
    │  ┌────────────────┐  │ write back └────────────────────────────┘
-   │  │ Watcher + Queue│  │                  (may be offline)
+   │  │ Scanner + Queue│  │                  (may be offline)
    │  ├────────────────┤  │
    │  │ Index (SQLite) │  │  records · events · entities
    │  │                │  │  passages · FTS5 · vectors
@@ -159,8 +159,10 @@ discover → hash → extract text → understand whole doc → records
                        └────────→ split passages ─────→ embed
 ```
 
-1. **Discover** — watcher (inotify/FSEvents) plus a nightly reconciliation scan.
-2. **Hash** — unchanged hash ends the job. Idempotent re-runs are free.
+1. **Discover** — periodic reconciliation scan (see §4.1). Filesystem watchers are not
+   usable: inotify/FSEvents do not propagate over SMB/NFS from a Synology NAS.
+2. **Hash** — content hash decides what actually changed; an unchanged hash ends the job.
+   Idempotent re-runs are free.
 3. **Text extract** — PDF text layer; OCR (Tesseract, VLM for hard scans) when the layer
    is empty or garbage; CSV/XLSX to normalized rows; DOCX; EML headers and body.
 4. **Whole-document understanding** — the layered extractor stack, over the **full
@@ -170,9 +172,17 @@ discover → hash → extract text → understand whole doc → records
      Exact, free, instant.
    - **Typed patterns** — dates, amounts, account tails, document numbers. Validated by
      type, not just matched.
-   - **LLM (Ollama)** — for anything the layers above did not cover. Prompted for
-     *extraction against a JSON shape*, never for judgment or ranking. Output failing
-     validation is discarded, not stored.
+   - **LLM** — for anything the layers above did not cover. Prompted for *extraction
+     against a JSON shape*, never for judgment or ranking. Output failing validation is
+     discarded, not stored.
+
+     Assumed available as an **HTTP endpoint** (Ollama on the Mac by default). The
+     extractor speaks to a small interface — `extract(text, shape) → JSON` — so the
+     endpoint can be swapped for another local server, a different model, or a cloud API
+     per-source without touching pipeline code. Handles varied document formats by
+     construction: it sees full text plus layout hints, not a per-type template, so an
+     unrecognized format still yields records (FR-4). If the endpoint is unreachable,
+     items stay `partial` and are retried — never blocking search (NFR-4).
 
    All four emit **records** with fields already bound together.
 5. **Entity linking** — resolve names in records against `entities`, creating or aliasing.
@@ -183,6 +193,47 @@ discover → hash → extract text → understand whole doc → records
 Steps 4–7 are independent jobs. Improving the LLM re-runs step 4 only; templates,
 patterns, human corrections, entity merges, and cluster names all survive untouched.
 That is NFR-1 as a schema property rather than a promise.
+
+### 4.1 Change detection on a Synology NAS
+
+The NAS is mounted read-only over SMB/NFS, where **filesystem event notifications do not
+propagate** — a watcher on the Proxmox host never fires. Discovery is therefore a
+**scheduled reconciliation scan**, and it is the only discovery mechanism.
+
+`file_state` tracks what the scanner last saw per path: `uri`, `size_bytes`, `mtime`,
+`content_hash`, `last_seen_scan`, `last_indexed_at`.
+
+Each pass:
+
+1. **Walk** the mounted tree, collecting `(uri, size, mtime)`. Metadata only — no reads.
+2. **Select candidates** — paths where `size` or `mtime` differs from `file_state`, plus
+   paths absent from it entirely.
+3. **Hash candidates only.** Reading every file every pass is unaffordable at 100k items;
+   hashing only what looks changed keeps a pass cheap.
+4. **Decide by hash, not by mtime:**
+   - hash unchanged → touch `last_seen_scan`, update stored mtime, **no re-extraction**
+   - hash changed → new `item_version`, enqueue re-extraction
+   - hash known at a different path → **move**; update `uri` only, no re-extraction
+   - path gone → soft-delete after `N` consecutive misses
+5. **Enqueue** jobs for the ingest worker.
+
+**Why hash rather than mtime alone.** Synology restores, `rsync` copies, Drive/Photos
+sync, and timezone-shifted SMB clients all rewrite mtime without changing content —
+trusting mtime would churn the entire corpus through re-extraction. Worse, mtime can move
+*backwards* after a restore, so "newer than last indexed" silently misses real changes.
+Hash is the authority; mtime and size are only a cheap filter to avoid hashing everything.
+
+**Missed-window safety.** Because the scan compares full state rather than consuming an
+event stream, nothing is lost if the scanner, the Proxmox host, or the NAS is down for a
+while. The next pass reconciles. There is no event backlog to replay and no missed-event
+failure mode — the reason a polling design is *preferable* here, not merely a fallback.
+
+**Scheduling.** Frequent shallow passes over active directories, a slower full pass over
+everything. Both are the same operation at different scopes. Configurable; a full pass
+over 100k files is metadata-only and cheap.
+
+**Safety.** Read-only mount (NFR-7). Synology `@eaDir`, `#recycle`, and `.DS_Store` are
+skipped. Scans are interruptible and resumable — partial progress is recorded per path.
 
 ## 5. Query engine (deterministic)
 
@@ -295,7 +346,8 @@ naming, note editor, index health.
 
 ## 9. Build order
 
-1. **M1 — Floor.** Schema, scanner, hashing, text extraction, passages, FTS5, CLI.
+1. **M1 — Floor.** Schema, reconciliation scanner, hashing, text extraction, passages,
+   FTS5, CLI.
    *Every document searchable by keyword. No models.*
 2. **M2 — Records.** Template + pattern extractors, bound records, `get_value`.
    *Passport expiry works, no LLM.*
@@ -307,7 +359,7 @@ naming, note editor, index health.
    canonicalization, review queue. *Coverage extends to arbitrary document types.*
 7. **M7 — Aggregation + Tier 2.** Aggregates with audit trails, evidence-set assembly.
 8. **M8 — Photos.** EXIF, geocoding, faces, captions.
-9. **M9 — Hardening.** Watcher, incremental updates, reconciliation, backup,
+9. **M9 — Hardening.** Scan scheduling, move detection, soft-delete policy, backup,
    reproducibility suite.
 
 M1 alone replaces "open files by hand" with working search. M2–M3 deliver direct answers

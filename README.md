@@ -65,11 +65,16 @@ DataManager never generates prose.
 
 ## Shape
 
-- **NAS** — the documents, mounted read-only. Never modified.
+- **Synology NAS** — the documents, mounted read-only. Never modified.
 - **Proxmox** — always on, model-free: index, query engine, REST API, web UI, MCP server,
-  file watcher.
-- **Mac** — ingest worker: OCR, whole-document extraction, embeddings, Ollama. Free to be
-  offline; jobs queue and pending enrichment is shown, not hidden.
+  reconciliation scanner.
+- **Mac** — ingest worker: OCR, whole-document extraction, embeddings, and the LLM
+  endpoint. Free to be offline; jobs queue and pending enrichment is shown, not hidden.
+
+Change detection is a **background reconciliation scan** — filesystem events don't cross
+SMB/NFS. Cheap `(size, mtime)` comparison picks candidates; a **content hash decides**
+what actually changed, so a Synology restore or an `rsync` that rewrites mtime doesn't
+churn the corpus through re-extraction.
 
 ## Status
 

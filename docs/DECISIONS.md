@@ -144,3 +144,36 @@ always-on Proxmox host.
 *Consequence:* the index is fully rebuildable from the NAS; only the human-authored layer
 (corrections, notes, entity merges, face names, pinned vocabulary) is irreplaceable, and
 it is backed up separately to the NAS.
+
+---
+
+### D-009 — Change detection by scheduled reconciliation scan, hash-authoritative
+**2026-09-04 · Accepted**
+
+Documents live on a Synology NAS mounted read-only over SMB/NFS, where inotify/FSEvents
+do not propagate — a watcher on the Proxmox host never fires. A background scan walks the
+tree collecting `(uri, size, mtime)`, selects candidates whose metadata changed, and
+**hashes only those** to decide what actually changed.
+
+mtime is a filter, never the decision: Synology restores, `rsync`, and sync clients
+rewrite it without changing content, and can move it backwards.
+
+Rejected: filesystem watcher (not viable over SMB/NFS); a Synology-side agent (software to
+maintain on the NAS, tied to DSM upgrades, still needs reconciliation).
+
+*Consequence:* no missed-event failure mode — state is compared, not consumed. An outage
+of the scanner, Proxmox, or the NAS costs delay only; the next pass reconciles. Move
+detection falls out of hashing for free.
+
+---
+
+### D-010 — LLM as a swappable HTTP endpoint, ingest only
+**2026-09-04 · Accepted**
+
+Whole-document extraction assumes an LLM endpoint (Ollama on the Mac by default) behind a
+small interface: `extract(text, shape) → JSON`. Never called at query time.
+
+*Consequence:* the endpoint can be swapped for another server, model, or cloud API
+per-source with no pipeline change. Varied document formats are handled by construction —
+the model sees full text and layout hints rather than a per-type template. An unreachable
+endpoint leaves items `partial` for retry and never blocks search.

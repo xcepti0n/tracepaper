@@ -250,7 +250,7 @@ always-on layer (NFR-8).
 Rejected. The Mac is not always on; search would die with it (NFR-4).
 
 ### F3 — Split: always-on service on Proxmox, ingest worker on the Mac ✅ **CHOSEN**
-Proxmox holds the database, API, UI, MCP server, and file watcher. The watcher enqueues
+Proxmox holds the database, API, UI, MCP server, and reconciliation scanner. The scanner enqueues
 jobs. The Mac's worker claims jobs when it is awake, does OCR/embedding/LLM work, and
 writes results back.
 
@@ -261,3 +261,40 @@ writes results back.
 - **Verdict:** chosen. The lag is made explicit rather than hidden — items carry an
   extraction status, and the UI shows what is still pending (NFR-4), so a stale field is
   never mistaken for a missing one.
+
+---
+
+## G. Change detection on the NAS
+
+Documents live on a Synology NAS mounted read-only over SMB/NFS.
+
+### G1 — Filesystem watcher (inotify/FSEvents)
+**Not viable.** Kernel event notifications do not propagate across SMB/NFS, so a watcher
+on the Proxmox host never fires for changes made on the NAS. This is a hard constraint,
+not a tuning issue.
+
+### G2 — Synology-side agent pushing events
+Rejected. Requires installing and maintaining software on the NAS, ties the design to
+Synology's package environment and DSM upgrades, and still needs a reconciliation pass to
+recover from missed events.
+
+### G3 — mtime comparison only
+Rejected as the deciding signal. Synology restores, `rsync` copies, and Drive/Photos sync
+rewrite mtime without changing content — the whole corpus would churn through
+re-extraction. mtime can also move *backwards* after a restore, so "newer than last
+indexed" silently misses real changes.
+
+### G4 — Scheduled reconciliation scan, hash-authoritative ✅ **CHOSEN**
+A background job walks the tree collecting `(uri, size, mtime)`, selects candidates whose
+metadata differs from the last recorded state, and **hashes only those** to decide what
+truly changed.
+
+- **For:** works over SMB/NFS with nothing installed on the NAS. Hash-authoritative, so
+  metadata churn costs one cheap comparison instead of a re-extraction. Metadata-only
+  walks are affordable at 100k files. **No missed-event failure mode** — state is
+  compared, not consumed, so an outage of the scanner, the Proxmox host, or the NAS costs
+  nothing beyond delay; the next pass reconciles. Move detection falls out for free.
+- **Against:** changes are noticed on a schedule rather than instantly; hashing large
+  changed files costs I/O.
+- **Verdict:** chosen. For a personal archive, latency of minutes is irrelevant, and
+  robustness against missed events is worth more than immediacy.

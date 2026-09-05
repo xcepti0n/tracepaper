@@ -135,10 +135,20 @@ Sum, count, min, max, and latest over records and events — *"how much tax did 
 2023"*, *"total rent paid last year"*. Every contributing document is listed so the
 number can be audited.
 
-### FR-9 — Incremental updates
+### FR-9 — Incremental updates via scheduled reconciliation
+Documents live on a **Synology NAS** mounted read-only over SMB/NFS, where filesystem
+event notifications do not propagate. Change detection is therefore a **background
+reconciliation scan**, not a watcher.
+
+Each pass compares the NAS against the last recorded state: cheap `(size, mtime)`
+comparison selects candidates, and a **content hash decides** what actually changed —
+mtime alone is untrustworthy, since Synology restores, `rsync`, and sync clients rewrite
+it without changing content, and can move it backwards.
+
 New file indexed without a full rescan. Changed file re-indexed with prior version
-retained. Moved file detected by content hash — a path change, not re-extraction.
-Deleted file soft-deleted. Full reindex always available and always safe.
+retained. Moved file detected by hash — a path update, not re-extraction. Missing file
+soft-deleted after repeated misses. Nothing is lost if the scanner or either host is down;
+the next pass reconciles. Full reindex always available and always safe.
 
 ### FR-10 — Correction
 Native notes editable with version history. Extracted values correctable by hand; a
@@ -177,7 +187,7 @@ did. No learned reranker in the default query path.
 
 - **NAS** — the documents. Mounted read-only.
 - **Proxmox server** — 16 GB, already running other services. Always-on layer: index,
-  query engine, REST API, web UI, MCP server, file watcher. **No models.**
+  query engine, REST API, web UI, MCP server, reconciliation scanner. **No models.**
 - **Mac (Apple Silicon)** — Ollama and the ingest worker. Expected to be intermittently
   offline; that is normal operation, not an outage.
 
