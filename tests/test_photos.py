@@ -123,3 +123,89 @@ def test_naming_a_cluster_tags_every_photo_in_it(conn, cfg, nas):
     assert conn.execute(
         "SELECT COUNT(*) AS n FROM tags WHERE namespace='person' AND value='Priya'"
     ).fetchone()["n"] == 2
+
+
+# ------------------------------------------------------------- geocoding
+
+def make_geo_photo(path: Path, date: str, lat_dms, lon_dms,
+                   ns: str = "N", ew: str = "E") -> Path:
+    pytest.importorskip("PIL.Image", reason="pillow not installed")
+    from fractions import Fraction
+
+    from PIL import Image
+
+    img = Image.new("RGB", (80, 60), "skyblue")
+    exif = img.getexif()
+    exif[306] = date
+    ifd = exif.get_ifd(0x8825)
+    ifd[1] = ns
+    ifd[2] = tuple(Fraction(x) for x in lat_dms)
+    ifd[3] = ew
+    ifd[4] = tuple(Fraction(x) for x in lon_dms)
+    img.save(path, exif=exif)
+    return path
+
+
+requires_geocoder = pytest.mark.skipif(
+    __import__("importlib").util.find_spec("reverse_geocoder") is None,
+    reason="reverse_geocoder not installed")
+
+
+@requires_geocoder
+def test_gps_becomes_a_place_name(tmp_path: Path):
+    """"photos from Goa" needs a place name; a coordinate is not one."""
+    from fractions import Fraction
+
+    path = make_geo_photo(tmp_path / "goa.jpg", "2019:12:25 14:30:00",
+                          (15, 17, Fraction(5757, 100)),
+                          (74, 7, Fraction(2640, 100)))
+
+    tags = photos.extract_tags(path)
+    by_namespace = {ns: value for ns, value, _, _ in tags.tags}
+
+    assert by_namespace["region"] == "Goa"
+    assert by_namespace["country"] == "IN"
+    assert by_namespace["year"] == "2019"
+
+
+@requires_geocoder
+def test_geocoding_is_offline(tmp_path: Path, monkeypatch):
+    """No network call, no API key, no home location leaving the LAN."""
+    import socket
+    from fractions import Fraction
+
+    def blocked(*args, **kwargs):
+        raise AssertionError("geocoding must not touch the network")
+
+    monkeypatch.setattr(socket, "create_connection", blocked)
+    path = make_geo_photo(tmp_path / "goa.jpg", "2019:12:25 14:30:00",
+                          (15, 17, Fraction(5757, 100)),
+                          (74, 7, Fraction(2640, 100)))
+
+    tags = photos.extract_tags(path)
+
+    assert any(ns == "region" for ns, _, _, _ in tags.tags)
+
+
+@requires_geocoder
+def test_place_and_year_narrow_together(conn, cfg, nas):
+    """"photos from Goa in 2019" must not return the union of Goa and 2019."""
+    from fractions import Fraction
+
+    from datamanager.query.unified import UnifiedSearch
+
+    make_geo_photo(nas / "goa_2019.jpg", "2019:12:25 14:30:00",
+                   (15, 17, Fraction(5757, 100)), (74, 7, Fraction(2640, 100)))
+    make_geo_photo(nas / "seattle_2021.jpg", "2021:06:10 09:00:00",
+                   (47, 36, Fraction(2100, 100)),
+                   (122, 19, Fraction(5900, 100)), ew="W")
+    Scanner(conn, cfg).scan(nas)
+    Indexer(conn, cfg).run_pending()
+
+    search = UnifiedSearch(conn)
+
+    assert len(search.query("photos from Goa in 2019", semantic=False).photos) == 1
+    assert len(search.query("Goa", semantic=False).photos) == 1
+    assert len(search.query("photos 2021", semantic=False).photos) == 1
+    assert search.query("Goa 2021", semantic=False).photos == [], \
+        "filters must narrow together, not union"

@@ -29,6 +29,11 @@ ocr = [
     "pytesseract>=0.3.10",
     "pillow>=10.0",
 ]
+# Photo tagging: EXIF plus offline reverse geocoding (no network, no API key).
+photos = [
+    "pillow>=10.0",
+    "reverse_geocoder>=1.5",
+]
 # Semantic search. Absent, search falls back to keyword-only (NFR-9).
 semantic = [
     "sentence-transformers>=3.0",

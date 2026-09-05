@@ -264,7 +264,21 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
   <h3>{_esc(entity["canonical_name"])}</h3>{also}
 </div>""")
 
-    # 4. Matching documents -- the floor that always has something to say.
+    # 4. Photos matching the tags named in the query.
+    if result.photos:
+        filters = ", ".join(result.photo_filters)
+        out.append(f'<h2>Photos <span class="count">{len(result.photos)}</span>'
+                   f'</h2><p class="hint">matching {_esc(filters)}</p>')
+        for photo in result.photos:
+            tags = " ".join(f'<span class="pill">{_esc(t)}</span>'
+                            for t in photo["tags"][:6])
+            out.append(f"""<div class="hit">
+  <h3><a href="/api/items/{photo["item_id"]}">{_esc(photo["title"])}</a></h3>
+  <div class="path">{_esc(photo["uri"] or "")}</div>
+  <div class="snip">{tags}</div>
+</div>""")
+
+    # 5. Matching documents -- the floor that always has something to say.
     if result.hits:
         out.append(f'<h2>Documents <span class="count">{result.total_hits}</span></h2>')
         for hit in result.hits:

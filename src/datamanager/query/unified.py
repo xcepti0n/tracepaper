@@ -49,10 +49,13 @@ class UnifiedResult:
     hits: list[RankedHit] = field(default_factory=list)
     total_hits: int = 0
     matched_keys: list[str] = field(default_factory=list)
+    photos: list[dict] = field(default_factory=list)
+    photo_filters: list[str] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
-        return not (self.answer or self.events or self.entities or self.hits)
+        return not (self.answer or self.events or self.entities
+                    or self.hits or self.photos)
 
 
 class UnifiedSearch:
@@ -74,6 +77,7 @@ class UnifiedSearch:
         self._answer(text, meaningful, constraints, result)
         self._events(text, meaningful, result)
         self._entities(meaningful, result)
+        self._photos(meaningful, result)
 
         response = self.search.search(text, limit=limit, semantic=semantic)
         result.hits = response.hits
@@ -208,3 +212,51 @@ class UnifiedSearch:
         for entity in self._matching_entities(tokens):
             entity["aliases"] = entity_module.aliases(self.conn, entity["id"])
             result.entities.append(entity)
+
+
+    def _photos(self, tokens: list[str], result: UnifiedResult) -> None:
+        """Photos matching tags in the query -- "photos from Goa in 2019".
+
+        Every filter must match the same photo, so a year and a place narrow
+        together rather than returning the union.
+        """
+        if not tokens:
+            return
+
+        # Tag values the query actually mentions, as (namespace, value).
+        matched: list[tuple[str, str]] = []
+        for token in tokens:
+            if token in ("photo", "photos", "picture", "pictures", "image",
+                         "images"):
+                continue
+            rows = self.conn.execute(
+                "SELECT DISTINCT namespace, value FROM tags "
+                "WHERE lower(value) = ? OR (namespace IN ('year','month') "
+                "AND value = ?) LIMIT 4",
+                (token, token),
+            ).fetchall()
+            for row in rows:
+                matched.append((row["namespace"], row["value"]))
+
+        if not matched:
+            return
+
+        sql = ["SELECT DISTINCT i.id, i.title, i.uri, i.created_at",
+               "FROM items i WHERE i.deleted_at IS NULL AND i.kind = 'photo'"]
+        params: list[object] = []
+        for namespace, value in matched:
+            sql.append("AND EXISTS (SELECT 1 FROM tags t WHERE t.item_id = i.id "
+                       "AND t.namespace = ? AND t.value = ?)")
+            params.extend([namespace, value])
+        sql.append("ORDER BY i.created_at DESC, i.id LIMIT 60")
+
+        rows = self.conn.execute(" ".join(sql), params).fetchall()
+        result.photo_filters = [f"{ns}={value}" for ns, value in matched]
+        result.photos = [
+            {"item_id": int(r["id"]), "title": r["title"], "uri": r["uri"],
+             "date": r["created_at"],
+             "tags": [f'{t["namespace"]}={t["value"]}' for t in self.conn.execute(
+                 "SELECT namespace, value FROM tags WHERE item_id = ? "
+                 "ORDER BY namespace LIMIT 8", (r["id"],))]}
+            for r in rows
+        ]

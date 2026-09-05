@@ -50,7 +50,42 @@ def extract_tags(path: Path) -> PhotoTags:
         _exif_tags(path, result)
     except Exception as exc:
         log.debug("EXIF extraction failed for %s: %s", path, exc)
+    try:
+        _place_tags(result)
+    except Exception as exc:
+        log.debug("geocoding failed for %s: %s", path, exc)
     return result
+
+
+def _place_tags(result: PhotoTags) -> None:
+    """GPS to place names, offline (D-005).
+
+    "photos from Goa in 2019" needs a place name, and a coordinate is not one.
+    Uses a bundled city database rather than a web service: no network call, no
+    per-photo cost, and no home location leaving the LAN (NFR-3).
+    """
+    coords = next((value for namespace, value, _, _ in result.tags
+                   if namespace == "gps"), None)
+    if not coords:
+        return
+    try:
+        import reverse_geocoder
+    except ImportError:
+        return
+
+    latitude, longitude = (float(part) for part in coords.split(","))
+    match = reverse_geocoder.search([(latitude, longitude)], mode=1)
+    if not match:
+        return
+
+    place = match[0]
+    for field_name, namespace in (("name", "place"), ("admin1", "region"),
+                                  ("cc", "country")):
+        value = place.get(field_name)
+        if value:
+            # Derived from an exact coordinate, so confidence stays high, but
+            # it is a lookup rather than a measurement -- hence not 1.0.
+            result.add(namespace, str(value), "geocode", 0.9)
 
 
 def _exif_tags(path: Path, result: PhotoTags) -> None:
