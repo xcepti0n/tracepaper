@@ -72,10 +72,7 @@ def extract(path: Path) -> ExtractedText:
         if suffix in EML_SUFFIXES:
             return _extract_eml(path)
         if suffix in IMAGE_SUFFIXES:
-            # Photos carry no text layer; M8 adds EXIF/caption tags.
-            return ExtractedText(text="", status="partial",
-                                 note="image: awaiting photo pipeline",
-                                 needs_ocr=True)
+            return _extract_image(path)
         if suffix in TEXT_SUFFIXES:
             return _extract_plaintext(path)
         return _extract_unknown(path)
@@ -121,6 +118,28 @@ def _extract_unknown(path: Path) -> ExtractedText:
                          note="unrecognized format: indexed by filename only")
 
 
+def _extract_image(path: Path) -> ExtractedText:
+    """Images: OCR the text (screenshots, photographed receipts).
+
+    An unreadable image is not a failure -- it stays partial and keeps its
+    filename in the index, and photo tagging (M8) adds EXIF and captions.
+    """
+    from . import ocr
+
+    result = ocr.ocr_image(path)
+    if result.usable:
+        return ExtractedText(text=result.text, pages=[result.text],
+                             status="complete",
+                             note=f"OCR via {result.backend} "
+                                  f"(confidence {result.confidence:.2f})")
+
+    if not ocr.available_backends():
+        return ExtractedText(text="", status="partial",
+                             note="no OCR backend installed", needs_ocr=True)
+    return ExtractedText(text="", status="partial",
+                         note="OCR found no readable text", needs_ocr=True)
+
+
 def _extract_pdf(path: Path) -> ExtractedText:
     try:
         from pypdf import PdfReader
@@ -138,11 +157,29 @@ def _extract_pdf(path: Path) -> ExtractedText:
             pages.append("")
 
     text = "\n\n".join(pages)
-    if not text.strip():
-        # Scanned PDF with no text layer -- OCR territory (M9 / ingest worker).
+    if text.strip():
+        return ExtractedText(text=text, pages=pages)
+
+    # No text layer: a scan. OCR page by page so citations keep a page number.
+    from . import ocr
+
+    if not ocr.available_backends():
         return ExtractedText(text="", pages=pages, status="partial",
-                             note="no text layer; OCR required", needs_ocr=True)
-    return ExtractedText(text=text, pages=pages)
+                             note="scanned PDF; no OCR backend installed",
+                             needs_ocr=True)
+
+    results = ocr.ocr_pdf(path)
+    ocr_pages = [r.text if r.usable else "" for r in results]
+    ocr_text = "\n\n".join(ocr_pages)
+    if not ocr_text.strip():
+        return ExtractedText(text="", pages=pages, status="partial",
+                             note="scanned PDF; OCR found no readable text",
+                             needs_ocr=True)
+
+    backend = next((r.backend for r in results if r.usable), "ocr")
+    mean = sum(r.confidence for r in results) / max(len(results), 1)
+    return ExtractedText(text=ocr_text, pages=ocr_pages, status="complete",
+                         note=f"OCR via {backend} (confidence {mean:.2f})")
 
 
 def _extract_csv(path: Path) -> ExtractedText:

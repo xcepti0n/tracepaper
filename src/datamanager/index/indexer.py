@@ -11,6 +11,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import vocabulary
 from ..config import Config
 from ..db import transaction, utcnow
 from ..extract import passages as passage_split
@@ -280,21 +281,18 @@ class Indexer:
             record_count += 1
 
             for f in fields:
+                # Vocabulary is discovered, not declared (FR-4). Fields are
+                # stored under the canonical key so a query for one name finds
+                # documents that used a synonym.
+                canonical = vocabulary.register(conn, f.key)
                 conn.execute(
                     "INSERT INTO record_fields (record_id, key, value_text, "
                     "value_num, value_date, unit, confidence, char_start, char_end) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (record_id, f.key, f.value_text, f.value_num, f.value_date,
+                    (record_id, canonical, f.value_text, f.value_num, f.value_date,
                      f.unit, f.confidence, f.char_start, f.char_end),
                 )
                 field_count += 1
-                # Vocabulary is discovered, not declared (FR-4).
-                conn.execute(
-                    "INSERT INTO key_vocabulary (key, canonical_key, occurrences) "
-                    "VALUES (?, ?, 1) ON CONFLICT(key) DO UPDATE SET "
-                    "occurrences = occurrences + 1",
-                    (f.key, f.key),
-                )
 
         return record_count, field_count
 

@@ -252,12 +252,9 @@ class FieldQuery:
 
     def _canonical(self, key: str) -> str:
         """Resolve a key through the vocabulary map (FR-4)."""
+        from .. import vocabulary
         from ..extract.records import normalize_key
-        normalized = normalize_key(key)
-        row = self.conn.execute(
-            "SELECT canonical_key FROM key_vocabulary WHERE key = ?", (normalized,)
-        ).fetchone()
-        return row["canonical_key"] if row else normalized
+        return vocabulary.resolve(self.conn, normalize_key(key))
 
 
 def _as_num(value: object) -> float | None:

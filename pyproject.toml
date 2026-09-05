@@ -16,6 +16,18 @@ formats = [
     "pypdf>=4.0",
     "python-docx>=1.1",
     "openpyxl>=3.1",
+    "pillow>=10.0",
+]
+# OCR for screenshots and scanned PDFs. On macOS the built-in Vision engine is
+# used and needs only these bindings; elsewhere install tesseract plus
+# pytesseract, and poppler (pdftoppm) to rasterise scanned PDFs.
+ocr-macos = [
+    "pyobjc-framework-Vision>=10.0",
+    "pyobjc-framework-Quartz>=10.0",
+]
+ocr = [
+    "pytesseract>=0.3.10",
+    "pillow>=10.0",
 ]
 dev = [
     "pytest>=8.0",

@@ -342,18 +342,39 @@ class GenericLabelExtractor(Extractor):
             iso = parse_date(value)
             if iso:
                 item.value_date = iso
-            num, unit = parse_amount(value)
-            # Only treat it as a number when the value is essentially just that
-            # number -- "Seattle, WA 98101" is not an amount.
-            if num is not None and len(re.sub(r"[\d,.\s$€£₹]", "", value)) <= 3:
-                item.value_num = num
-                item.unit = unit
+            elif not _is_identifier(key, value):
+                num, unit = parse_amount(value)
+                # Only treat it as a number when the value is essentially just
+                # that number -- "Seattle, WA 98101" is not an amount.
+                if num is not None and len(re.sub(r"[\d,.\s$€£₹]", "", value)) <= 3:
+                    item.value_num = num
+                    item.unit = unit
             fields.append(item)
 
         if not fields:
             return []
         return [Record(record_type="document", fields=fields,
                        source=self.source, confidence=0.6)]
+
+
+# Keys whose values are identifiers, not quantities. Typing them as numbers
+# would let them into SUM() and range filters, where they mean nothing.
+_IDENTIFIER_KEY = re.compile(
+    r"(?:^|_)(?:id|no|num|number|code|ref|reference|serial|account|acct|"
+    r"chip|microchip|policy|invoice|receipt|order|tracking|confirmation|"
+    r"licence|license|passport|vin|imei|iban|swift|routing|zip|postcode|"
+    r"phone|tel|mobile|fax|ssn|ein|tin|pan|aadhaar)(?:$|_)"
+)
+
+
+def _is_identifier(key: str, value: str) -> bool:
+    """True when a value is an identifier rather than a measurable quantity."""
+    if _IDENTIFIER_KEY.search(key):
+        return True
+    # Long unbroken digit runs are identifiers; real amounts carry separators
+    # or decimals well before this length.
+    digits = re.sub(r"\D", "", value)
+    return len(digits) >= 11 and "." not in value
 
 
 def normalize_key(label: str) -> str:

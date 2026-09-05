@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from . import vocabulary
 from .db import transaction, utcnow
 from .extract.records import normalize_key, parse_amount, parse_date
 
@@ -29,7 +30,7 @@ def correct_field(conn: sqlite3.Connection, item_id: int, key: str,
     if row is None:
         raise ValueError(f"no such item: {item_id}")
 
-    canonical = normalize_key(key)
+    canonical = vocabulary.resolve(conn, normalize_key(key))
     now = utcnow()
 
     with transaction(conn) as c:
@@ -68,12 +69,7 @@ def correct_field(conn: sqlite3.Connection, item_id: int, key: str,
             (record_id, canonical, value, value_num, parse_date(value),
              unit or parsed_unit),
         )
-        c.execute(
-            "INSERT INTO key_vocabulary (key, canonical_key, occurrences) "
-            "VALUES (?, ?, 1) ON CONFLICT(key) DO UPDATE SET "
-            "occurrences = occurrences + 1",
-            (canonical, canonical),
-        )
+        vocabulary.register(c, canonical)
 
         # Machine-extracted copies of this key would compete at query time.
         c.execute(
@@ -87,7 +83,7 @@ def correct_field(conn: sqlite3.Connection, item_id: int, key: str,
 
 def remove_correction(conn: sqlite3.Connection, item_id: int, key: str) -> bool:
     """Drop a correction. The next reindex restores the extracted value."""
-    canonical = normalize_key(key)
+    canonical = vocabulary.resolve(conn, normalize_key(key))
     with transaction(conn) as c:
         cur = c.execute(
             "DELETE FROM record_fields WHERE key = ? AND record_id IN "
