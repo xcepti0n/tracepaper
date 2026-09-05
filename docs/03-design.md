@@ -348,8 +348,9 @@ naming, note editor, index health.
 
 1. **M1 — Floor.** ✅ **Shipped.** Schema, reconciliation scanner, hashing, text
    extraction, passages, FTS5, CLI. *Every document searchable by keyword. No models.*
-2. **M2 — Records.** Template + pattern extractors, bound records, `get_value`.
-   *Passport expiry works, no LLM.*
+2. **M2 — Records.** ✅ **Shipped.** Template + pattern + open-vocabulary extractors,
+   bound records, `get`, `agg`, corrections. *Passport expiry and "salary in 2023" work,
+   no LLM.*
 3. **M3 — Entities + events.** Linking, aliases, event derivation. *"Last Alaska flight"
    works.*
 4. **M4 — Interfaces.** REST, MCP, web UI, correction flow.

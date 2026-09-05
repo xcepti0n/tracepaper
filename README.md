@@ -78,17 +78,40 @@ churn the corpus through re-extraction.
 
 ## Status
 
-**M1 shipped** — working keyword search over a NAS tree, no models involved.
-60 tests passing. Next: M2 (bound records, direct answers).
+**M1 + M2 shipped** — keyword search *and* Tier 1 direct answers, no models
+involved anywhere. 95 tests passing. Next: M3 (entities and events).
 
 ```bash
 pip install -e ".[formats,dev]"
 
 dm scan /Volumes/NAS/documents --index    # reconcile, extract, index
-dm search "gross salary" --explain        # deterministic search + ranking
-dm status                                 # index health, pending work
-dm note add "Sprinkler repair" --text "Replaced the irrigation solenoid."
+
+# Tier 1 — a value with a citation, no LLM
+dm get gross_salary --where tax_year=2023
+dm get expiry_date
+dm agg gross_salary sum                   # total + every contributing document
+
+# Discovered vocabulary — no schema was declared
+dm keys
+dm values tax_year
+
+dm search "sprinkler valve" --explain     # full text, with ranking signals
+dm correct 12 gross_salary 92000.00       # outranks extractors, survives reindex
+dm status
 ```
+
+What a direct answer looks like:
+
+```
+$ dm get gross_salary --where tax_year=2023
+gross_salary: 91500.0 USD
+  source: W2_2023_ACME.txt (/Volumes/NAS/tax/W2_2023_ACME.txt)
+  via:    template (confidence 1.00)
+```
+
+The year and the salary were bound into one record at ingest, while the whole
+document was in view — so constraining on one and reading the other can never
+cross documents.
 
 Handles PDF (text layer, OCR flagged when absent), DOCX, XLSX, CSV/TSV, EML,
 Markdown, plain text; unknown formats fall back to filename indexing rather
