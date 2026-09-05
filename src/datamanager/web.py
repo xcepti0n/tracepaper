@@ -82,26 +82,70 @@ code { background:var(--accent-soft); padding:1px 5px; border-radius:4px;
        font-size:13px; }
 .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
 label.chk { color:var(--muted); font-size:13px; display:flex; gap:5px;
-            align-items:center; }
+            align-items:center; white-space:nowrap; }
+h2 { font-size:13px; text-transform:uppercase; letter-spacing:.07em;
+     color:var(--muted); margin:26px 0 10px; font-weight:600; }
+h2 .count { background:var(--accent-soft); color:var(--accent); padding:1px 7px;
+            border-radius:20px; font-size:11px; margin-left:6px; }
+.answer .lbl { color:var(--muted); font-size:12px; text-transform:uppercase;
+               letter-spacing:.07em; margin-bottom:4px; }
+button.fix { background:transparent; color:var(--muted); border:1px solid var(--line);
+             padding:1px 9px; font-size:11px; border-radius:5px; margin-left:8px; }
+button.fix:hover { color:var(--accent); border-color:var(--accent); }
+.toast { position:fixed; bottom:22px; left:50%; transform:translateX(-50%);
+         background:var(--accent); color:#fff; padding:11px 20px; border-radius:8px;
+         font-size:14px; box-shadow:0 4px 16px rgba(0,0,0,.2); z-index:50; }
+"""
+
+SCRIPT = """
+// Inline correction. The value you set outranks every extractor and survives
+// reindexing, so this is the one place the UI writes to the index.
+async function fixValue(itemId, key, current) {
+  const value = prompt(`Correct value for "${key}":`, current);
+  if (value === null || value === String(current)) return;
+  const response = await fetch('/api/correct', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({item_id: itemId, key: key, value: value}),
+  });
+  if (response.ok) {
+    toast('Saved — this now outranks every extractor');
+    setTimeout(() => location.reload(), 900);
+  } else {
+    toast('Could not save: ' + response.status);
+  }
+}
+
+function toast(message) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = message;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2600);
+}
 """
 
 
 def render_page(conn: sqlite3.Connection, *, query: str = "", tab: str = "search",
                 limit: int = 20, semantic: bool = True) -> str:
-    tabs = [("search", "Search"), ("facts", "Facts"), ("events", "Events"),
-            ("entities", "Entities"), ("status", "Status")]
+    """One search box over every layer, plus a browse view for exploring.
+
+    The user should not have to know whether a word is an entity, a field or
+    passage text before typing it -- so there is one box, and the answer types
+    are grouped in the result rather than split across separate searches.
+    """
+    tabs = [("search", "Search"), ("browse", "Browse"), ("status", "Status")]
     nav = "".join(
         f'<a href="/?tab={name}" class="{"on" if name == tab else ""}">{label}</a>'
         for name, label in tabs
     )
 
-    body = {
-        "search": lambda: _search_tab(conn, query, limit, semantic),
-        "facts": lambda: _facts_tab(conn, query),
-        "events": lambda: _events_tab(conn, query),
-        "entities": lambda: _entities_tab(conn, query),
-        "status": lambda: _status_tab(conn),
-    }.get(tab, lambda: _search_tab(conn, query, limit, semantic))()
+    if tab == "status":
+        body = _status_tab(conn)
+    elif tab == "browse":
+        body = _browse_tab(conn, query)
+    else:
+        body = _unified_tab(conn, query, limit, semantic)
 
     return f"""<!doctype html>
 <html><head><meta charset="utf-8">
@@ -113,6 +157,7 @@ def render_page(conn: sqlite3.Connection, *, query: str = "", tab: str = "search
   <nav>{nav}</nav>
 </div></header>
 <main><div class="wrap">{body}</div></main>
+<script>{SCRIPT}</script>
 </body></html>"""
 
 
@@ -122,163 +167,174 @@ def _esc(value) -> str:
 
 def _search_form(query: str, tab: str, placeholder: str,
                  semantic: bool = True) -> str:
-    checkbox = ""
-    if tab == "search":
-        checked = "checked" if semantic else ""
-        checkbox = (f'<label class="chk"><input type="checkbox" name="semantic" '
-                    f'value="true" {checked}> semantic</label>')
+    checked = "checked" if semantic else ""
     return f"""<form class="search" method="get">
   <input type="hidden" name="tab" value="{tab}">
   <input type="text" name="q" value="{_esc(query)}" placeholder="{placeholder}"
          autofocus autocomplete="off">
-  {checkbox}
+  <label class="chk"><input type="checkbox" name="semantic" value="true"
+         {checked}> semantic</label>
   <button type="submit">Search</button>
 </form>"""
 
 
-def _search_tab(conn: sqlite3.Connection, query: str, limit: int,
-                semantic: bool) -> str:
+def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
+                 semantic: bool) -> str:
+    """One query, every layer, grouped by what kind of answer it is."""
+    from .query.unified import UnifiedSearch
+
     out = [_search_form(query, "search",
-                        "sprinkler valve, Costco, passport…", semantic)]
+                        "passport expiry · salary 2023 · Alaska · sprinkler valve",
+                        semantic)]
 
     if not query:
         from . import embed
         if semantic and not embed.is_loaded():
-            out.append('<p class="hint">Keyword search only — no embedding model '
-                       'loaded. Run <code>dm embed</code>, then restart the '
-                       'server.</p>')
+            out.append('<p class="hint">Ask for a value, a merchant, a date, or '
+                       'just words you remember. <b>Keyword only</b> — no '
+                       'embedding model loaded; run <code>dm embed</code> and '
+                       'restart.</p>')
         else:
-            out.append('<p class="hint">Full text across every document, plus '
-                       'semantic matching for wording you do not remember '
-                       'exactly.</p>')
+            out.append('<p class="hint">Ask for a value ("passport expiry"), '
+                       'something that happened ("Alaska"), or words you half '
+                       'remember ("sprinkler valve"). One box searches '
+                       'everything.</p>')
         return "".join(out)
 
-    response = SearchEngine(conn).search(query, limit=limit, semantic=semantic)
-    if not response.hits:
-        out.append('<div class="empty">No results.</div>')
+    result = UnifiedSearch(conn).query(query, limit=limit, semantic=semantic)
+
+    if result.is_empty:
+        out.append('<div class="empty">Nothing found.<br>'
+                   '<span class="hint">Try fewer words, or Browse to see what '
+                   'was extracted.</span></div>')
         return "".join(out)
 
-    out.append(f'<p class="hint">{response.total} match(es), '
-               f'showing {len(response.hits)}</p>')
-    for hit in response.hits:
-        page = f' <span class="pill">p.{hit.page}</span>' if hit.page else ""
-        signals = " ".join(f"{k}={v:+.4f}" for k, v in sorted(hit.signals.items()))
-        out.append(f"""<div class="hit">
+    # 1. A direct answer, when the query named a field we hold.
+    if result.answer:
+        best = result.answer
+        unit = f" {best.unit}" if best.unit else ""
+        human = "human" if best.source == "human" else ""
+        out.append(f"""<div class="answer">
+  <div class="lbl">{_esc(result.answer_key)}</div>
+  <div class="val">{_esc(best.value)}{_esc(unit)}</div>
+  <div class="cite">
+    <a href="/api/items/{best.item_id}">{_esc(best.item_title)}</a>
+    {f"&middot; p.{best.page}" if best.page else ""}
+    &middot; <span class="pill {human}">{_esc(best.source)}</span>
+    {_fix_button(best.item_id, result.answer_key, best.value)}
+  </div>
+</div>""")
+        if result.alternatives:
+            rows = "".join(
+                f"<tr><td>{_esc(v.value)}{_esc(' ' + v.unit if v.unit else '')}</td>"
+                f'<td><a href="/api/items/{v.item_id}">{_esc(v.item_title)}</a></td>'
+                f'<td><span class="pill">{_esc(v.source)}</span></td></tr>'
+                for v in result.alternatives)
+            out.append('<p class="hint">Documents disagree — none is chosen '
+                       'for you:</p>')
+            out.append(f"<table><tr><th>Value</th><th>Document</th>"
+                       f"<th>Layer</th></tr>{rows}</table>")
+
+    # 2. Things that happened.
+    if result.events:
+        out.append(f'<h2>Events <span class="count">{len(result.events)}</span></h2>')
+        for event in result.events:
+            when = event["date"] or "undated"
+            if event["precision"] == "year" and event["date"]:
+                when = event["date"][:4]
+            who = ", ".join(f'{e["name"]} ({e["role"]})' for e in event["entities"])
+            evidence = " ".join(
+                f'<a href="/api/items/{e["item_id"]}">{_esc(e["title"])}</a>'
+                for e in event["evidence"])
+            out.append(f"""<div class="hit">
+  <h3>{_esc(event["title"])}</h3>
+  <div class="path">{_esc(when)}{" · " + _esc(who) if who else ""}</div>
+  <div class="snip">evidence: {evidence}</div>
+</div>""")
+
+    # 3. Who or what the query named.
+    if result.entities:
+        out.append('<h2>Entities</h2>')
+        for entity in result.entities:
+            others = [a for a in entity.get("aliases", [])
+                      if a != entity["canonical_name"]]
+            also = (f'<div class="path">also seen as: {_esc(", ".join(others))}</div>'
+                    if others else "")
+            out.append(f"""<div class="hit">
+  <h3>{_esc(entity["canonical_name"])}</h3>{also}
+</div>""")
+
+    # 4. Matching documents -- the floor that always has something to say.
+    if result.hits:
+        out.append(f'<h2>Documents <span class="count">{result.total_hits}</span></h2>')
+        for hit in result.hits:
+            page = f' <span class="pill">p.{hit.page}</span>' if hit.page else ""
+            signals = " ".join(f"{k}={v:+.4f}"
+                               for k, v in sorted(hit.signals.items())
+                               if not k.startswith("_"))
+            out.append(f"""<div class="hit">
   <h3><a href="/api/items/{hit.item_id}">{_esc(hit.title)}</a>{page}</h3>
   <div class="path">{_esc(hit.uri or f"note:{hit.item_id}")}</div>
   <div class="snip">{_esc(hit.snippet)}</div>
   <div class="sig">score={hit.score:.4f} · {_esc(signals)}</div>
 </div>""")
+
     return "".join(out)
 
 
-def _facts_tab(conn: sqlite3.Connection, query: str) -> str:
-    """Tier 1: a value with its citation, or the vocabulary to pick from."""
-    out = [_search_form(query, "facts", "expiry_date, gross_salary, amount…")]
+def _fix_button(item_id: int, key: str, current) -> str:
+    """Inline correction. A value you fix outranks every extractor, forever."""
+    args = f"{item_id}, {_js(key)}, {_js(current)}"
+    return f'<button class="fix" onclick="fixValue({args})">fix</button>'
+
+
+def _js(value) -> str:
+    """A JavaScript string literal, safely quoted."""
+    import json
+    return html.escape(json.dumps(str(value)), quote=True)
+
+
+def _browse_tab(conn: sqlite3.Connection, query: str) -> str:
+    """Everything extracted, for exploring rather than searching."""
     fq = FieldQuery(conn)
+    out = [_search_form(query, "browse", "filter fields…")]
 
     if query:
-        answer = fq.get(query.strip(), limit=10)
-        if answer.values:
-            best = answer.best
-            unit = f" {best.unit}" if best.unit else ""
-            source_class = "human" if best.source == "human" else ""
-            out.append(f"""<div class="answer">
-  <div class="val">{_esc(best.value)}{_esc(unit)}</div>
-  <div class="cite">{_esc(best.citation())}
-    &middot; <span class="pill {source_class}">{_esc(best.source)}</span>
-    confidence {best.confidence:.2f}</div>
-</div>""")
-            if len(answer.values) > 1 and not answer.is_unambiguous:
-                # Disagreement is shown, never collapsed into one answer.
-                rows = "".join(
-                    f"<tr><td>{_esc(v.value)}{_esc(' ' + v.unit if v.unit else '')}</td>"
-                    f"<td>{_esc(v.item_title)}</td>"
-                    f'<td><span class="pill">{_esc(v.source)}</span></td></tr>'
-                    for v in answer.values[1:]
-                )
-                out.append('<p class="hint">Other candidates — these disagree, '
-                           'so none is silently chosen:</p>')
-                out.append(f"<table><tr><th>Value</th><th>Document</th>"
-                           f"<th>Layer</th></tr>{rows}</table>")
+        values = fq.list_values(query)
+        if values:
+            rows = "".join(
+                f'<tr><td><a href="/?q={_esc(query)}+{_esc(v)}">{_esc(v)}</a></td>'
+                f"<td>{n}</td></tr>" for v, n in values)
+            out.append(f'<h2>Values of <code>{_esc(query)}</code></h2>')
+            out.append(f"<table><tr><th>Value</th><th>Documents</th></tr>"
+                       f"{rows}</table>")
             return "".join(out)
-        out.append(f'<div class="empty">No value for '
-                   f'<code>{_esc(query)}</code>.</div>')
 
-    keys = fq.list_keys(limit=100)
-    if not keys:
-        out.append('<div class="empty">No fields extracted yet. '
-                   'Run <code>dm scan --index</code>.</div>')
-        return "".join(out)
+    keys = fq.list_keys(query or None, limit=200)
+    if keys:
+        rows = "".join(
+            f'<tr><td><a href="/?tab=browse&q={_esc(k)}"><code>{_esc(k)}</code>'
+            f"</a></td><td>{n}</td></tr>" for k, n in keys)
+        out.append('<h2>Fields</h2>')
+        out.append('<p class="hint">Discovered from your documents — nothing '
+                   'here was declared in advance.</p>')
+        out.append(f"<table><tr><th>Field</th><th>Documents</th></tr>"
+                   f"{rows}</table>")
 
-    rows = "".join(
-        f'<tr><td><a href="/?tab=facts&q={_esc(key)}"><code>{_esc(key)}</code></a></td>'
-        f"<td>{count}</td></tr>" for key, count in keys
-    )
-    out.append('<p class="hint">Vocabulary discovered from your documents — '
-               'nothing here was declared in advance.</p>')
-    out.append(f"<table><tr><th>Field</th><th>Documents</th></tr>{rows}</table>")
-    return "".join(out)
+    rows = entity_module.list_all(conn, limit=100)
+    if rows:
+        body = "".join(
+            f'<tr><td><a href="/?q={_esc(r["canonical_name"])}">'
+            f'{_esc(r["canonical_name"])}</a></td>'
+            f'<td>{_esc(r["entity_type"])}</td><td>{r["event_count"]}</td></tr>'
+            for r in rows)
+        out.append('<h2>Entities</h2>')
+        out.append(f"<table><tr><th>Name</th><th>Type</th><th>Events</th></tr>"
+                   f"{body}</table>")
 
-
-def _events_tab(conn: sqlite3.Connection, query: str) -> str:
-    out = [_search_form(query, "events", "Alaska Airlines, Costco…")]
-    rows = event_module.query(conn, entity=query or None, limit=100)
-
-    if not rows:
-        out.append('<div class="empty">No events.</div>')
-        return "".join(out)
-
-    out.append('<p class="hint">Things that happened, with every document '
-               'that evidences them.</p>')
-    for row in rows:
-        when = row["occurred_on"] or "undated"
-        if row["occurred_precision"] == "year" and row["occurred_on"]:
-            when = row["occurred_on"][:4]
-        people = ", ".join(
-            f'{e["canonical_name"]} ({e["role"]})'
-            for e in event_module.event_entities(conn, int(row["id"])))
-        evidence = " ".join(
-            f'<a href="/api/items/{e["item_id"]}">{_esc(e["title"])}</a>'
-            for e in event_module.evidence(conn, int(row["id"])))
-        out.append(f"""<div class="hit">
-  <h3>{_esc(row["title"] or row["event_type"])}</h3>
-  <div class="path">{_esc(when)}{" · " + _esc(people) if people else ""}</div>
-  <div class="snip">evidence: {evidence}</div>
-</div>""")
-    return "".join(out)
-
-
-def _entities_tab(conn: sqlite3.Connection, query: str) -> str:
-    out = [_search_form(query, "entities", "Costco, ACME…")]
-
-    if query:
-        found = entity_module.find(conn, query)
-        if not found:
-            out.append('<div class="empty">No matching entity.</div>')
-            return "".join(out)
-        for row in found:
-            aliases = entity_module.aliases(conn, int(row["id"]))
-            out.append(f"""<div class="hit">
-  <h3>{_esc(row["canonical_name"])}</h3>
-  <div class="path">also known as: {_esc(", ".join(aliases))}</div>
-</div>""")
-        return "".join(out)
-
-    rows = entity_module.list_all(conn)
-    if not rows:
-        out.append('<div class="empty">No entities yet.</div>')
-        return "".join(out)
-    body = "".join(
-        f'<tr><td><a href="/?tab=entities&q={_esc(r["canonical_name"])}">'
-        f'{_esc(r["canonical_name"])}</a></td>'
-        f'<td>{_esc(r["entity_type"])}</td><td>{r["event_count"]}</td></tr>'
-        for r in rows
-    )
-    out.append('<p class="hint">Merchants, employers and organizations, with '
-               'their spelling variants folded together.</p>')
-    out.append(f"<table><tr><th>Name</th><th>Type</th><th>Events</th></tr>"
-               f"{body}</table>")
+    if len(out) == 1:
+        out.append('<div class="empty">Nothing indexed yet. Run '
+                   '<code>dm scan --index</code>.</div>')
     return "".join(out)
 
 
