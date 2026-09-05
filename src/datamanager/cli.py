@@ -20,7 +20,7 @@ import logging
 import sys
 from pathlib import Path
 
-from . import corrections, entities, events, notes, vocabulary
+from . import corrections, embed, entities, events, notes, vocabulary
 from .config import Config
 from .db import connect
 from .index.indexer import Indexer
@@ -43,16 +43,27 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="hash every file, ignoring size/mtime shortcuts")
     p_scan.add_argument("--index", action="store_true",
                         help="run extraction immediately after scanning")
+    p_scan.add_argument("--embed", action="store_true",
+                        help="also compute embeddings after indexing")
 
     p_index = sub.add_parser("index", help="process queued extraction jobs")
     p_index.add_argument("--limit", type=int, default=None)
     p_index.add_argument("--item", type=int, default=None, help="reindex one item")
+    p_index.add_argument("--embed", action="store_true",
+                         help="also compute embeddings for semantic search")
+
+    p_embed = sub.add_parser("embed", help="compute passage embeddings")
+    p_embed.add_argument("--model", default=embed.DEFAULT_MODEL)
+    p_embed.add_argument("--limit", type=int, default=None)
+    p_embed.add_argument("--stats", action="store_true")
 
     p_search = sub.add_parser("search", help="search the index")
     p_search.add_argument("query", nargs="+")
     p_search.add_argument("-n", "--limit", type=int, default=10)
     p_search.add_argument("--kind", choices=["document", "photo", "note"])
     p_search.add_argument("--explain", action="store_true", help="show ranking signals")
+    p_search.add_argument("--no-semantic", action="store_true",
+                          help="keyword only, skip vector search")
 
     p_get = sub.add_parser("get", help="direct answer for a field (Tier 1)")
     p_get.add_argument("key")
@@ -149,6 +160,8 @@ def _dispatch(args, cfg: Config, conn) -> int:
         return _cmd_scan(args, cfg, conn)
     if args.command == "index":
         return _cmd_index(args, cfg, conn)
+    if args.command == "embed":
+        return _cmd_embed(args, conn)
     if args.command == "search":
         return _cmd_search(args, conn)
     if args.command == "get":
@@ -204,6 +217,8 @@ def _cmd_scan(args, cfg: Config, conn) -> int:
     if args.index:
         result = Indexer(conn, cfg).run_pending()
         print(f"index: {result.summary()}")
+        if args.embed and embed.available():
+            print(f"embed: {embed.embed_pending(conn).summary()}")
     return 0
 
 
@@ -214,12 +229,40 @@ def _cmd_index(args, cfg: Config, conn) -> int:
     else:
         result = indexer.run_pending(limit=args.limit)
     print(result.summary())
+
+    if args.embed and embed.available():
+        print(embed.embed_pending(conn).summary())
+    return 0
+
+
+def _cmd_embed(args, conn) -> int:
+    if args.stats:
+        info = embed.stats(conn)
+        print(f"passages with text: {info['passages']}")
+        if not info["by_model"]:
+            print("no embeddings yet — run: dm embed")
+            return 0
+        for model_id, count in info["by_model"].items():
+            missing = info["passages"] - count
+            print(f"  {model_id}: {count} embedded"
+                  + (f", {missing} pending" if missing > 0 else ""))
+        return 0
+
+    if not embed.available():
+        print("sentence-transformers is not installed", file=sys.stderr)
+        print("install it with: pip install -e '.[semantic]'", file=sys.stderr)
+        return 1
+
+    print(f"embedding with {args.model} (first run downloads the model)...")
+    result = embed.embed_pending(conn, model_id=args.model, limit=args.limit)
+    print(result.summary())
     return 0
 
 
 def _cmd_search(args, conn) -> int:
     engine = SearchEngine(conn)
-    response = engine.search(" ".join(args.query), limit=args.limit, kind=args.kind)
+    response = engine.search(" ".join(args.query), limit=args.limit,
+                             kind=args.kind, semantic=not args.no_semantic)
 
     if not response.hits:
         print("no results")

@@ -217,6 +217,20 @@ CREATE TABLE IF NOT EXISTS event_evidence (
     PRIMARY KEY (event_id, item_id, record_id, passage_id)
 );
 
+-- ------------------------------------------------------------- embeddings
+-- A rebuildable cache (D-004, NFR-6). Tagged with the model that produced
+-- each vector, so switching models is a re-index rather than a migration.
+
+CREATE TABLE IF NOT EXISTS embeddings (
+    passage_id INTEGER NOT NULL REFERENCES passages(id) ON DELETE CASCADE,
+    vector     BLOB NOT NULL,
+    model_id   TEXT NOT NULL,
+    dim        INTEGER NOT NULL,
+    PRIMARY KEY (passage_id, model_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings(model_id);
+
 -- ------------------------------------------------------------------ tags
 
 CREATE TABLE IF NOT EXISTS tags (

@@ -23,6 +23,16 @@ BOOST_TITLE_MATCH = 0.5
 BOOST_RECENCY_MAX = 0.3
 SNIPPET_CHARS = 240
 
+# Reciprocal Rank Fusion. k=60 is the standard constant; fixed, never learned,
+# so ranking stays reproducible (NFR-2, D-004).
+RRF_K = 60
+RRF_WEIGHT_BM25 = 1.0
+RRF_WEIGHT_VECTOR = 0.8      # vectors inform, they never outrank exact matches
+# Vectors below this similarity are noise: brute-force search always returns
+# *something*, and an unrelated passage at rank 1 of an empty result set would
+# otherwise be promoted by fusion.
+MIN_VECTOR_SIMILARITY = 0.25
+
 
 @dataclass
 class RankedHit:
@@ -88,10 +98,35 @@ class SearchEngine:
         self.conn = conn
 
     def search(self, query: str, *, limit: int = 20, offset: int = 0,
-               kind: str | None = None) -> SearchResponse:
+               kind: str | None = None, semantic: bool = True) -> SearchResponse:
+        """Keyword and (when available) vector search, fused by RRF.
+
+        Semantic search is additive: with no embeddings or no model installed,
+        this degrades to pure BM25 and still works (NFR-9).
+        """
         fts_query = to_fts_query(query)
-        if not fts_query:
-            return SearchResponse(query=query, hits=[], total=0, fts_query="")
+        keyword_hits = self._keyword_search(fts_query, limit, offset, kind, query) \
+            if fts_query else []
+
+        vector_ranks: dict[int, int] = {}
+        if semantic:
+            vector_ranks = self._vector_ranks(query, limit, offset, kind)
+
+        if not keyword_hits and not vector_ranks:
+            return SearchResponse(query=query, hits=[], total=0, fts_query=fts_query)
+
+        if not vector_ranks:
+            total = self._count(fts_query, kind) if fts_query else 0
+            return SearchResponse(query=query, hits=keyword_hits, total=total,
+                                  fts_query=fts_query)
+
+        hits = self._fuse(keyword_hits, vector_ranks, query, limit, kind)
+        total = max(self._count(fts_query, kind) if fts_query else 0, len(hits))
+        return SearchResponse(query=query, hits=hits, total=total,
+                              fts_query=fts_query)
+
+    def _keyword_search(self, fts_query: str, limit: int, offset: int,
+                        kind: str | None, raw_query: str) -> list[RankedHit]:
 
         sql = """
             SELECT
@@ -127,7 +162,7 @@ class SearchEngine:
             raise
 
         newest, oldest = self._modified_range()
-        terms = {t.lower() for t in _TOKEN.findall(query)}
+        terms = {t.lower() for t in _TOKEN.findall(raw_query)}
 
         hits: list[RankedHit] = []
         for row in rows:
@@ -156,9 +191,94 @@ class SearchEngine:
 
         # Re-sort after boosts, with the same total tie-break.
         hits.sort(key=lambda h: (-h.score, h.passage_id))
+        return hits
 
-        total = self._count(fts_query, kind)
-        return SearchResponse(query=query, hits=hits, total=total, fts_query=fts_query)
+    def _vector_ranks(self, query: str, limit: int, offset: int,
+                      kind: str | None) -> dict[int, int]:
+        """Passage id to its rank in vector search (1-based)."""
+        from .. import embed
+
+        if not embed.available():
+            return {}
+        try:
+            scored = embed.search(self.conn, query, limit=(limit + offset) * 3,
+                                  kind=kind)
+        except Exception:
+            return {}
+        return {pid: rank for rank, (pid, score) in enumerate(scored, start=1)
+                if score >= MIN_VECTOR_SIMILARITY}
+
+    def _fuse(self, keyword_hits: list[RankedHit], vector_ranks: dict[int, int],
+              query: str, limit: int, kind: str | None) -> list[RankedHit]:
+        """Reciprocal Rank Fusion over the two signals.
+
+        RRF combines ranks rather than scores, so BM25 and cosine similarity --
+        which are not on comparable scales -- can be merged without tuning
+        either one.
+        """
+        keyword_ranks = {hit.passage_id: rank
+                         for rank, hit in enumerate(keyword_hits, start=1)}
+        by_id = {hit.passage_id: hit for hit in keyword_hits}
+
+        # Vector-only hits still need their row loaded to be displayable.
+        missing = [pid for pid in vector_ranks if pid not in by_id]
+        for hit in self._load_hits(missing, query, kind):
+            by_id[hit.passage_id] = hit
+
+        fused: list[RankedHit] = []
+        for passage_id, hit in by_id.items():
+            signals = dict(hit.signals)
+            score = 0.0
+
+            if passage_id in keyword_ranks:
+                contribution = RRF_WEIGHT_BM25 / (RRF_K + keyword_ranks[passage_id])
+                signals["rrf_bm25"] = contribution
+                score += contribution
+            if passage_id in vector_ranks:
+                contribution = RRF_WEIGHT_VECTOR / (RRF_K + vector_ranks[passage_id])
+                signals["rrf_vector"] = contribution
+                score += contribution
+
+            # Fixed boosts survive fusion, scaled to RRF's much smaller range.
+            for name in ("title_match", "recency"):
+                if name in hit.signals:
+                    scaled = hit.signals[name] / 100.0
+                    signals[name] = scaled
+                    score += scaled
+
+            fused.append(RankedHit(
+                item_id=hit.item_id, passage_id=passage_id, uri=hit.uri,
+                title=hit.title, page=hit.page, snippet=hit.snippet,
+                score=score, signals=signals,
+            ))
+
+        fused.sort(key=lambda h: (-h.score, h.passage_id))
+        return fused[:limit]
+
+    def _load_hits(self, passage_ids: list[int], query: str,
+                   kind: str | None) -> list[RankedHit]:
+        """Build hits for passages found only by vector search."""
+        if not passage_ids:
+            return []
+        placeholders = ",".join("?" * len(passage_ids))
+        sql = (f"SELECT p.id AS passage_id, p.item_id, p.page, p.text, "
+               f"i.uri, i.title FROM passages p JOIN items i ON i.id = p.item_id "
+               f"WHERE p.id IN ({placeholders}) AND i.deleted_at IS NULL")
+        params: list[object] = list(passage_ids)
+        if kind:
+            sql += " AND i.kind = ?"
+            params.append(kind)
+
+        terms = {t.lower() for t in _TOKEN.findall(query)}
+        return [
+            RankedHit(
+                item_id=int(row["item_id"]), passage_id=int(row["passage_id"]),
+                uri=row["uri"], title=row["title"] or "", page=row["page"],
+                snippet=self._snippet(row["text"] or "", terms),
+                score=0.0, signals={},
+            )
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
 
     def _count(self, fts_query: str, kind: str | None) -> int:
         sql = ("SELECT COUNT(*) AS n FROM passages_fts "
