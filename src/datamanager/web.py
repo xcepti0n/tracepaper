@@ -92,6 +92,24 @@ h2 .count { background:var(--accent-soft); color:var(--accent); padding:1px 7px;
 button.fix { background:transparent; color:var(--muted); border:1px solid var(--line);
              padding:1px 9px; font-size:11px; border-radius:5px; margin-left:8px; }
 button.fix:hover { color:var(--accent); border-color:var(--accent); }
+.field { margin:8px 0 16px; }
+.field input[type=text] { width:100%; }
+.field.root { display:flex; gap:8px; flex-wrap:wrap; }
+.field.root input { flex:1; min-width:260px; }
+.field.root .status, .field .status { flex-basis:100%; }
+.status { font-size:12.5px; margin-top:5px; min-height:17px; }
+.status .ok { color:var(--accent); font-weight:600; }
+.status .bad { color:#b3261e; font-weight:600; }
+.status .muted { color:var(--muted); }
+.bad-line { color:#b3261e; margin-top:4px; line-height:1.45; }
+.warn-line { color:var(--warn); margin-top:4px; line-height:1.45; }
+.actions { display:flex; gap:12px; align-items:center; margin-top:26px;
+           padding-top:18px; border-top:1px solid var(--line); }
+.problems { background:#fdeceb; color:#8c1d18; border-radius:8px;
+            padding:12px 15px; margin:14px 0; font-size:13.5px; }
+@media (prefers-color-scheme: dark) { .problems { background:#3a1f1d;
+            color:#f2b8b5; } }
+.problems div { margin:3px 0; }
 .toast { position:fixed; bottom:22px; left:50%; transform:translateX(-50%);
          background:var(--accent); color:#fff; padding:11px 20px; border-radius:8px;
          font-size:14px; box-shadow:0 4px 16px rgba(0,0,0,.2); z-index:50; }
@@ -116,6 +134,84 @@ async function fixValue(itemId, key, current) {
   }
 }
 
+// Settings: every path is checked against the filesystem before it is saved,
+// so a typo cannot leave the service pointing at nothing.
+function addRoot() {
+  const row = document.createElement('div');
+  row.className = 'field root';
+  row.innerHTML = `<input type="text" placeholder="/mnt/nas/documents"
+      onchange="checkPath(this,'source',null)">
+    <button type="button" class="ghost"
+      onclick="this.parentElement.remove()">remove</button>
+    <div class="status"></div>`;
+  document.getElementById('roots').appendChild(row);
+}
+
+async function checkPath(input, kind, statusId) {
+  const box = statusId ? document.getElementById(statusId)
+                       : input.parentElement.querySelector('.status');
+  if (!input.value.trim()) { box.innerHTML = ''; return; }
+  box.innerHTML = '<span class="muted">checking…</span>';
+
+  const response = await fetch('/api/storage/check', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({path: input.value.trim(), kind: kind}),
+  });
+  if (!response.ok) { box.innerHTML = '<span class="bad">check failed</span>'; return; }
+
+  const check = await response.json();
+  if (check.ok) {
+    const bits = [check.filesystem,
+                  check.file_count !== null ? check.file_count + ' files' : null,
+                  check.free_human ? check.free_human + ' free' : null]
+                 .filter(Boolean).join(' · ');
+    const warnings = (check.warnings || [])
+      .map(w => `<div class="warn-line">${escapeHtml(w)}</div>`).join('');
+    box.innerHTML = `<span class="ok">✓ ready</span>
+      <span class="muted">${escapeHtml(bits)}</span>${warnings}`;
+  } else {
+    const problems = (check.problems || [])
+      .map(p => `<div class="bad-line">${escapeHtml(p)}</div>`).join('');
+    box.innerHTML = `<span class="bad">✗ not usable</span>${problems}`;
+  }
+}
+
+async function saveSettings(event) {
+  event.preventDefault();
+  const roots = [...document.querySelectorAll('#roots input')]
+    .map(i => i.value.trim()).filter(Boolean);
+
+  const response = await fetch('/api/settings', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      roots: roots,
+      db_path: document.getElementById('db_path').value.trim(),
+      backup_dir: document.getElementById('backup_dir').value.trim() || null,
+    }),
+  });
+  const result = await response.json();
+
+  document.querySelectorAll('.problems').forEach(el => el.remove());
+  if (result.ok) {
+    toast(result.restart_required
+      ? 'Saved — restart the service to use the new index'
+      : 'Saved');
+    setTimeout(() => location.reload(), 1200);
+  } else {
+    const box = document.createElement('div');
+    box.className = 'problems';
+    box.innerHTML = '<b>Not saved:</b>' + (result.problems || [])
+      .map(p => `<div>${escapeHtml(p)}</div>`).join('');
+    document.getElementById('settings').prepend(box);
+  }
+}
+
+function escapeHtml(text) {
+  const el = document.createElement('div');
+  el.textContent = text;
+  return el.innerHTML;
+}
+
 function toast(message) {
   const el = document.createElement('div');
   el.className = 'toast';
@@ -134,13 +230,16 @@ def render_page(conn: sqlite3.Connection, *, query: str = "", tab: str = "search
     passage text before typing it -- so there is one box, and the answer types
     are grouped in the result rather than split across separate searches.
     """
-    tabs = [("search", "Search"), ("browse", "Browse"), ("status", "Status")]
+    tabs = [("search", "Search"), ("browse", "Browse"), ("status", "Status"),
+            ("settings", "Settings")]
     nav = "".join(
         f'<a href="/?tab={name}" class="{"on" if name == tab else ""}">{label}</a>'
         for name, label in tabs
     )
 
-    if tab == "status":
+    if tab == "settings":
+        body = _settings_tab(conn)
+    elif tab == "status":
         body = _status_tab(conn)
     elif tab == "browse":
         body = _browse_tab(conn, query)
@@ -350,6 +449,116 @@ def _browse_tab(conn: sqlite3.Connection, query: str) -> str:
         out.append('<div class="empty">Nothing indexed yet. Run '
                    '<code>dm scan --index</code>.</div>')
     return "".join(out)
+
+
+def _settings_tab(conn: sqlite3.Connection) -> str:
+    """Storage configuration, with every path validated before saving."""
+    from . import settings as settings_module
+    from . import storage
+    from .api import get_config
+
+    cfg = get_config()
+    config_file = settings_module.find_config()
+    roots = [str(r) for r in cfg.roots]
+    checks = storage.check_all(
+        roots, str(cfg.db_path),
+        str(cfg.backup_dir) if cfg.backup_dir else None)
+    found_mounts = storage.mounts()
+
+    out = ['<h2>Storage</h2>']
+    out.append('<p class="hint">Mount your NFS shares with the OS '
+               '(<code>/etc/fstab</code> or a systemd mount unit) — that '
+               'survives reboots and keeps credentials out of this app. '
+               'Point DataManager at the mounted paths here.</p>')
+
+    if found_mounts:
+        rows = "".join(
+            f'<tr><td><code>{_esc(m["path"])}</code></td>'
+            f'<td>{_esc(m["source"])}</td><td>{_esc(m["type"])}</td>'
+            f'<td>{"read-only" if m["read_only"] else "read-write"}</td></tr>'
+            for m in found_mounts)
+        out.append('<h2>Network shares detected</h2>')
+        out.append(f'<table><tr><th>Mounted at</th><th>Source</th>'
+                   f'<th>Type</th><th>Access</th></tr>{rows}</table>')
+
+    out.append(f"""
+<form id="settings" onsubmit="saveSettings(event)">
+  <h2>Documents to index <span class="pill">read-only</span></h2>
+  <p class="hint">Your Synology NFS read share. Never written to.</p>
+  <div id="roots">{_root_rows(roots, checks["sources"])}</div>
+  <button type="button" class="ghost" onclick="addRoot()">+ add folder</button>
+
+  <h2>Index location <span class="pill warn">local disk only</span></h2>
+  <p class="hint">SQLite corrupts over NFS and SMB — their file locking is
+    unreliable across clients, and it fails silently, weeks later. Keep this on
+    local disk; it rebuilds from your documents anyway.</p>
+  <div class="field">
+    <input type="text" id="db_path" value="{_esc(cfg.db_path)}"
+           onchange="checkPath(this,'index','db_status')">
+    <div id="db_status" class="status">{_check_badge(checks["index"])}</div>
+  </div>
+
+  <h2>Backups <span class="pill">the NAS belongs here</span></h2>
+  <p class="hint">Your Synology NFS write share. Holds the corrections, notes
+    and merges that cannot be regenerated — the copy that survives losing the
+    index machine.</p>
+  <div class="field">
+    <input type="text" id="backup_dir"
+           value="{_esc(cfg.backup_dir or "")}"
+           placeholder="/mnt/nas/backups/datamanager"
+           onchange="checkPath(this,'backup','backup_status')">
+    <div id="backup_status" class="status">
+      {_check_badge(checks["backup"]) if checks["backup"] else ""}</div>
+  </div>
+
+  <div class="actions">
+    <button type="submit">Save</button>
+    <span class="hint">Saved to
+      <code>{_esc(config_file or "datamanager.toml")}</code></span>
+  </div>
+</form>""")
+    return "".join(out)
+
+
+def _root_rows(roots: list[str], checks: list[dict]) -> str:
+    if not roots:
+        return _root_row("", None)
+    return "".join(_root_row(root, check)
+                   for root, check in zip(roots, checks + [None] * len(roots)))
+
+
+def _root_row(value: str, check: dict | None) -> str:
+    badge = _check_badge(check) if check else ""
+    return f"""<div class="field root">
+  <input type="text" value="{_esc(value)}" placeholder="/mnt/nas/documents"
+         onchange="checkPath(this,'source',null)">
+  <button type="button" class="ghost" onclick="this.parentElement.remove()">
+    remove</button>
+  <div class="status">{badge}</div>
+</div>"""
+
+
+def _check_badge(check: dict | None) -> str:
+    """A one-line verdict for a path, with what to do when it is wrong."""
+    if not check:
+        return ""
+    if check["ok"]:
+        bits = []
+        if check.get("filesystem"):
+            bits.append(check["filesystem"])
+        if check.get("file_count") is not None:
+            bits.append(f'{check["file_count"]} files')
+        if check.get("free_human"):
+            bits.append(f'{check["free_human"]} free')
+        detail = " · ".join(bits)
+        warnings = "".join(f'<div class="warn-line">{_esc(w)}</div>'
+                           for w in check.get("warnings", []))
+        return (f'<span class="ok">✓ ready</span> '
+                f'<span class="muted">{_esc(detail)}</span>{warnings}')
+
+    problems = "".join(f'<div class="bad-line">{_esc(p)}</div>'
+                       for p in check.get("problems", []))
+    return f'<span class="bad">✗ not usable</span>{problems}'
 
 
 def _status_tab(conn: sqlite3.Connection) -> str:

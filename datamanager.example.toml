@@ -4,7 +4,13 @@
 # only need the lines you actually change.
 
 [index]
-# Where the index lives. This is the ONLY place DataManager writes.
+# Where the index lives. Editable from the Settings page in the web UI, which
+# validates each path before saving.
+#
+# MUST be local disk. SQLite corrupts over NFS and SMB -- their file locking is
+# unreliable across clients -- and it fails silently, weeks later. The index
+# rebuilds from your documents, so losing it is survivable; corrupting it
+# quietly is not.
 #
 # Keep it on a different path from the scanned roots. On a Synology, that means
 # a separate share or folder -- the source tree is opened read-only and is
@@ -14,6 +20,10 @@
 # filesystems under concurrent access. Local disk on the machine running the
 # service, backed up to the NAS.
 db_path = "/var/lib/datamanager/index.db"
+
+# Backups and exports. The NAS write share belongs here: this holds the
+# corrections, notes and merges that cannot be regenerated.
+backup_dir = "/mnt/nas/backups/datamanager"
 
 [scan]
 # Folders to index, read-only. Multiple roots are fine.

@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from . import corrections, embed, entities, events, notes, vocabulary
+from . import corrections, embed, entities, events, notes, settings, storage, vocabulary
 from .config import Config
 from .db import connect
 from .index.indexer import Indexer
@@ -242,6 +242,51 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 for r in entities.list_all(conn)]}
         finally:
             conn.close()
+
+    @app.get("/api/storage")
+    def api_storage() -> dict[str, Any]:
+        """Validate every configured path, and list mounted network shares."""
+        return {
+            "checks": storage.check_all(
+                [str(r) for r in _config.roots],
+                str(_config.db_path),
+                str(_config.backup_dir) if _config.backup_dir else None),
+            "mounts": storage.mounts(),
+            "config_file": str(settings.find_config() or ""),
+        }
+
+    @app.post("/api/storage/check")
+    def api_storage_check(payload: dict) -> dict[str, Any]:
+        """Validate a proposed path before it is saved."""
+        path = payload.get("path", "")
+        kind = payload.get("kind", "source")
+        if not path:
+            raise HTTPException(status_code=400, detail="path is required")
+        checker = {"source": storage.check_source, "index": storage.check_index,
+                   "backup": storage.check_backup}.get(kind)
+        if checker is None:
+            raise HTTPException(status_code=400, detail=f"unknown kind: {kind}")
+        return checker(path).as_dict()
+
+    @app.post("/api/settings")
+    def api_save_settings(payload: dict) -> dict[str, Any]:
+        config_file = settings.find_config() or Path("datamanager.toml")
+        roots = payload.get("roots") or []
+        db_path = payload.get("db_path") or str(_config.db_path)
+        backup_dir = payload.get("backup_dir") or None
+
+        ok, problems = settings.save(
+            config_file, roots=roots, db_path=db_path, backup_dir=backup_dir,
+            llm_enabled=payload.get("llm_enabled"),
+            llm_endpoint=payload.get("llm_endpoint"),
+            llm_model=payload.get("llm_model"))
+        if not ok:
+            return {"ok": False, "problems": problems}
+
+        # Apply immediately, so a saved change takes effect without a restart.
+        set_config(Config.load(config_file))
+        return {"ok": True, "config_file": str(config_file),
+                "restart_required": str(_config.db_path) != db_path}
 
     @app.get("/api/status")
     def api_status() -> dict[str, Any]:

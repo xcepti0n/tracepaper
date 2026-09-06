@@ -1,5 +1,41 @@
 # Deploying DataManager
 
+## Two NFS shares: one to read, one to write
+
+Mount both with the OS, not with this app. Mounting needs root, and an app that
+mounts filesystems turns every stale handle and credential problem into its own
+bug. `/etc/fstab` handles it properly and survives a reboot.
+
+```
+# /etc/fstab — Synology NFS
+nas.local:/volume1/documents  /mnt/nas/documents  nfs  ro,soft,timeo=30,_netdev  0 0
+nas.local:/volume1/backups    /mnt/nas/backups    nfs  rw,soft,timeo=30,_netdev  0 0
+```
+
+`ro` on the documents share makes NFR-7 enforced by the kernel as well as by
+the application. `soft,timeo=30` means an unreachable NAS returns errors
+instead of hanging the service forever.
+
+Then point DataManager at the mounted paths from **Settings** in the web UI,
+which validates each one before saving — or set them in the config file below.
+
+### Why the index does not go on the NAS
+
+SQLite over NFS or SMB corrupts. Their file locking is unreliable across
+clients, and SQLite's WAL mode depends on it. This does not fail loudly; it
+fails silently, weeks later. The settings page refuses an NFS index path for
+that reason.
+
+You still get one read share and one write share. The difference is that the
+write share receives **backups**, not the live database — and since the index
+rebuilds from your documents, the NAS still holds everything irreplaceable.
+
+| Path | Where | Why |
+|---|---|---|
+| Documents | Synology NFS, `ro` | Read-only, never modified |
+| Live index | Local disk | SQLite needs real file locking |
+| Backups | Synology NFS, `rw` | Survives losing the index machine |
+
 ## Read one folder, write another
 
 DataManager **never writes to the folder it reads**. The source tree is opened

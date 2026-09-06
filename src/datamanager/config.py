@@ -36,6 +36,9 @@ class Config:
     # Where the index is written. Kept separate from the scanned roots so the
     # source tree stays strictly read-only (NFR-7).
     db_path: Path = Path("data/index.db")
+    # Where backups and exports are written -- the NAS is the right home, since
+    # that is the copy that survives losing the index machine.
+    backup_dir: Path | None = None
     roots: tuple[Path, ...] = ()
     excludes: tuple[str, ...] = DEFAULT_EXCLUDES
     max_file_bytes: int = 512 * 1024 * 1024
@@ -81,6 +84,8 @@ class Config:
         updates: dict = {}
         if "db_path" in idx:
             updates["db_path"] = Path(idx["db_path"]).expanduser()
+        if "backup_dir" in idx:
+            updates["backup_dir"] = Path(idx["backup_dir"]).expanduser()
         if "roots" in scan:
             updates["roots"] = tuple(Path(r).expanduser() for r in scan["roots"])
         if "excludes" in scan:
