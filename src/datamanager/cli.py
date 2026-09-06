@@ -20,7 +20,7 @@ import logging
 import sys
 from pathlib import Path
 
-from . import backup, corrections, embed, entities, events, notes, vocabulary
+from . import backup, corrections, embed, entities, enrich, events, notes, vocabulary
 from .config import Config
 from .db import connect
 from .index.indexer import Indexer
@@ -128,6 +128,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p_vocab.add_argument("--merge", nargs=2, metavar=("FROM_KEY", "TO_KEY"),
                          help="merge one key into another, rewriting stored rows")
 
+    p_enrich = sub.add_parser(
+        "enrich", help="background pass: photo tags, captions, embeddings")
+    p_enrich.add_argument("--limit", type=int, default=None)
+    p_enrich.add_argument("--captions", action="store_true",
+                          help="also caption photos with thin object tags (slow)")
+    p_enrich.add_argument("--now", action="store_true",
+                          help="run even if the machine is busy")
+    p_enrich.add_argument("--wait", action="store_true",
+                          help="wait for the machine to go idle, then run")
+
     p_backup = sub.add_parser(
         "backup", help="export the human-authored layer (the only irreplaceable state)")
     p_backup.add_argument("path", type=Path)
@@ -209,6 +219,8 @@ def _dispatch(args, cfg: Config, conn) -> int:
         return _cmd_vocab(args, conn)
     if args.command == "serve":
         return _cmd_serve(args, cfg, conn)
+    if args.command == "enrich":
+        return _cmd_enrich(args, cfg, conn)
     if args.command == "backup":
         return _cmd_backup(args, conn)
     if args.command == "status":
@@ -577,6 +589,28 @@ def _cmd_serve(args, cfg: Config, conn) -> int:
 
     uvicorn.run(create_app(cfg), host=args.host, port=args.port,
                 log_level="warning")
+    return 0
+
+
+def _cmd_enrich(args, cfg: Config, conn) -> int:
+    if args.wait:
+        print("waiting for the machine to go idle...")
+        if not enrich.wait_until_idle(threshold=cfg.enrich_load_threshold):
+            print("still busy after 5 minutes — nothing done")
+            return 0
+
+    if not args.now and enrich.system_busy(cfg.enrich_load_threshold):
+        print("machine is busy — skipping (use --now to override, "
+              "--wait to hold)")
+        return 0
+
+    enricher = enrich.Enricher(conn, cfg, respect_load=not args.now,
+                               load_threshold=cfg.enrich_load_threshold)
+    result = enricher.run(limit=args.limit, captions=args.captions)
+    print(result.summary())
+    if result.skipped_busy:
+        print("stopped early: the machine got busy. Re-run to continue "
+              "where it left off.")
     return 0
 
 

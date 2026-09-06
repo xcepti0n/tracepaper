@@ -231,9 +231,10 @@ class UnifiedSearch:
                 continue
             rows = self.conn.execute(
                 "SELECT DISTINCT namespace, value FROM tags "
-                "WHERE lower(value) = ? OR (namespace IN ('year','month') "
-                "AND value = ?) LIMIT 4",
-                (token, token),
+                "WHERE (lower(value) = ? OR lower(value) = ? "
+                "       OR (namespace IN ('year','month') AND value = ?)) "
+                "AND value != '_none' LIMIT 4",
+                (token, token.rstrip("s"), token),
             ).fetchall()
             for row in rows:
                 matched.append((row["namespace"], row["value"]))

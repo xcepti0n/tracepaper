@@ -56,6 +56,11 @@ class Config:
 
     embed_model: str = "sentence-transformers/all-MiniLM-L6-v2"
 
+    # Vision model for photo captions, used only by the background enricher.
+    vlm_model: str = "gemma4:e4b"
+    # Enrichment yields above this 1-minute load average per core.
+    enrich_load_threshold: float = 0.7
+
     extra: dict = field(default_factory=dict)
 
     @staticmethod
@@ -98,5 +103,11 @@ class Config:
         semantic = data.get("semantic", {})
         if "model" in semantic:
             updates["embed_model"] = semantic["model"]
+
+        enrich = data.get("enrich", {})
+        if "vlm_model" in enrich:
+            updates["vlm_model"] = enrich["vlm_model"]
+        if "load_threshold" in enrich:
+            updates["enrich_load_threshold"] = enrich["load_threshold"]
 
         return replace(cfg, **updates, extra=data)

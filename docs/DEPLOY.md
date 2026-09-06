@@ -160,6 +160,40 @@ WantedBy=timers.target
 sudo systemctl enable --now datamanager.service datamanager-scan.timer
 ```
 
+### Nightly enrichment
+
+Object tagging, captions and embeddings are slow and optional. They run when
+the machine is idle and stop the moment it is busy, so this is safe to leave
+running overnight.
+
+```ini
+# /etc/systemd/system/datamanager-enrich.service
+[Unit]
+Description=DataManager background enrichment
+
+[Service]
+Type=oneshot
+User=datamanager
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/opt/datamanager/.venv/bin/dm --config /etc/datamanager.toml enrich --wait
+```
+
+```ini
+# /etc/systemd/system/datamanager-enrich.timer
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
+```
+
+Note that `dm enrich` uses macOS Vision for object tagging, which exists only
+on the Mac. On Proxmox this pass does embeddings only, unless you enable
+captions against an Ollama endpoint.
+
 ---
 
 ## Split deployment: heavy work on the Mac

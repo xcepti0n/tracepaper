@@ -63,3 +63,21 @@ timeout = 120
 # Only documents yielding fewer than this many fields go to the model, so the
 # expensive layer runs on the documents that actually need it.
 min_fields = 3
+
+[enrich]
+# Background pass: object tags for photos, captions, embeddings. Slow and
+# optional -- nothing depends on it, it only makes things more findable.
+#
+# Runs only when the machine is idle and stops the moment it gets busy, so it
+# never competes with what you are doing. Resumable: killing it mid-run costs
+# only the item in flight.
+#
+#   dm enrich --wait              hold until idle, then run
+#   dm enrich --captions          also caption photos with thin object tags
+#
+# Yield above this 1-minute load average per core.
+load_threshold = 0.7
+
+# Vision model for photo captions. Only used with --captions, and only on
+# photos where object tagging came up thin.
+vlm_model = "gemma4:e4b"
