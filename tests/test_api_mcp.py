@@ -328,3 +328,35 @@ def test_api_update_apply_reports_when_it_cannot(client, monkeypatch):
                            headers={"X-Tracepaper-Request": "1"})
     assert response.status_code == 409
     assert "systemctl start tracepaper-update" in response.json()["detail"]
+
+
+def test_settings_page_checks_for_updates_on_load(client, monkeypatch):
+    """A panel that only answers when clicked is one you have to remember to
+    click. The check runs in the browser, not server-side, so a slow or hanging
+    `git fetch` never blocks the page render."""
+    from tracepaper import updates
+    # Point at this repo, which is a real checkout; the test's tmp dir is not.
+    monkeypatch.setattr(updates, "APP_DIR",
+                        Path(__file__).resolve().parent.parent)
+    html = client.get("/?tab=settings").text
+    assert "<h2>Updates</h2>" in html
+    assert "checkUpdates({quiet: true})" in html
+
+
+def test_settings_page_is_honest_when_updates_are_impossible(client, monkeypatch):
+    """A copied-in install cannot update. Say so, rather than showing a button
+    that fails."""
+    from tracepaper import updates
+    monkeypatch.setattr(updates, "APP_DIR", Path("/nonexistent-tracepaper"))
+    html = client.get("/?tab=settings").text
+    assert "not a git checkout" in html
+
+
+def test_background_update_check_is_quiet_on_failure(client):
+    """An unreachable remote on a check the user did not ask for should not
+    paint an error over a page that is working fine."""
+    html = client.get("/?tab=settings").text
+    script = html[html.index("async function checkUpdates"):]
+    script = script[:script.index("async function applyUpdate")]
+    assert "if (!quiet)" in script, (
+        "a background check must suppress its own failure messages")

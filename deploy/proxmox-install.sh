@@ -364,6 +364,17 @@ install_app() {
   inct "chown -R root:root /opt/tracepaper
         chown -R tracepaper:tracepaper /var/lib/tracepaper
         chmod 755 /opt/tracepaper"
+
+  # The code stays root-owned, which is what we want -- but git then refuses to
+  # read the repo as any other user ("detected dubious ownership"), and the
+  # service reads git state to show what version is running and whether an
+  # update is waiting. Marking the path safe grants reading, not writing: the
+  # tree is still root-owned and the update itself still runs as root through
+  # tracepaper-update.service.
+  #
+  # system-wide, not --global: the service user has no home directory to hold a
+  # gitconfig, so a --global write would land somewhere it never reads.
+  inct "git config --system --add safe.directory /opt/tracepaper"
 }
 
 configure_access() {

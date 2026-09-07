@@ -147,11 +147,13 @@ function addRoot() {
   document.getElementById('roots').appendChild(row);
 }
 
-async function checkUpdates() {
+async function checkUpdates(options) {
+  const quiet = options && options.quiet;
   const box = document.getElementById('update_status');
   const detail = document.getElementById('update_detail');
-  box.innerHTML = '<span class="muted">checking…</span>';
-  detail.innerHTML = '';
+  if (!box) return;
+  box.innerHTML = quiet ? '' : '<span class="muted">checking…</span>';
+  if (!quiet) detail.innerHTML = '';
 
   let status;
   try {
@@ -159,13 +161,18 @@ async function checkUpdates() {
     if (!response.ok) throw new Error('HTTP ' + response.status);
     status = await response.json();
   } catch (error) {
-    box.innerHTML = '<span class="bad">could not check: ' +
-                    escapeHtml(String(error.message)) + '</span>';
+    // On a background check, a network failure is not worth shouting about --
+    // the page is still perfectly usable and the user did not ask.
+    if (!quiet) {
+      box.innerHTML = '<span class="bad">could not check: ' +
+                      escapeHtml(String(error.message)) + '</span>';
+    }
     return;
   }
 
   if (status.reason) {
-    box.innerHTML = '<span class="bad">' + escapeHtml(status.reason) + '</span>';
+    if (!quiet) box.innerHTML = '<span class="bad">' +
+                                escapeHtml(status.reason) + '</span>';
     return;
   }
   if (!status.behind) {
@@ -173,8 +180,9 @@ async function checkUpdates() {
     return;
   }
 
-  box.innerHTML = '<span class="muted">' + status.behind + ' commit' +
-                  (status.behind === 1 ? '' : 's') + ' behind</span>';
+  const plural = status.behind === 1 ? '' : 's';
+  box.innerHTML = '<span class="warn-line">' + status.behind +
+                  ' update' + plural + ' available</span>';
 
   const list = status.commits.map(c =>
     '<div class="commit"><code>' + escapeHtml(c.short) + '</code> ' +
@@ -187,7 +195,9 @@ async function checkUpdates() {
     : '<p class="hint">Run <code>systemctl start tracepaper-update</code> ' +
       'in the container to apply these.</p>';
 
-  detail.innerHTML = list + '<div class="actions">' + button + '</div>';
+  detail.innerHTML = '<p class="hint">Changes since ' +
+    escapeHtml(status.current ? status.current.short : 'the running version') +
+    ':</p>' + list + '<div class="actions">' + button + '</div>';
 }
 
 async function applyUpdate(button) {
@@ -629,8 +639,7 @@ place.</p>'''
                    f'on <code>{_esc(status.branch)}</code></p>')
 
     if status.can_apply:
-        action = ('<button type="button" onclick="checkUpdates()">Check for '
-                  'updates</button>'
+        action = ('<button type="button" onclick="checkUpdates()">Check again</button>'
                   '<span id="update_status" class="status"></span>')
     else:
         # A button that appears and then fails is worse than one that never
@@ -640,14 +649,22 @@ place.</p>'''
                   'or polkit does not permit this user to start it. Run '
                   '<code>systemctl start tracepaper-update</code> in the '
                   'container.</p>'
-                  '<button type="button" onclick="checkUpdates()">Check for '
-                  'updates</button>'
+                  '<button type="button" onclick="checkUpdates()">Check again</button>'
                   '<span id="update_status" class="status"></span>')
 
+    # Check on load rather than waiting to be asked. The point of the panel is
+    # to TELL you an update is waiting; one that only answers when clicked is
+    # one you have to remember to click.
+    #
+    # The check runs from the browser after the page renders, not server-side:
+    # it is a `git fetch`, which is slow on a good connection and hangs on a
+    # bad one, and a page that blocks on the network is worse than one that
+    # fills in a moment later.
     return f'''<h2>Updates</h2>
 {current}
 <div class="actions">{action}</div>
-<div id="update_detail"></div>'''
+<div id="update_detail"></div>
+<script>checkUpdates({{quiet: true}});</script>'''
 
 
 def _root_rows(roots: list[str], checks: list[dict]) -> str:

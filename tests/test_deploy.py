@@ -556,3 +556,17 @@ def test_backup_exports_json_not_a_copy_of_the_database():
     assert any(".json" in l for l in exec_lines)
     assert not any("index.db" in l for l in exec_lines), (
         "back up the export, never the live database file")
+
+
+def test_the_service_user_can_read_git_state():
+    """The code tree is root-owned on purpose, but git then refuses to read it
+    as anyone else ("dubious ownership") -- and the UI reads git state to show
+    the running version and whether an update is waiting. Marking the path safe
+    grants reading only; the update still runs as root through its own unit."""
+    installer = (DEPLOY / "proxmox-install.sh").read_text()
+    assert "safe.directory /opt/tracepaper" in installer
+    assert "--system" in installer, (
+        "the service user has no home for a --global gitconfig")
+    updater = (DEPLOY / "update.sh").read_text()
+    assert "safe.directory" in updater, (
+        "an install predating this must get the fix on its next update")

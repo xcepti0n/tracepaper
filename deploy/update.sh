@@ -31,6 +31,14 @@ msg_error() { echo -e " ${RD}✘${CL} $1" >&2; }
 
 cd "$APP_DIR"
 
+# The checkout is root-owned, so git refuses to read it as the service user
+# unless the path is marked safe. Applied here as well as in the installer, so
+# an install predating this gets it on its next update rather than needing a
+# manual fix. Idempotent: --add would duplicate the line, so check first.
+if ! git config --system --get-all safe.directory 2>/dev/null | grep -qx "$APP_DIR"; then
+  git config --system --add safe.directory "$APP_DIR" || true
+fi
+
 PORT="$(grep -oE '\-\-port[= ]+[0-9]+' "$UNIT_DIR/tracepaper.service" 2>/dev/null | grep -oE '[0-9]+' | head -1)"
 PORT="${PORT:-8823}"
 
