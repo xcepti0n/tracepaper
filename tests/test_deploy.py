@@ -503,3 +503,15 @@ def test_config_update_is_verified_after_writing():
     """Printing the file and moving on let a failed edit slide past unnoticed."""
     attach = (DEPLOY / "add-nas.sh").read_text()
     assert "the config was not updated to" in attach
+
+
+def test_scan_timeout_allows_a_cold_first_pass():
+    """A cold scan of a large corpus runs for many hours. A timeout tuned to
+    the hourly steady state would SIGTERM it partway through, every time, so it
+    could never finish and never reach the cheap steady state."""
+    unit = (DEPLOY / "tracepaper-scan.service").read_text()
+    match = re.search(r"TimeoutStartSec=(\d+)", unit)
+    assert match, "the scan unit must bound its runtime"
+    assert int(match.group(1)) >= 43200, (
+        "a first scan over tens of thousands of files needs more than a few "
+        "hours; a hung mount is caught by soft/timeo on the mount instead")

@@ -20,6 +20,17 @@ DEFAULT_EXCLUDES: tuple[str, ...] = (
     "@tmp",
     "desktop.ini",
     "Thumbs.db",
+    # Developer and application noise. A single node_modules can be tens of
+    # thousands of files, none of which anyone will ever search for, and it
+    # costs a stat and a row each on every scan.
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".cache",
+    "Caches",
+    ".Trash",
+    "@Recycle",
 )
 
 # Soft-delete only after this many consecutive scans miss a path. An unmounted

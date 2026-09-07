@@ -27,9 +27,19 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 
 # A hung mount must not leave this running forever, holding the next run off.
-# A full first-time index of a large corpus can legitimately exceed this: run
-# that one by hand (deploy/README.md) rather than raising the timer's limit.
-TimeoutStartSec=3600
+#
+# Sized for the FIRST scan, not the steady state. A cold pass over a large
+# corpus -- tens of thousands of files, OCR on scans and screenshots, over a
+# network mount -- runs for many hours, and a limit tuned to the hourly case
+# would SIGTERM it partway through every time, so it could never finish and
+# never reach the cheap steady state.
+#
+# Later scans read no file contents at all for anything unchanged, so they
+# finish in minutes and never approach this.
+#
+# A genuinely hung NFS mount is caught long before this by the mount's own
+# soft,timeo=150,retrans=3, which returns an error rather than blocking.
+TimeoutStartSec=86400
 
 StandardOutput=journal
 StandardError=journal
