@@ -119,7 +119,8 @@ msg_ok "Installed"
 UNITS_CHANGED=0
 for unit in tracepaper.service tracepaper-scan.service tracepaper-scan.timer \
             tracepaper-enrich.service tracepaper-enrich.timer \
-            tracepaper-update.service; do
+            tracepaper-update.service \
+            tracepaper-backup.service tracepaper-backup.timer; do
   if [[ -f "deploy/$unit" ]] && ! cmp -s "deploy/$unit" "$UNIT_DIR/$unit"; then
     # Preserve a non-default port rather than resetting it on every update.
     if [[ "$unit" == "tracepaper.service" && "$PORT" != "8823" ]]; then
@@ -163,7 +164,8 @@ git reset --hard --quiet "$BEFORE"
 # here, so there is nothing to hand back.
 for unit in tracepaper.service tracepaper-scan.service tracepaper-scan.timer \
             tracepaper-enrich.service tracepaper-enrich.timer \
-            tracepaper-update.service; do
+            tracepaper-update.service \
+            tracepaper-backup.service tracepaper-backup.timer; do
   if [[ -f "deploy/$unit" ]]; then cp "deploy/$unit" "$UNIT_DIR/$unit" 2>/dev/null || true; fi
 done
 # if/fi, not `[[ ]] && cmd`: a false test returns 1, which here would abort the

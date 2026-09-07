@@ -450,6 +450,8 @@ chmod 640 /etc/tracepaper.toml"
           cp /opt/tracepaper/deploy/tracepaper-enrich.service /etc/systemd/system/
           cp /opt/tracepaper/deploy/tracepaper-enrich.timer /etc/systemd/system/
           cp /opt/tracepaper/deploy/tracepaper-update.service /etc/systemd/system/
+          cp /opt/tracepaper/deploy/tracepaper-backup.service /etc/systemd/system/
+          cp /opt/tracepaper/deploy/tracepaper-backup.timer /etc/systemd/system/
           mkdir -p /etc/polkit-1/rules.d
           cp /opt/tracepaper/deploy/49-tracepaper-update.rules /etc/polkit-1/rules.d/"
   else
@@ -481,7 +483,8 @@ chmod 640 /etc/tracepaper.toml"
   inct "systemctl daemon-reload
         systemctl enable --now tracepaper >/dev/null 2>&1
         systemctl enable --now tracepaper-scan.timer >/dev/null 2>&1
-        systemctl enable --now tracepaper-enrich.timer >/dev/null 2>&1"
+        systemctl enable --now tracepaper-enrich.timer >/dev/null 2>&1
+        systemctl enable --now tracepaper-backup.timer >/dev/null 2>&1"
 
   # polkit only reads its rules at start. Without this the grant exists on disk
   # but is not in effect, so the update button fails until the next reboot.

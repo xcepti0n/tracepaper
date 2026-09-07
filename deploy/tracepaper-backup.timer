@@ -1,0 +1,12 @@
+[Unit]
+Description=Tracepaper — nightly backup of corrections and notes
+
+[Timer]
+# An hour after the enrichment pass, so the two do not overlap on a small host.
+OnCalendar=*-*-* 04:00:00
+# A host that was off overnight still backs up when it comes back.
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target
