@@ -371,6 +371,6 @@ msg_ok "Storage attached."
 echo
 echo "  Start the first scan when you are ready to watch it:"
 echo
-echo "    pct exec ${CTID} -- systemctl start tracepaper-scan"
+echo "    pct exec ${CTID} -- systemctl start --no-block tracepaper-scan"
 echo "    pct exec ${CTID} -- journalctl -u tracepaper-scan -f"
 echo

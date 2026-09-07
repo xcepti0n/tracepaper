@@ -31,6 +31,10 @@ from ..db import transaction, utcnow
 log = logging.getLogger(__name__)
 
 HASH_CHUNK = 1024 * 1024
+# How often a long scan reports progress. A first pass over a large corpus
+# runs for hours; silence for that long is indistinguishable from a hang.
+HEARTBEAT_SECONDS = 30.0
+
 
 # Filesystems report mtime at limited resolution (1s on many SMB/NFS mounts).
 # A file written twice inside that window can keep an identical (size, mtime)
@@ -138,11 +142,28 @@ class Scanner:
         prior_count = len(prior)
         seen_uris: set[str] = set()
 
+        last_heartbeat = time.monotonic()
+
         try:
             for path, st in walk(root, self.cfg):
                 uri = str(path)
                 seen_uris.add(uri)
                 result.seen += 1
+
+                # A first scan of a large corpus runs for hours over a network
+                # mount. Without this it prints nothing between start and
+                # finish, and there is no way to tell working from wedged --
+                # which is the question anyone watching actually has.
+                #
+                # Time-based rather than every N files: the interesting case is
+                # a scan crawling over a slow share, where a count-based
+                # heartbeat goes quiet exactly when reassurance is wanted.
+                now = time.monotonic()
+                if now - last_heartbeat >= HEARTBEAT_SECONDS:
+                    log.info("scanning %s: seen=%d added=%d changed=%d "
+                             "unchanged=%d", root, result.seen, result.added,
+                             result.changed, result.unchanged)
+                    last_heartbeat = now
                 try:
                     self._reconcile_one(uri, st, prior.get(uri), scan_id,
                                         result, force_hash=force_hash,

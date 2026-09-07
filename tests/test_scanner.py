@@ -277,3 +277,48 @@ def test_same_size_edit_within_mtime_resolution_is_detected(conn, cfg, nas):
 
     assert result.changed == 1, "a same-size, same-mtime edit must still be caught"
     assert queued(conn) == 1
+
+
+def test_rescan_does_not_rehash_settled_files(conn, cfg, nas):
+    """What makes the hourly timer cheap: a file whose (size, mtime) is
+    unchanged, and old enough to trust, is never opened again."""
+    for i in range(3):
+        age(write(nas / f"d{i}.txt", f"document {i}"))
+
+    first = Scanner(conn, cfg).scan(nas)
+    assert first.added == 3
+    assert first.candidates == 3, "a first sighting must be hashed"
+
+    second = Scanner(conn, cfg).scan(nas)
+    assert second.unchanged == 3
+    assert second.added == 0
+    assert second.candidates == 0, (
+        "a settled, unchanged file must not be read again -- this is what "
+        "keeps an hourly scan of a large corpus nearly free")
+
+
+def test_touching_mtime_does_not_reextract(conn, cfg, nas):
+    """A Synology restore or an rsync rewrites mtime without changing content.
+    The hash decides, so this costs one hash and no re-extraction."""
+    path = age(write(nas / "a.txt", "unchanged content"))
+    Scanner(conn, cfg).scan(nas)
+    before = queued(conn)
+
+    os.utime(path, None)  # touch: new mtime, same bytes
+
+    result = Scanner(conn, cfg).scan(nas)
+    assert result.candidates == 1, "the changed mtime makes it a candidate"
+    assert result.changed == 0, "but the hash proves the content is identical"
+    assert result.unchanged == 1
+    assert queued(conn) == before, "no new extraction work was queued"
+
+
+def test_uri_stays_unique_across_repeated_scans(conn, cfg, nas):
+    """Re-running a scan must never duplicate an item."""
+    age(write(nas / "a.txt", "one"))
+    for _ in range(4):
+        Scanner(conn, cfg).scan(nas)
+    n = conn.execute(
+        "SELECT COUNT(*) AS n FROM items WHERE deleted_at IS NULL"
+    ).fetchone()["n"]
+    assert n == 1

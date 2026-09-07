@@ -572,7 +572,7 @@ finish() {
   echo
   echo "  Logs      : pct exec $CTID -- journalctl -u tracepaper -f"
   echo "  Restart   : pct exec $CTID -- systemctl restart tracepaper"
-  echo "  Scan now  : pct exec $CTID -- systemctl start tracepaper-scan"
+  echo "  Scan now  : pct exec $CTID -- systemctl start --no-block tracepaper-scan"
   echo "  Scan log  : pct exec $CTID -- journalctl -u tracepaper-scan -f"
   echo "  Status    : pct exec $CTID -- sudo -u tracepaper /opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml status"
   echo
@@ -585,7 +585,7 @@ finish() {
   echo
   echo "  Then start the first scan when you can watch it:"
   echo
-  echo -e "    ${BL}pct exec $CTID -- systemctl start tracepaper-scan${CL}"
+  echo -e "    ${BL}pct exec $CTID -- systemctl start --no-block tracepaper-scan${CL}"
   echo
   echo "  A first pass over a lifetime of documents takes hours. It is resumable —"
   echo "  interrupting it costs only the document in flight."

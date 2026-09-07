@@ -7,6 +7,7 @@ model-free -- this is M1, the floor that works with nothing installed.
 from __future__ import annotations
 
 import logging
+import time
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,10 @@ from ..extract import records as record_extract
 from ..extract import text as text_extract
 
 log = logging.getLogger(__name__)
+
+# How often a long extraction run reports progress. Matches the scanner's, so
+# the two phases of one job read consistently in the journal.
+HEARTBEAT_SECONDS = 30.0
 
 
 @dataclass
@@ -58,12 +63,35 @@ class Indexer:
     def run_pending(self, limit: int | None = None) -> IndexResult:
         """Process queued extract_text jobs."""
         result = IndexResult()
+        remaining = self._queued_count()
+        if remaining:
+            log.info("extracting %d queued items", remaining)
+
+        last_heartbeat = time.monotonic()
         while True:
             job = self._claim_job(limit_check=limit, done=result.processed)
             if job is None:
                 break
             self._process(job, result)
+
+            # Extraction is far slower than the scan that queues the work --
+            # OCR and PDF parsing dominate -- so a first pass over a large
+            # corpus is a long silence without this. Time-based, so a run
+            # stalled on one enormous file still says something.
+            now = time.monotonic()
+            if now - last_heartbeat >= HEARTBEAT_SECONDS:
+                left = self._queued_count()
+                log.info("extracted %d (%d queued, %d partial, %d failed)",
+                         result.indexed, left, result.partial, result.failed)
+                last_heartbeat = now
         return result
+
+    def _queued_count(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM jobs "
+            "WHERE type = 'extract_text' AND state IN ('queued', 'claimed')"
+        ).fetchone()
+        return int(row["n"]) if row else 0
 
     def reindex_item(self, item_id: int) -> IndexResult:
         result = IndexResult()

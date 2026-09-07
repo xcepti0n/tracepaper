@@ -139,12 +139,29 @@ account you can revoke.
 ## 3. First scan
 
 ```bash
-pct exec <CTID> -- systemctl start tracepaper-scan
+pct exec <CTID> -- systemctl start --no-block tracepaper-scan
 pct exec <CTID> -- journalctl -u tracepaper-scan -f
 ```
 
+`--no-block` matters: the unit is `Type=oneshot`, so a plain `systemctl start`
+waits for the whole scan to finish and looks like a hung terminal. It is not
+hung; it is scanning silently, because the output goes to the journal.
+
 Hours for a lifetime of documents, and resumable — interrupting it costs only
 the document in flight. The hourly timer picks up everything after that.
+
+Progress is easier to read from the index than the log, since the scanner logs
+once per root rather than per file:
+
+```bash
+watch -n 10 'curl -sk https://<your-host>/api/status'
+```
+
+`items` climbing means it is working. To check without following:
+
+```bash
+pct exec <CTID> -- systemctl is-active tracepaper-scan   # activating = running
+```
 
 ---
 
@@ -272,7 +289,7 @@ Nothing is indexed when it finishes. Start the first scan when you are ready to
 watch it:
 
 ```bash
-pct exec <CTID> -- systemctl start tracepaper-scan
+pct exec <CTID> -- systemctl start --no-block tracepaper-scan
 pct exec <CTID> -- journalctl -u tracepaper-scan -f
 ```
 
