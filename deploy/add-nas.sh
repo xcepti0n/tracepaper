@@ -209,10 +209,31 @@ case "$PROTOCOL" in
       chmod 600 "$SMB_CREDENTIALS"
     fi
 
-    # uid=100000 is root inside an unprivileged LXC as seen from the host: the
-    # default id-map shifts container uids by 100000. Files land owned by the
-    # container's root, which the service can read.
-    common="credentials=${SMB_CREDENTIALS},vers=${SMB_VERS},iocharset=utf8,uid=100000,gid=100000,_netdev,nofail"
+    # SMB has no uid negotiation: the server authenticates the account, and the
+    # client decides what the files look like locally. So the mount must present
+    # them as owned by the uid the SERVICE runs as -- not the container's root,
+    # which can read a world-readable tree but cannot write the backup share.
+    #
+    # Asked, not assumed: the service uid is whatever adduser --system picked,
+    # and the id-map offset is whatever this container is configured with.
+    svc_uid=$(pct exec "$CTID" -- id -u tracepaper 2>/dev/null || echo "")
+    svc_gid=$(pct exec "$CTID" -- id -g tracepaper 2>/dev/null || echo "")
+    if [[ -z "$svc_uid" || -z "$svc_gid" ]]; then
+      msg_error "could not read the tracepaper uid inside container ${CTID}."
+      msg_warn  "Is Tracepaper installed there? pct exec ${CTID} -- id tracepaper"
+      exit 1
+    fi
+
+    # An unprivileged container's uids are offset on the host. Read the offset
+    # from the container's own id-map rather than hardcoding 100000: a custom
+    # map would silently produce files the service cannot touch.
+    id_offset=$(pct config "$CTID" | sed -n 's/^lxc.idmap: u 0 \([0-9]*\) .*/\1/p' | head -1)
+    id_offset="${id_offset:-100000}"
+    host_uid=$(( svc_uid + id_offset ))
+    host_gid=$(( svc_gid + id_offset ))
+    msg_info "Mapping files to the service account (uid ${svc_uid} in the container, ${host_uid} here)."
+
+    common="credentials=${SMB_CREDENTIALS},vers=${SMB_VERS},iocharset=utf8,uid=${host_uid},gid=${host_gid},file_mode=0640,dir_mode=0750,_netdev,nofail"
     add_fstab_line "//${NAS_HOST}/${READ_SHARE#/}"   "$host_docs"   "cifs" "ro,${common}"
     add_fstab_line "//${NAS_HOST}/${WRITE_SHARE#/}" "$host_backup" "cifs" "rw,${common}"
     ;;

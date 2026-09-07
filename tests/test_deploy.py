@@ -465,3 +465,24 @@ def test_fstab_lookup_tolerates_no_match():
     assert "|| true" in line, (
         "the fstab lookup must tolerate no match; without it a fresh install "
         "aborts in the ERR trap")
+
+
+def test_smb_maps_files_to_the_service_account_not_root():
+    """SMB has no uid negotiation: the client decides what files look like
+    locally. Mapping to the container's root gives a readable tree but an
+    unwritable backup share -- the service does not run as root."""
+    attach = (DEPLOY / "add-nas.sh").read_text()
+    assert "id -u tracepaper" in attach, (
+        "the service uid must be read, not assumed")
+    assert "uid=${host_uid}" in attach
+    assert "uid=100000" not in attach, (
+        "hardcoding the container root uid is the bug this replaced")
+
+
+def test_smb_reads_the_id_map_offset_from_the_container():
+    """100000 is the default offset, not a guarantee. A custom map would
+    silently produce files the service cannot touch."""
+    attach = (DEPLOY / "add-nas.sh").read_text()
+    assert "lxc.idmap" in attach
+    assert 'id_offset="${id_offset:-100000}"' in attach, (
+        "fall back to the default only when the container declares no map")

@@ -93,6 +93,21 @@ READ_SHARE=/volume1/data DOCS_SUBDIR=Documents \
 Everything else under the share stays visible to the container but is never
 read — the scan only walks the root it is given.
 
+### Restricting access to Tracepaper alone
+
+**NFS cannot do this.** It grants by client IP, and that IP is the Proxmox
+host — so the grant belongs to the host, not to one container. Any container
+you bind that path into gets the same access. The containment is that only you
+run `pct set`; it is host-admin discipline, not something the NAS enforces.
+
+**SMB can.** The NAS authenticates a real account, which you can revoke without
+touching host-level rules. It also sidesteps NFS's uid squashing entirely: the
+server checks the account, and the mount decides what the files look like
+locally.
+
+If you want access scoped to Tracepaper, or you are fighting `Permission
+denied` on an NFS mount, SMB is the better trade despite being slower to scan.
+
 ### Using a dedicated NAS account
 
 **NFS does not authenticate users.** With `sec=sys` it trusts whatever uid the
