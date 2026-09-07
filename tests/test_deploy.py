@@ -264,9 +264,12 @@ def test_installer_writes_empty_roots():
 
 def test_add_nas_is_rerunnable():
     """You attach one share, then another. Re-running must not stack duplicate
-    fstab entries or fail on an existing mount."""
+    fstab entries or fail on an existing mount -- but it must also not skip an
+    entry whose values have changed, which is what made a bad first run stick."""
     attach = (DEPLOY / "add-nas.sh").read_text()
-    assert "already has an entry" in attach, "fstab writes must be idempotent"
+    assert "is already correct" in attach, "an identical entry is a no-op"
+    assert "does not match — replacing it" in attach, (
+        "a changed entry must be rewritten, not left alone")
     assert "mountpoint -q" in attach, (
         "an already-mounted path must not be treated as a failure")
 
