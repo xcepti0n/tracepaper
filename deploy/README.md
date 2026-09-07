@@ -4,8 +4,23 @@ One script. Run it on the Proxmox host, get a working install with the UI
 reachable on your LAN.
 
 ```bash
-# From a checkout on the Proxmox host:
-NAS_HOST=192.168.1.10 ./deploy/proxmox-install.sh
+# From a checkout on the Proxmox host (192.168.0.136):
+NAS_HOST=<synology-ip> ./deploy/proxmox-install.sh
+```
+
+Getting the code there, since there is no git remote yet:
+
+```bash
+# On your Mac
+cd ~/Workspace/home_server
+tar --exclude=.venv --exclude=.git --exclude=data --exclude=__pycache__ \
+    --exclude=.pytest_cache --exclude='*.swp' -czf tracepaper.tar.gz tracepaper
+scp tracepaper.tar.gz root@192.168.0.136:/root/
+
+# On the Proxmox host
+ssh root@192.168.0.136
+tar xzf tracepaper.tar.gz && cd tracepaper
+NAS_HOST=<synology-ip> ./deploy/proxmox-install.sh
 ```
 
 It creates an unprivileged LXC, mounts your two Synology shares, installs the

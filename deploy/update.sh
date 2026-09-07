@@ -110,7 +110,8 @@ if ! "$VENV/bin/python" -c "import tracepaper.api" >/dev/null 2>&1; then
   "$VENV/bin/python" -c "import tracepaper.api" 2>&1 | tail -20 || true
   exit 1
 fi
-chown -R tracepaper:tracepaper "$VENV" 2>/dev/null || true
+# The venv is root-owned on purpose (see proxmox-install.sh); pip ran as root
+# here, so there is nothing to hand back.
 msg_ok "Installed"
 
 # The units live in /etc, so a pull alone never updates them. Skipping this is
@@ -142,7 +143,7 @@ systemctl restart tracepaper
 for _ in $(seq 1 30); do
   if curl -sf "localhost:${PORT}/api/health" >/dev/null 2>&1; then
     msg_ok "Healthy on $(git log -1 --format=%h\ %s)"
-    [[ -n "$BACKUP" ]] && msg_info "Pre-update backup: $BACKUP"
+    if [[ -n "$BACKUP" ]]; then msg_info "Pre-update backup: $BACKUP"; fi
     exit 0
   fi
   sleep 2
@@ -157,12 +158,17 @@ msg_error "service did not come up within 60s — rolling back to ${BEFORE:0:7}.
 # it is treated as a pathspec and silently ignored.
 git reset --hard --quiet "$BEFORE"
 "$VENV/bin/pip" install --quiet -e ".[${EXTRAS}]" >/dev/null 2>&1 || true
-chown -R tracepaper:tracepaper "$VENV" 2>/dev/null || true
+# The venv is root-owned on purpose (see proxmox-install.sh); pip ran as root
+# here, so there is nothing to hand back.
 for unit in tracepaper.service tracepaper-scan.service tracepaper-scan.timer \
             tracepaper-enrich.service tracepaper-enrich.timer; do
-  [[ -f "deploy/$unit" ]] && cp "deploy/$unit" "$UNIT_DIR/$unit" 2>/dev/null || true
+  if [[ -f "deploy/$unit" ]]; then cp "deploy/$unit" "$UNIT_DIR/$unit" 2>/dev/null || true; fi
 done
-[[ "$PORT" != "8823" ]] && sed -i "s/--port 8823/--port ${PORT}/" "$UNIT_DIR/tracepaper.service"
+# if/fi, not `[[ ]] && cmd`: a false test returns 1, which here would abort the
+# rollback before the restart below, leaving the service down.
+if [[ "$PORT" != "8823" ]]; then
+  sed -i "s/--port 8823/--port ${PORT}/" "$UNIT_DIR/tracepaper.service"
+fi
 systemctl daemon-reload
 systemctl reset-failed tracepaper 2>/dev/null || true
 systemctl restart tracepaper
@@ -177,6 +183,6 @@ for _ in $(seq 1 30); do
 done
 
 msg_error "rollback also failed to come up. The index is intact; the service is not running."
-[[ -n "$BACKUP" ]] && msg_warn "Backup: $BACKUP"
+if [[ -n "$BACKUP" ]]; then msg_warn "Backup: $BACKUP"; fi
 msg_warn "Logs: journalctl -u tracepaper -n 50"
 exit 1

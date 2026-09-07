@@ -429,8 +429,15 @@ install_app() {
   # and chowning the whole tree makes git refuse to operate as root ("dubious
   # ownership"), which silently breaks every future update. Only the state the
   # service writes belongs to the service account.
+  # The venv stays root-owned too. The service only reads and executes it, and
+  # a service-writable interpreter directory means a compromise of the service
+  # can rewrite the code it runs as itself on the next start.
+  #
+  # /var/lib/tracepaper is the ONLY thing the service owns: the index, plus the
+  # -wal and -shm files SQLite creates beside it -- which is why the directory
+  # and not just the file has to be writable.
   inct "chown -R root:root /opt/tracepaper
-        chown -R tracepaper:tracepaper /opt/tracepaper/.venv /var/lib/tracepaper
+        chown -R tracepaper:tracepaper /var/lib/tracepaper
         chmod 755 /opt/tracepaper"
 }
 
@@ -680,10 +687,14 @@ ask() {
 }
 
 show_settings() {
+  # if/fi, never `[[ ... ]] && assign`. A false test makes that construct return
+  # 1, and as a function's last statement that becomes the function's status --
+  # which under `set -e` plus the ERR trap destroys the container. Banned
+  # outright by tests/test_deploy.py rather than judged case by case.
   local net_desc="$NET"
-  [[ "$NET" != "dhcp" ]] && net_desc="$NET via $GATEWAY"
+  if [[ "$NET" != "dhcp" ]]; then net_desc="$NET via $GATEWAY"; fi
   local src_desc="$REPO_URL"
-  [[ -z "$REPO_URL" ]] && src_desc="local checkout"
+  if [[ -z "$REPO_URL" ]]; then src_desc="local checkout"; fi
 
   echo
   echo "  Container ID   ${CTID:-<next free>}"
@@ -761,6 +772,15 @@ customise() {
       exit 1
     fi
   done
+
+  # The unit drops every capability, so the service cannot bind below 1024. Say
+  # so here rather than letting it fail at first start as a bare permission
+  # error that says nothing about the cause.
+  if (( APP_PORT < 1024 )); then
+    msg_error "Port $APP_PORT is privileged; the service drops all capabilities and cannot bind it."
+    msg_warn  "Pick a port above 1024 and put a reverse proxy in front if you want :80 or :443."
+    exit 1
+  fi
   if [[ -n "$CTID" ]] && ! [[ "$CTID" =~ ^[0-9]+$ ]]; then
     msg_error "Container ID must be a number, got '$CTID'."
     exit 1

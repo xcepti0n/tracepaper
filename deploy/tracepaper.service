@@ -55,6 +55,10 @@ RestrictNamespaces=yes
 CapabilityBoundingSet=
 SystemCallArchitectures=native
 
+# Consequence of the empty capability set: this service cannot bind a port
+# below 1024. 8823 is well clear of that. If you want :80 or :443, put a
+# reverse proxy in front rather than granting CAP_NET_BIND_SERVICE back.
+
 # The read-only guarantee (NFR-7) is enforced by the `ro` mount option in
 # fstab, not here. ReadWritePaths needs a mount namespace, so it is unavailable
 # in this container — and the mount option is the stronger control anyway: it
