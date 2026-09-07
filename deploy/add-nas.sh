@@ -119,6 +119,15 @@ add_fstab_line() {
   printf '%s %s nfs %s 0 0\n' "$source" "$point" "$options" >> /etc/fstab
 }
 
+# Echo the settings before doing anything. A shell variable set on its own line
+# never reaches this script, so the most common mistake is running with silent
+# defaults -- which is visible here and invisible everywhere else.
+echo
+echo "  Read  ${READ_SHARE}${DOCS_SUBDIR:+  (indexing ${DOCS_SUBDIR})}"
+echo "  Write ${WRITE_SHARE}"
+echo "  From  ${NAS_HOST} over ${PROTOCOL}  →  container ${CTID}"
+echo
+
 mkdir -p "$host_docs" "$host_backup"
 
 case "$PROTOCOL" in
@@ -176,15 +185,41 @@ esac
 systemctl daemon-reload >/dev/null 2>&1 || true
 
 if ! mount "$host_docs" 2>/dev/null && ! mountpoint -q "$host_docs"; then
-  msg_error "could not mount the documents share."
+  msg_error "could not mount ${READ_SHARE} from ${NAS_HOST}."
+  echo
+  # The real error, rather than the one this script guessed at.
+  msg_warn "What mount actually said:"
+  mount "$host_docs" 2>&1 | sed 's/^/    /' || true
+  echo
+
   if [[ "$PROTOCOL" == "nfs" ]]; then
-    msg_warn "In DSM: Control Panel → Shared Folder → the share → Edit → NFS Permissions."
-    msg_warn "Add a rule for THIS HOST's IP (not the container's), then re-run."
-    msg_warn "NFS grants access by client IP, not by user — a DSM account is not consulted."
+    # The NAS knows the answer, so ask it rather than making the user guess.
+    if command -v showmount >/dev/null 2>&1; then
+      msg_warn "What ${NAS_HOST} actually exports:"
+      if showmount -e "$NAS_HOST" 2>&1 | sed 's/^/    /'; then
+        echo
+        msg_warn "READ_SHARE must be one of the paths listed above, exactly."
+      fi
+    else
+      msg_warn "Install nfs-common and run: showmount -e ${NAS_HOST}"
+      msg_warn "That lists every path the NAS exports and who may mount it."
+    fi
+    echo
+    msg_warn "If the path is right but access is refused, the DSM rule is for the"
+    msg_warn "wrong IP: it must name THIS host ($(hostname -I 2>/dev/null | awk '{print $1}')),"
+    msg_warn "not the container. NFS grants by client IP; a DSM user is never consulted."
   else
-    msg_warn "Check the username and password in ${SMB_CREDENTIALS}, and that"
-    msg_warn "the user has at least read access to the share in DSM."
+    msg_warn "Check the username and password in ${SMB_CREDENTIALS}, and that the"
+    msg_warn "user has at least read access to the share in DSM."
+    if command -v smbclient >/dev/null 2>&1; then
+      msg_warn "What ${NAS_HOST} shares:"
+      smbclient -L "//${NAS_HOST}" -A "$SMB_CREDENTIALS" 2>&1 | sed 's/^/    /' | head -20 || true
+    fi
   fi
+  echo
+  msg_warn "Note: setting VAR=value on its own line sets a SHELL variable, which"
+  msg_warn "this script never sees. Use \`export VAR=value\` or put them on the"
+  msg_warn "same line as the command."
   exit 1
 fi
 msg_ok "Documents mounted read-only at ${host_docs}"
