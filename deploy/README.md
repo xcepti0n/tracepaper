@@ -1,32 +1,74 @@
 # Deploying Tracepaper to Proxmox
 
-One script. Run it on the Proxmox host, get a working install with the UI
-reachable on your LAN.
+Two steps, deliberately separate: install the service, then attach the folders
+you want indexed. Storage is not an install-time decision — it changes, there
+can be several folders, and they can live on different shares.
 
-```bash
-# From a checkout on the Proxmox host (192.168.0.136):
-NAS_HOST=<synology-ip> ./deploy/proxmox-install.sh
-```
+## 1. Copy the code over
 
-Getting the code there, since there is no git remote yet:
+There is no git remote yet, so send the checkout:
 
 ```bash
 # On your Mac
 cd ~/Workspace/home_server
-tar --exclude=.venv --exclude=.git --exclude=data --exclude=__pycache__ \
-    --exclude=.pytest_cache --exclude='*.swp' -czf tracepaper.tar.gz tracepaper
-scp tracepaper.tar.gz root@192.168.0.136:/root/
+COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata \
+    --exclude=.venv --exclude=.git --exclude=data --exclude=__pycache__ \
+    --exclude=.pytest_cache --exclude='*.swp' \
+    -czf tracepaper.tar.gz tracepaper
 
-# On the Proxmox host
-ssh root@192.168.0.136
-tar xzf tracepaper.tar.gz && cd tracepaper
-NAS_HOST=<synology-ip> ./deploy/proxmox-install.sh
+scp tracepaper.tar.gz root@192.168.0.136:/root/
 ```
 
-It creates an unprivileged LXC, mounts your two Synology shares, installs the
-app, and enables the service plus an hourly scan and a nightly enrichment
-timer. It asks before it does any of that, and cleans up after itself if
-anything fails.
+`COPYFILE_DISABLE=1 --no-xattrs --no-mac-metadata` matters only for the noise:
+without them macOS tar writes Apple extended attributes that GNU tar on Debian
+does not recognise, and it prints a `LIBARCHIVE.xattr.com.apple.provenance`
+warning per file. The extraction succeeds either way — the files are fine — but
+it reads like a failure.
+
+## 2. Install
+
+```bash
+ssh root@192.168.0.136
+tar xzf tracepaper.tar.gz
+cd tracepaper
+./deploy/proxmox-install.sh
+```
+
+It shows the settings and waits: **D** accepts, **C** customises, **Q** quits.
+Creates an unprivileged LXC, installs the app, enables the service and the scan
+and enrichment timers, and prints the URL. No NAS details needed.
+
+## 3. Attach a folder
+
+```bash
+./deploy/add-nas.sh <CTID> <synology-ip>
+```
+
+Mounts the export on the Proxmox host, binds it into the container read-only,
+updates the config and restarts the service. Run it again for each additional
+share:
+
+```bash
+NAS_DOCS_EXPORT=/volume1/photos DOCS_MOUNT=/mnt/nas/photos \
+  ./deploy/add-nas.sh 122 192.168.0.20
+```
+
+Re-running is safe — existing fstab entries and mounts are left alone.
+
+**Why this is not a button in the web UI:** mounting needs root on the *host*,
+outside the container the app runs in. An app that mounts filesystems turns
+every stale handle and credential problem into its own bug. The Settings page
+verifies what it finds and explains what to fix; `/etc/fstab` does the mounting.
+
+## 4. First scan
+
+```bash
+pct exec <CTID> -- systemctl start tracepaper-scan
+pct exec <CTID> -- journalctl -u tracepaper-scan -f
+```
+
+Hours for a lifetime of documents, and resumable — interrupting it costs only
+the document in flight. The hourly timer picks up everything after that.
 
 ---
 
@@ -214,6 +256,7 @@ even if you move the file.
 | File | Purpose |
 |---|---|
 | `proxmox-install.sh` | The installer. Run on the Proxmox host. |
+| `add-nas.sh` | Attach an NFS share to an existing container. Re-runnable, once per folder. |
 | `update.sh` | Update in place, with automatic rollback. Run in the container. |
 | `tracepaper.service` | The web UI and API. |
 | `tracepaper-scan.{service,timer}` | Hourly scan and index. |
@@ -240,17 +283,23 @@ GATEWAY=192.168.1.1
 STORAGE=local-lvm     # default: auto-detected
 APP_PORT=8823
 
-NAS_HOST=192.168.1.10         # blank skips NFS setup entirely
-NAS_DOCS_EXPORT=/volume1/documents
-NAS_BACKUP_EXPORT=/volume1/backups/tracepaper
-
 SEMANTIC=1            # install PyTorch and semantic search
-FIRST_SCAN=1          # run a full scan before finishing
 REPO_URL=https://...  # clone instead of copying the local checkout
 ROOT_PASSWORD=...     # otherwise console auto-login only
 SSH_KEY="ssh-ed25519 ..."
 ASSUME_YES=1          # skip the confirmation prompt
 KEEP_ON_FAIL=1        # keep a failed container for inspection
+```
+
+`add-nas.sh <CTID> <nas-ip>`:
+
+```bash
+NAS_DOCS_EXPORT=/volume1/documents          # the export to index
+NAS_BACKUP_EXPORT=/volume1/backups/tracepaper
+DOCS_MOUNT=/mnt/nas/documents               # where it lands in the container
+BACKUP_MOUNT=/mnt/nas/backups/tracepaper
+NFS_VERS=4.1                                # 3 for older DSM
+CONFIG=/etc/tracepaper.toml
 ```
 
 ---

@@ -213,10 +213,16 @@ def test_index_directory_is_writable_by_the_service():
     assert "chown -R tracepaper:tracepaper /var/lib/tracepaper" in text
 
 
-def test_documents_mount_is_read_only(cfg_text=None):
-    """NFR-7 enforced by the kernel rather than promised by the code."""
-    installer = (DEPLOY / "proxmox-install.sh").read_text()
-    assert "ro=1" in installer, "the documents bind mount must be read-only"
+def test_documents_mount_is_read_only():
+    """NFR-7 enforced by the kernel rather than promised by the code.
+
+    Read-only at both levels: the host's NFS mount and the bind mount into the
+    container.
+    """
+    attach = (DEPLOY / "add-nas.sh").read_text()
+    assert "ro=1" in attach, "the documents bind mount must be read-only"
+    assert re.search(r'"ro,\$\{?common', attach), (
+        "the host-side documents mount must carry ro")
     fstab = (DEPLOY / "nas.fstab.example").read_text()
     docs_line = next(l for l in fstab.splitlines()
                      if l.startswith("nas.local:") and "documents" in l)
@@ -226,9 +232,36 @@ def test_documents_mount_is_read_only(cfg_text=None):
 def test_nfs_mounts_are_soft_and_nofail():
     """`hard` wedges a scan unkillably when the NAS goes away; without nofail an
     unreachable NAS drops the container to an emergency shell at boot."""
-    for source in (DEPLOY / "nas.fstab.example", DEPLOY / "proxmox-install.sh"):
+    for source in (DEPLOY / "nas.fstab.example", DEPLOY / "add-nas.sh"):
         text = source.read_text()
         assert "soft" in text and "nofail" in text, source.name
+
+
+def test_installer_does_not_configure_storage():
+    """Which folders get indexed is not an install-time decision: it changes,
+    there can be several, and they can come from different shares. Keeping it
+    out of the installer is what makes add-nas.sh repeatable."""
+    installer = (DEPLOY / "proxmox-install.sh").read_text()
+    assert "NAS_HOST" not in installer, (
+        "storage belongs in add-nas.sh, not the installer")
+    assert "add-nas.sh" in installer, (
+        "the installer should point at add-nas.sh once it finishes")
+
+
+def test_installer_writes_empty_roots():
+    """Nothing is mounted at install time, so a configured root would point at
+    a path that does not exist and make every scan fail confusingly."""
+    installer = (DEPLOY / "proxmox-install.sh").read_text()
+    assert "roots = []" in installer
+
+
+def test_add_nas_is_rerunnable():
+    """You attach one share, then another. Re-running must not stack duplicate
+    fstab entries or fail on an existing mount."""
+    attach = (DEPLOY / "add-nas.sh").read_text()
+    assert "already has an entry" in attach, "fstab writes must be idempotent"
+    assert "mountpoint -q" in attach, (
+        "an already-mounted path must not be treated as a failure")
 
 
 def test_index_is_never_placed_on_the_nas():

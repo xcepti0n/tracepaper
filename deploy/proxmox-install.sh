@@ -51,22 +51,15 @@ APP_PORT="${APP_PORT:-8823}"
 START_ON_BOOT="${START_ON_BOOT:-1}"
 OS_VERSION="${OS_VERSION:-12}"     # Debian 12 (bookworm)
 
-# Synology NFS. Leave NAS_HOST empty to skip mounting entirely and configure it
-# later from the Settings page.
-NAS_HOST="${NAS_HOST:-}"
-NAS_DOCS_EXPORT="${NAS_DOCS_EXPORT:-/volume1/documents}"
-NAS_BACKUP_EXPORT="${NAS_BACKUP_EXPORT:-/volume1/backups/tracepaper}"
-DOCS_MOUNT="${DOCS_MOUNT:-/mnt/nas/documents}"
-BACKUP_MOUNT="${BACKUP_MOUNT:-/mnt/nas/backups/tracepaper}"
-NFS_VERS="${NFS_VERS:-4.1}"
+# Storage is deliberately NOT configured here -- see deploy/add-nas.sh.
+#
+# Which folders you index is not an install-time decision: it changes, there can
+# be several of them, and they can come from different shares. Baking one export
+# path into the installer would make a recurring operation look like a one-off,
+# and would mean re-running the whole install to add a second folder.
 
 # Semantic search. Off by default — see the note at the top.
 SEMANTIC="${SEMANTIC:-0}"
-
-# Run a first scan at the end. Off by default: a lifetime of documents can take
-# hours, and you want to watch that rather than have an installer hold the
-# terminal.
-FIRST_SCAN="${FIRST_SCAN:-0}"
 
 # ------------------------------------------------------------------ output ---
 
@@ -91,7 +84,6 @@ BANNER
 
 # Set once the container exists, so a later failure can clean up after itself.
 CREATED_CTID=""
-NFS_READY=0
 
 # A failed run must not leave a half-built container behind: the next attempt
 # would allocate a fresh ID and leak this one. Destroy it unless KEEP_ON_FAIL=1,
@@ -194,9 +186,9 @@ create_container() {
 
   msg_info "Creating container ${CTID}…"
   # Unprivileged. An unprivileged LXC cannot mount NFS itself even with
-  # CAP_SYS_ADMIN, so the shares are bind-mounted from the host instead — see
-  # setup_nfs(). That is the better arrangement anyway: the credentials and the
-  # mount live on the host, and the container just sees directories.
+  # CAP_SYS_ADMIN, so shares are mounted on the host and bind-mounted in --
+  # see add-nas.sh. That is the better arrangement anyway: the credentials and
+  # the mount live on the host, and the container just sees directories.
   #
   # Nesting off: there is no Docker inside.
   pct create "$CTID" "$TEMPLATE" \
@@ -240,99 +232,18 @@ create_container() {
 # a successful `rm` would look like success.
 inct() { pct exec "$CTID" -- env LC_ALL=C LANG=C bash -ec "$1"; }
 
-# ------------------------------------------------------------------- NFS ---
+# ----------------------------------------------------------------- storage ---
 
-# Mount both Synology shares on the HOST, then bind-mount them into the
-# container.
+# Attaching the NAS lives in deploy/add-nas.sh, not here.
 #
-# This is not a workaround; it is the only way that works. An unprivileged LXC
-# cannot mount NFS — the kernel refuses mount(2) for network filesystems from a
-# user namespace regardless of capabilities. Putting the mounts on the host
-# also keeps the export configuration in one place and lets several containers
-# share it later.
+# An unprivileged LXC cannot mount NFS at all -- the kernel refuses mount(2) for
+# network filesystems from a user namespace, capabilities or not -- so the mount
+# has to happen on the host and be bind-mounted in. That is a host-side, root
+# operation you may repeat for each folder you want indexed, which is why it is
+# its own script rather than a step in a one-shot installer:
 #
-# The documents share is mounted `ro` at BOTH levels: read-only on the host
-# mount, and read-only again on the bind mount. The application never writes
-# there (NFR-7); this makes the kernel enforce it rather than trusting the code.
-setup_nfs() {
-  if [[ -z "$NAS_HOST" ]]; then
-    msg_warn "No NAS_HOST given — skipping NFS setup."
-    msg_warn "Configure the paths later from the Settings page in the web UI."
-    return 0
-  fi
-
-  msg_info "Mounting Synology NFS shares on the host…"
-
-  if ! command -v mount.nfs >/dev/null 2>&1; then
-    # Proxmox ships this, but a minimal install may not have it.
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nfs-common >/dev/null 2>&1 || true
-  fi
-
-  local host_docs="/mnt/pve/tracepaper-documents"
-  local host_backup="/mnt/pve/tracepaper-backups"
-  mkdir -p "$host_docs" "$host_backup"
-
-  # soft,timeo=150,retrans=3 rather than the default `hard`: a NAS that goes
-  # away must not wedge a scan in uninterruptible sleep forever. Soft returns
-  # an error, the scan hits its vanish guard and aborts, and nothing is deleted.
-  local common="soft,timeo=150,retrans=3,nfsvers=${NFS_VERS},noatime,_netdev,nofail"
-
-  _add_fstab_line "${NAS_HOST}:${NAS_DOCS_EXPORT}" "$host_docs" "ro,${common}"
-  _add_fstab_line "${NAS_HOST}:${NAS_BACKUP_EXPORT}" "$host_backup" "rw,${common}"
-
-  systemctl daemon-reload >/dev/null 2>&1 || true
-
-  # Not fatal. A wrong export path or a firewall should leave a working install
-  # with an obvious next step, not destroy the container through the ERR trap.
-  if ! mount "$host_docs" 2>/dev/null && ! mountpoint -q "$host_docs"; then
-    msg_warn "Could not mount ${NAS_HOST}:${NAS_DOCS_EXPORT} on the host."
-    msg_warn "Check DSM → Control Panel → Shared Folder → NFS Permissions,"
-    msg_warn "and that this host's IP is allowed. Then: mount ${host_docs}"
-    return 0
-  fi
-  msg_ok "Documents mounted read-only at ${host_docs}"
-
-  if ! mount "$host_backup" 2>/dev/null && ! mountpoint -q "$host_backup"; then
-    msg_warn "Could not mount the backup export — backups will be unavailable."
-    msg_warn "Fix it later, then: mount ${host_backup}"
-  else
-    msg_ok "Backups mounted read-write at ${host_backup}"
-  fi
-
-  # Bind them into the container. mp0 is read-only; the kernel enforces NFR-7.
-  msg_info "Binding the shares into the container…"
-  pct set "$CTID" -mp0 "${host_docs},mp=${DOCS_MOUNT},ro=1" >/dev/null
-  pct set "$CTID" -mp1 "${host_backup},mp=${BACKUP_MOUNT}" >/dev/null
-
-  # Bind mounts of an existing mount point need a restart to appear.
-  pct stop "$CTID" >/dev/null 2>&1 || true
-  pct start "$CTID" >/dev/null
-  for _ in $(seq 1 30); do
-    inct "true" >/dev/null 2>&1 && break
-    sleep 2
-  done
-
-  if inct "test -d '${DOCS_MOUNT}'"; then
-    local count
-    count=$(inct "ls -1 '${DOCS_MOUNT}' 2>/dev/null | head -1000 | wc -l" || echo 0)
-    msg_ok "Documents visible inside the container (${count// /} entries at the top level)"
-    NFS_READY=1
-  else
-    msg_warn "The documents path is not visible inside the container."
-  fi
-}
-
-# Append an fstab entry only if that mount point is not already configured, so
-# re-running the installer does not stack duplicates.
-_add_fstab_line() {
-  local source="$1" point="$2" options="$3"
-  if grep -qE "[[:space:]]${point}[[:space:]]" /etc/fstab 2>/dev/null; then
-    msg_info "fstab already has an entry for ${point} — leaving it alone."
-    return
-  fi
-  printf '%s %s nfs %s 0 0\n' "$source" "$point" "$options" >> /etc/fstab
-}
-
+#   ./add-nas.sh <CTID> <nas-ip>
+#
 # ------------------------------------------------------------------- app ---
 
 install_base() {
@@ -477,22 +388,9 @@ EOF
 configure_service() {
   msg_info "Writing configuration…"
 
-  # backup_dir is only written when the share actually mounted. Pointing it at
-  # a path that does not exist would make every backup fail at the moment you
-  # most need one to have worked.
-  local backup_line=""
-  if [[ "$NFS_READY" == "1" ]]; then
-    backup_line="backup_dir = \"${BACKUP_MOUNT}\""
-  fi
-  # Keyed on whether the mount actually worked, not on whether a NAS was
-  # named. A configured root that does not exist inside the container makes
-  # every scan fail with a confusing error; an empty roots list makes the
-  # Settings page say plainly that nothing is configured yet.
-  local roots_line="roots = []"
-  if [[ "$NFS_READY" == "1" ]]; then
-    roots_line="roots = [\"${DOCS_MOUNT}\"]"
-  fi
-
+  # roots is empty and there is no backup_dir: nothing is mounted yet.
+  # add-nas.sh fills both in when you attach storage, and the Settings page
+  # validates whatever you point it at.
   inct "cat >/etc/tracepaper.toml <<'EOF'
 # Written by deploy/proxmox-install.sh. Editable from the Settings page in the
 # web UI, which validates every path before saving.
@@ -504,10 +402,10 @@ configure_service() {
 # (D-008). The index rebuilds from your documents; the backup below holds the
 # part that cannot be rebuilt.
 db_path = \"/var/lib/tracepaper/index.db\"
-${backup_line}
 
 [scan]
-${roots_line}
+# Set by deploy/add-nas.sh, or from the Settings page in the web UI.
+roots = []
 excludes = [\"@eaDir\", \"#recycle\", \"#snapshot\", \".DS_Store\", \".Trashes\",
             \".Spotlight-V100\", \".fseventsd\", \"__MACOSX\", \".git\", \"@tmp\",
             \"desktop.ini\", \"Thumbs.db\"]
@@ -603,19 +501,6 @@ verify() {
   exit 1
 }
 
-# An optional first scan. Off by default — a lifetime of documents takes hours,
-# and it belongs in a terminal you are watching, not at the end of an installer.
-first_scan() {
-  [[ "$FIRST_SCAN" == "1" && "$NFS_READY" == "1" ]] || return 0
-  msg_info "Running the first scan (this can take a long time)…"
-  inct "sudo -u tracepaper /opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml scan --index" || {
-    msg_warn "The first scan did not finish cleanly. Re-run it by hand:"
-    msg_warn "  pct exec $CTID -- sudo -u tracepaper /opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml scan --index"
-    return 0
-  }
-  msg_ok "First scan complete"
-}
-
 container_ip() {
   pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}'
 }
@@ -630,12 +515,7 @@ finish() {
   echo "  Container : $CTID ($HOSTNAME_)"
   echo "  Index     : /var/lib/tracepaper/index.db  (local disk, never the NAS)"
   echo "  Config    : /etc/tracepaper.toml"
-  if [[ "$NFS_READY" == "1" ]]; then
-    echo "  Documents : ${DOCS_MOUNT}  (read-only)"
-    echo "  Backups   : ${BACKUP_MOUNT}"
-  else
-    echo "  Documents : not mounted — set them up on the Settings tab"
-  fi
+  echo "  Documents : none yet — attach storage below"
   echo
   echo "  Logs      : pct exec $CTID -- journalctl -u tracepaper -f"
   echo "  Restart   : pct exec $CTID -- systemctl restart tracepaper"
@@ -643,21 +523,20 @@ finish() {
   echo "  Scan log  : pct exec $CTID -- journalctl -u tracepaper-scan -f"
   echo "  Status    : pct exec $CTID -- sudo -u tracepaper /opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml status"
   echo
-  if [[ "$FIRST_SCAN" != "1" && "$NFS_READY" == "1" ]]; then
-    echo "  Nothing is indexed yet. The hourly timer will pick it up, or start now:"
-    echo
-    echo -e "    ${BL}pct exec $CTID -- systemctl start tracepaper-scan${CL}"
-    echo
-    echo "  A first pass over a lifetime of documents takes hours. It is resumable —"
-    echo "  interrupting it costs only the document in flight."
-    echo
-  fi
-  if [[ "$NFS_READY" != "1" ]]; then
-    msg_warn "No documents are configured, so there is nothing to index yet."
-    msg_warn "Open the Settings tab and point it at your documents folder — it"
-    msg_warn "validates each path and explains anything it cannot use."
-    echo
-  fi
+  echo "  Next — attach the folder you want indexed. From this host:"
+  echo
+  echo -e "    ${BL}./add-nas.sh $CTID <nas-ip>${CL}"
+  echo
+  echo "  Run it again for each additional share or export path. It mounts on the"
+  echo "  host, binds into the container read-only, and updates the config."
+  echo
+  echo "  Then start the first scan when you can watch it:"
+  echo
+  echo -e "    ${BL}pct exec $CTID -- systemctl start tracepaper-scan${CL}"
+  echo
+  echo "  A first pass over a lifetime of documents takes hours. It is resumable —"
+  echo "  interrupting it costs only the document in flight."
+  echo
   if [[ "$SEMANTIC" != "1" ]]; then
     msg_info "Semantic search is off (it needs PyTorch, ~2.5GB). Keyword search, field"
     msg_info "answers, events and photo tags all work without it. See deploy/README.md."
@@ -707,13 +586,8 @@ show_settings() {
   echo "  App port       $APP_PORT"
   echo "  Source         $src_desc"
   echo
-  echo "  NAS host       ${NAS_HOST:-<none — configure later in the UI>}"
-  if [[ -n "$NAS_HOST" ]]; then
-  echo "  Documents      ${NAS_DOCS_EXPORT}  →  ${DOCS_MOUNT}  (read-only)"
-  echo "  Backups        ${NAS_BACKUP_EXPORT}  →  ${BACKUP_MOUNT}"
-  fi
+  echo "  Documents      attach afterwards with ./add-nas.sh"
   echo "  Semantic       $([[ "$SEMANTIC" == "1" ]] && echo "on (+2.5GB PyTorch)" || echo "off (keyword search only)")"
-  echo "  First scan     $([[ "$FIRST_SCAN" == "1" ]] && echo "yes" || echo "no — start it yourself afterwards")"
   echo
 }
 
@@ -737,18 +611,6 @@ customise() {
     done
   fi
   STORAGE=$(ask    "  Storage [${STORAGE:-auto}]: " "$STORAGE")
-
-  echo
-  echo "  Your Synology. An IP is more reliable than mDNS from inside an LXC."
-  echo "  Leave blank to skip and set the paths up later in the web UI."
-  NAS_HOST=$(ask   "  NAS address [${NAS_HOST:-none}]: " "$NAS_HOST")
-  if [[ "${NAS_HOST,,}" == "none" ]]; then
-    NAS_HOST=""
-  fi
-  if [[ -n "$NAS_HOST" ]]; then
-    NAS_DOCS_EXPORT=$(ask   "  Documents export [$NAS_DOCS_EXPORT]: " "$NAS_DOCS_EXPORT")
-    NAS_BACKUP_EXPORT=$(ask "  Backups export [$NAS_BACKUP_EXPORT]: " "$NAS_BACKUP_EXPORT")
-  fi
 
   echo
   echo "  Semantic search finds \"sprinkler valve\" in a document that says"
@@ -819,13 +681,11 @@ main() {
   pick_storage
   ensure_template
   create_container
-  setup_nfs
   install_base
   install_app
   configure_access
   configure_service
   verify
-  first_scan
   CREATED_CTID=""   # success — nothing to clean up
   finish
 }
