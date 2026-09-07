@@ -486,3 +486,20 @@ def test_smb_reads_the_id_map_offset_from_the_container():
     assert "lxc.idmap" in attach
     assert 'id_offset="${id_offset:-100000}"' in attach, (
         "fall back to the default only when the container declares no map")
+
+
+def test_config_update_replaces_a_stale_root():
+    """Matching `roots = []` alone meant a re-run kept the previous value: the
+    script reported the path it intended while the config held the old one, and
+    the scan then failed on a path nobody asked for."""
+    attach = (DEPLOY / "add-nas.sh").read_text()
+    assert "s#^roots = .*#roots =" in attach, (
+        "the roots line must be replaced whatever its current value")
+    assert "s#^roots = \\[\\]#" not in attach, (
+        "matching only an empty list is the bug this replaced")
+
+
+def test_config_update_is_verified_after_writing():
+    """Printing the file and moving on let a failed edit slide past unnoticed."""
+    attach = (DEPLOY / "add-nas.sh").read_text()
+    assert "the config was not updated to" in attach

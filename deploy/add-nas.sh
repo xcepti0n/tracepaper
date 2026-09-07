@@ -333,14 +333,35 @@ fi
 count=$(inct "ls -1 '${SCAN_ROOT}' 2>/dev/null | head -1000 | wc -l" || echo 0)
 msg_ok "Will index ${SCAN_ROOT} (${count// /} entries at the top level)"
 
-# Point the config at what is now mounted. sed rather than a rewrite, so any
-# hand edits to the rest of the file survive.
+# Point the config at what is now mounted.
+#
+# This REPLACES whatever roots was, rather than only filling an empty list.
+# Matching `roots = []` alone meant a re-run silently kept the previous value:
+# the script reported the path it intended while the config still held the old
+# one, and the scan then failed on a path nobody had asked for. What this run
+# was told is the intent; the config is the cache.
 msg_info "Updating ${CONFIG}…"
-inct "sed -i 's#^roots = \\[\\]#roots = [\"${SCAN_ROOT}\"]#' '${CONFIG}'"
-if [[ "$backup_ok" == "1" ]] && ! inct "grep -q '^backup_dir' '${CONFIG}'"; then
-  inct "sed -i '/^db_path/a backup_dir = \"${BACKUP_MOUNT}\"' '${CONFIG}'"
+
+# sed rather than a rewrite, so hand edits elsewhere in the file survive.
+inct "sed -i 's#^roots = .*#roots = [\"${SCAN_ROOT}\"]#' '${CONFIG}'"
+
+if [[ "$backup_ok" == "1" ]]; then
+  if inct "grep -q '^backup_dir' '${CONFIG}'"; then
+    inct "sed -i 's#^backup_dir = .*#backup_dir = \"${BACKUP_MOUNT}\"#' '${CONFIG}'"
+  else
+    inct "sed -i '/^db_path/a backup_dir = \"${BACKUP_MOUNT}\"' '${CONFIG}'"
+  fi
 fi
-inct "grep -E '^(roots|db_path|backup_dir)' '${CONFIG}'" | sed 's/^/    /'
+
+inct "grep -E '^(roots|db_path|backup_dir)' '\${CONFIG}'" | sed 's/^/    /'
+
+# Read back what is actually on disk and confirm it matches the intent. The
+# previous version printed the file and let a mismatch slide past unnoticed.
+if ! inct "grep -qF 'roots = [\"${SCAN_ROOT}\"]' '${CONFIG}'"; then
+  msg_error "the config was not updated to ${SCAN_ROOT}."
+  msg_warn  "Edit ${CONFIG} in the container by hand, or from the Settings page."
+  exit 1
+fi
 
 inct "systemctl restart tracepaper"
 msg_ok "Service restarted"
