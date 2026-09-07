@@ -111,12 +111,53 @@ host_backup="/mnt/pve/tracepaper-backups"
 # Append an fstab entry only if that mount point is not already configured, so
 # re-running this does not stack duplicates.
 add_fstab_line() {
-  local source="$1" point="$2" options="$3"
-  if grep -qE "[[:space:]]${point}[[:space:]]" /etc/fstab 2>/dev/null; then
-    msg_info "fstab already has an entry for ${point} — leaving it alone."
+  local source="$1" point="$2" fstype="$3" options="$4"
+  local wanted="${source} ${point} ${fstype} ${options} 0 0"
+
+  # `|| true` is load-bearing: no match makes grep exit 1, and under
+  # `set -eo pipefail` that aborts the script -- on a FRESH host, where there is
+  # correctly nothing to find. Not finding a line is the normal case, not an
+  # error.
+  local existing=""
+  existing=$(grep -E "^[^#]\S*[[:space:]]+${point}[[:space:]]" /etc/fstab 2>/dev/null | head -1 || true)
+
+  if [[ -z "$existing" ]]; then
+    printf '%s\n' "$wanted" >> /etc/fstab
     return
   fi
-  printf '%s %s nfs %s 0 0\n' "$source" "$point" "$options" >> /etc/fstab
+
+  if [[ "$existing" == "$wanted" ]]; then
+    msg_info "fstab entry for ${point} is already correct."
+    return
+  fi
+
+  # Skipping here is what made a first run with the wrong values sticky: the
+  # entry was written from the defaults, and every later run "left it alone"
+  # while `mount <point>` kept reading the stale source out of fstab. The
+  # arguments this script was given are the intent; fstab is the cache.
+  msg_warn "fstab entry for ${point} does not match — replacing it."
+  echo "    was:  ${existing}"
+  echo "    now:  ${wanted}"
+
+  # Timestamped, because /etc/fstab is the file that decides whether the host
+  # boots. A backup per change is cheap.
+  cp /etc/fstab "/etc/fstab.tracepaper-$(date +%Y%m%d-%H%M%S).bak"
+
+  # The mount point is unique in fstab, so this rewrites exactly one line.
+  # awk over sed: the paths contain slashes, and building a sed expression
+  # around them needs escaping that is easy to get subtly wrong.
+  awk -v point="$point" -v line="$wanted" '
+    $0 ~ /^[[:space:]]*#/ { print; next }
+    $2 == point           { print line; replaced = 1; next }
+                          { print }
+    END { if (!replaced) print line }
+  ' /etc/fstab > /etc/fstab.tracepaper-new && mv /etc/fstab.tracepaper-new /etc/fstab
+
+  # A stale mount would otherwise keep serving the old export until reboot.
+  if mountpoint -q "$point"; then
+    msg_info "Unmounting the stale ${point}…"
+    umount "$point" 2>/dev/null || umount -l "$point" 2>/dev/null || true
+  fi
 }
 
 # Echo the settings before doing anything. A shell variable set on its own line
@@ -140,8 +181,8 @@ case "$PROTOCOL" in
     # away must not wedge a scan in uninterruptible sleep forever. Soft returns
     # an error, the scan hits its vanish guard and aborts, nothing is deleted.
     common="soft,timeo=150,retrans=3,nfsvers=${NFS_VERS},noatime,_netdev,nofail"
-    add_fstab_line "${NAS_HOST}:${READ_SHARE}"   "$host_docs"   "ro,${common}"
-    add_fstab_line "${NAS_HOST}:${WRITE_SHARE}" "$host_backup" "rw,${common}"
+    add_fstab_line "${NAS_HOST}:${READ_SHARE}"   "$host_docs"   "nfs" "ro,${common}"
+    add_fstab_line "${NAS_HOST}:${WRITE_SHARE}" "$host_backup" "nfs" "rw,${common}"
     ;;
 
   smb|cifs)
@@ -172,8 +213,8 @@ case "$PROTOCOL" in
     # default id-map shifts container uids by 100000. Files land owned by the
     # container's root, which the service can read.
     common="credentials=${SMB_CREDENTIALS},vers=${SMB_VERS},iocharset=utf8,uid=100000,gid=100000,_netdev,nofail"
-    add_fstab_line "//${NAS_HOST}/${READ_SHARE#/}"   "$host_docs"   "ro,${common}"
-    add_fstab_line "//${NAS_HOST}/${WRITE_SHARE#/}" "$host_backup" "rw,${common}"
+    add_fstab_line "//${NAS_HOST}/${READ_SHARE#/}"   "$host_docs"   "cifs" "ro,${common}"
+    add_fstab_line "//${NAS_HOST}/${WRITE_SHARE#/}" "$host_backup" "cifs" "rw,${common}"
     ;;
 
   *)

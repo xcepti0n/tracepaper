@@ -440,3 +440,25 @@ def test_share_variables_are_named_for_what_they_do():
     assert "READ_SHARE" in attach and "WRITE_SHARE" in attach
     assert "${NAS_DOCS_EXPORT:-" in attach, "old name must still be honoured"
     assert "${NAS_BACKUP_EXPORT:-" in attach
+
+
+def test_fstab_helper_reconciles_rather_than_skipping():
+    """Skipping on a mount-point match made a first run with wrong values
+    sticky: `mount <point>` reads the stale source out of fstab, so every later
+    run mounted the wrong export while reporting the right one."""
+    attach = (DEPLOY / "add-nas.sh").read_text()
+    assert "does not match — replacing it" in attach
+    assert "fstab.tracepaper-" in attach, "rewriting fstab must leave a backup"
+    assert "umount" in attach, (
+        "a stale mount keeps serving the old export until it is unmounted")
+
+
+def test_fstab_lookup_tolerates_no_match():
+    """grep exits 1 when it finds nothing, which under `set -eo pipefail`
+    aborts the script — on a fresh host, where finding nothing is correct."""
+    attach = (DEPLOY / "add-nas.sh").read_text()
+    line = next(l for l in attach.splitlines()
+                if l.strip().startswith("existing=$(grep"))
+    assert "|| true" in line, (
+        "the fstab lookup must tolerate no match; without it a fresh install "
+        "aborts in the ERR trap")
