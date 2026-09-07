@@ -16,7 +16,7 @@ COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata \
     --exclude=.pytest_cache --exclude='*.swp' \
     -czf tracepaper.tar.gz tracepaper
 
-scp tracepaper.tar.gz root@192.168.0.136:/root/
+scp tracepaper.tar.gz root@<proxmox-host>:/root/
 ```
 
 `COPYFILE_DISABLE=1 --no-xattrs --no-mac-metadata` matters only for the noise:
@@ -28,7 +28,7 @@ it reads like a failure.
 ## 2. Install
 
 ```bash
-ssh root@192.168.0.136
+ssh root@<proxmox-host>
 tar xzf tracepaper.tar.gz
 cd tracepaper
 ./deploy/proxmox-install.sh
@@ -50,7 +50,7 @@ share:
 
 ```bash
 NAS_DOCS_EXPORT=/volume1/photos DOCS_MOUNT=/mnt/nas/photos \
-  ./deploy/add-nas.sh 122 192.168.0.20
+  ./deploy/add-nas.sh 122 <synology-ip>
 ```
 
 Re-running is safe — existing fstab entries and mounts are left alone.

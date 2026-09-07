@@ -32,7 +32,11 @@ APP="Tracepaper"
 
 # Cloned inside the container. Set REPO_URL="" to copy the local checkout
 # instead — which is what you want for testing a change before pushing it.
-REPO_URL="${REPO_URL-}"
+#
+# Defaulting to the remote means the installer needs nothing but itself: curl
+# this one file onto the host and run it. update.sh also needs a remote to pull
+# from, so a cloned install is the one that can update itself in place.
+REPO_URL="${REPO_URL-https://github.com/xcepti0n/tracepaper.git}"
 BRANCH="${BRANCH:-main}"
 
 # Defaults, all overridable from the environment:
