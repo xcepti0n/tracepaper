@@ -15,6 +15,7 @@ BM25 and still works (NFR-9).
 
 from __future__ import annotations
 
+import heapq
 import logging
 import sqlite3
 import struct
@@ -116,6 +117,42 @@ def unpack(blob: bytes) -> list[float]:
     return list(struct.unpack(f"{count}f", blob))
 
 
+# Scoring every stored vector in a Python loop costs ~3.4s per 100k passages;
+# the same arithmetic as one matrix product is ~50-100x faster and returns
+# identical rankings. Rows stream in batches so peak memory stays bounded by
+# BATCH_ROWS rather than by the size of the corpus (a 1M-passage index would
+# otherwise want ~1.5 GB resident, well past the service's MemoryMax).
+BATCH_ROWS = 8192
+
+
+def _scores_numpy(blobs: list[bytes], query_vector: list[float]):
+    """Cosine similarity for a batch of stored vectors, as one matrix product.
+
+    Vectors are stored normalised, so this is a dot product -- but the norms are
+    divided out anyway, exactly as `cosine()` does, so a non-normalised vector
+    from a different model cannot silently skew scores. Returns None when numpy
+    is missing or a row is not the query's width, so the caller falls back to
+    the pure-Python path and search keeps working either way (NFR-9).
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+
+    dim = len(query_vector)
+    if dim == 0 or len(blobs) * dim * 4 != sum(len(b) for b in blobs):
+        # A row of a different width: a stale model_id, or a truncated blob.
+        # Per-row Python handles the ragged case rather than guessing.
+        return None
+
+    matrix = np.frombuffer(b"".join(blobs), dtype="<f4").reshape(len(blobs), dim)
+    query = np.asarray(query_vector, dtype="<f4")
+
+    dots = matrix @ query
+    norms = np.linalg.norm(matrix, axis=1) * float(np.linalg.norm(query))
+    return np.divide(dots, norms, out=np.zeros_like(dots), where=norms != 0)
+
+
 def cosine(a: list[float], b: list[float]) -> float:
     """Cosine similarity. Vectors are stored normalised, so this is a dot
     product -- but the norms are recomputed anyway so a non-normalised vector
@@ -185,9 +222,11 @@ def search(conn: sqlite3.Connection, query: str, *, limit: int = 20,
            kind: str | None = None) -> list[tuple[int, float]]:
     """Vector search. Returns (passage_id, similarity) ordered deterministically.
 
-    Brute force over stored vectors. At 100k passages this is a few hundred
-    milliseconds in Python and needs no index to maintain or tune; a real ANN
-    index is the upgrade path if the corpus outgrows it.
+    Brute force over stored vectors, scored as batched matrix products. That is
+    exact -- every vector is compared, so there is no recall loss and no index
+    to maintain, tune, or keep in sync. Roughly a second per million passages,
+    which keeps an approximate index (sqlite-vec) an upgrade for a much larger
+    corpus rather than something needed now.
     """
     model = load_model(model_id)
     if model is None:
@@ -209,15 +248,39 @@ def search(conn: sqlite3.Connection, query: str, *, limit: int = 20,
         sql += " AND i.kind = ?"
         params.append(kind)
 
-    scored: list[tuple[int, float]] = []
-    for row in conn.execute(sql, params):
-        similarity = cosine(query_vector, unpack(row["vector"]))
-        scored.append((int(row["passage_id"]), similarity))
+    # Only `limit` rows can survive, so keep a heap of exactly that many rather
+    # than materialising a tuple per passage -- at a million passages the full
+    # list costs ~70 MB, which would dwarf the batches it was built from.
+    #
+    # The heap is ordered by (score, -passage_id) so its smallest element is the
+    # weakest hit under the *same* total order used to sort below: descending
+    # score, then ascending id. Negating the id keeps a low id "larger", so the
+    # tie-break drops the highest id first -- exactly what the final sort keeps.
+    best: list[tuple[float, int]] = []
+    cursor = conn.execute(sql, params)
+    while True:
+        rows = cursor.fetchmany(BATCH_ROWS)
+        if not rows:
+            break
+        ids = [int(row["passage_id"]) for row in rows]
+        blobs = [row["vector"] for row in rows]
+
+        similarities = _scores_numpy(blobs, query_vector)
+        if similarities is None:
+            similarities = [cosine(query_vector, unpack(blob)) for blob in blobs]
+
+        for passage_id, similarity in zip(ids, similarities):
+            entry = (float(similarity), -passage_id)
+            if len(best) < limit:
+                heapq.heappush(best, entry)
+            elif entry > best[0]:
+                heapq.heapreplace(best, entry)
 
     # Sort by score, then passage_id: a total order, so equal scores never
     # reorder between runs (NFR-2).
+    scored = [(-negated_id, score) for score, negated_id in best]
     scored.sort(key=lambda pair: (-pair[1], pair[0]))
-    return scored[:limit]
+    return scored
 
 
 def stats(conn: sqlite3.Connection) -> dict:

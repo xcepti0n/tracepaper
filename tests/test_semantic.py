@@ -192,3 +192,143 @@ def test_query_path_never_loads_a_model_on_demand(conn, cfg, nas, monkeypatch):
         assert hits, "search must still work, falling back to keyword"
     finally:
         embed.set_lazy_load(True)
+
+
+# --------------------------------------------------------- vectorised scoring
+#
+# The batched matrix product replaced a per-row Python loop. It is the same
+# arithmetic, so it must produce the *same ranking* -- these pin that, and the
+# fallback that keeps search working when numpy is absent (NFR-9).
+
+
+def _random_unit_vectors(count: int, dim: int, seed: int = 11):
+    import random
+
+    rng = random.Random(seed)
+    vectors = []
+    for _ in range(count):
+        raw = [rng.gauss(0, 1) for _ in range(dim)]
+        norm = sum(v * v for v in raw) ** 0.5
+        vectors.append([v / norm for v in raw])
+    return vectors
+
+
+def test_vectorised_scoring_matches_the_python_loop():
+    vectors = _random_unit_vectors(200, 32)
+    query = _random_unit_vectors(1, 32, seed=99)[0]
+    blobs = [embed.pack(v) for v in vectors]
+
+    fast = embed._scores_numpy(blobs, query)
+    assert fast is not None, "numpy is installed; the fast path must engage"
+
+    reference = [embed.cosine(query, v) for v in vectors]
+    assert [float(s) for s in fast] == pytest.approx(reference, abs=1e-6)
+
+
+def test_vectorised_scoring_preserves_ranking_order():
+    """Scores agreeing to 1e-6 is not enough on its own -- the order is what
+    reaches the user, so compare the ranking itself."""
+    vectors = _random_unit_vectors(500, 32, seed=5)
+    query = _random_unit_vectors(1, 32, seed=6)[0]
+    blobs = [embed.pack(v) for v in vectors]
+
+    def ranked(scores):
+        return [i for i, _ in sorted(enumerate(scores), key=lambda p: (-p[1], p[0]))]
+
+    fast = [float(s) for s in embed._scores_numpy(blobs, query)]
+    slow = [embed.cosine(query, v) for v in vectors]
+    assert ranked(fast) == ranked(slow)
+
+
+def test_vectorised_scoring_handles_a_zero_vector():
+    """A zero vector must score 0.0, not NaN -- NaN would sort unpredictably."""
+    blobs = [embed.pack([0.0, 0.0, 0.0, 0.0]), embed.pack([1.0, 0.0, 0.0, 0.0])]
+    scores = embed._scores_numpy(blobs, [1.0, 0.0, 0.0, 0.0])
+    assert float(scores[0]) == 0.0
+    assert float(scores[1]) == pytest.approx(1.0)
+
+
+def test_vectorised_scoring_declines_a_ragged_batch():
+    """A blob of a different width means a stale or truncated row. Returning
+    None hands the batch to the per-row path rather than reshaping garbage."""
+    blobs = [embed.pack([1.0, 0.0]), embed.pack([1.0, 0.0, 0.0])]
+    assert embed._scores_numpy(blobs, [1.0, 0.0]) is None
+
+
+def test_vector_search_falls_back_when_numpy_is_missing(monkeypatch):
+    """Search must survive numpy being absent: the import happens inside the
+    helper precisely so this degrades to the Python loop instead of raising."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_numpy(name, *args, **kwargs):
+        if name == "numpy":
+            raise ImportError("numpy is not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_numpy)
+    assert embed._scores_numpy([embed.pack([1.0, 0.0])], [1.0, 0.0]) is None
+
+
+@requires_model
+def test_vector_search_crosses_batch_boundaries(conn, cfg, nas, monkeypatch):
+    """Results must not depend on how rows happen to be batched."""
+    build(conn, cfg, nas, {
+        f"note{i}.txt": f"the irrigation solenoid valve number {i} was replaced"
+        for i in range(12)
+    })
+    embed.embed_pending(conn)
+
+    monkeypatch.setattr(embed, "BATCH_ROWS", 10_000)
+    whole = embed.search(conn, "sprinkler valve", limit=10)
+    monkeypatch.setattr(embed, "BATCH_ROWS", 3)
+    split = embed.search(conn, "sprinkler valve", limit=10)
+
+    assert [pid for pid, _ in whole] == [pid for pid, _ in split]
+
+
+def test_vector_search_tie_break_matches_a_full_sort(conn, cfg, nas, monkeypatch):
+    """The bounded heap must return exactly what sorting everything would.
+
+    Ties are the risky case: identical text embeds identically, so the tie-break
+    on passage_id is what decides, and a heap that drops the wrong side of a tie
+    would silently return different results than the full sort it replaced.
+    """
+    import heapq
+
+    rows = [(pid, score) for pid, score in
+            [(5, 0.9), (3, 0.5), (9, 0.5), (1, 0.5), (7, 0.2), (4, 0.9)]]
+    limit = 3
+
+    best: list[tuple[float, int]] = []
+    for passage_id, score in rows:
+        entry = (float(score), -passage_id)
+        if len(best) < limit:
+            heapq.heappush(best, entry)
+        elif entry > best[0]:
+            heapq.heapreplace(best, entry)
+    from_heap = sorted([(-nid, s) for s, nid in best],
+                       key=lambda pair: (-pair[1], pair[0]))
+
+    from_sort = sorted(rows, key=lambda pair: (-pair[1], pair[0]))[:limit]
+    assert from_heap == from_sort
+
+
+@requires_model
+def test_vector_search_returns_the_strongest_hits_under_a_small_limit(conn, cfg, nas):
+    """A limit smaller than the corpus must still return the best matches --
+    the heap must not drop a strong hit seen late in the scan."""
+    build(conn, cfg, nas, {
+        "solenoid.txt": "the irrigation solenoid valve was replaced today",
+        **{f"filler{i}.txt": f"unrelated musings about pottery number {i}"
+           for i in range(15)},
+    })
+    embed.embed_pending(conn)
+
+    top = embed.search(conn, "sprinkler valve", limit=3)
+    assert len(top) == 3
+    assert top == sorted(top, key=lambda pair: (-pair[1], pair[0])), "must be ordered"
+
+    everything = embed.search(conn, "sprinkler valve", limit=1000)
+    assert [pid for pid, _ in top] == [pid for pid, _ in everything[:3]]
