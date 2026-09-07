@@ -1,44 +1,53 @@
 # Deploying Tracepaper to Proxmox
 
-Two steps, deliberately separate: install the service, then attach the folders
-you want indexed. Storage is not an install-time decision — it changes, there
-can be several folders, and they can live on different shares.
+Install the service, then attach the folders you want indexed. Storage is
+deliberately a separate step — it changes, there can be several folders, and
+they can live on different shares.
 
-## 1. Copy the code over
+## 1. Install
 
-There is no git remote yet, so send the checkout:
+On the Proxmox host, one line — it clones the repo inside the container itself:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/xcepti0n/tracepaper/main/deploy/proxmox-install.sh)"
+```
+
+It shows the settings and waits: **D** accepts, **C** customises, **Q** quits.
+Nothing is created until you answer. Override anything up front:
+
+```bash
+CTID=122 RAM=2048 TLS_DOMAIN=tracepaper.example.net \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/xcepti0n/tracepaper/main/deploy/proxmox-install.sh)"
+```
+
+<details>
+<summary>Installing from a local checkout instead</summary>
+
+Useful for testing a change before pushing it. `COPYFILE_DISABLE=1
+--no-xattrs --no-mac-metadata` only suppresses noise: without them macOS tar
+writes Apple extended attributes that GNU tar on Debian does not recognise, and
+it prints a `LIBARCHIVE.xattr.com.apple.provenance` warning per file. The
+extraction succeeds either way.
 
 ```bash
 # On your Mac
-cd ~/Workspace/home_server
 COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata \
     --exclude=.venv --exclude=.git --exclude=data --exclude=__pycache__ \
     --exclude=.pytest_cache --exclude='*.swp' \
     -czf tracepaper.tar.gz tracepaper
-
 scp tracepaper.tar.gz root@<proxmox-host>:/root/
+
+# On the host
+tar xzf tracepaper.tar.gz && cd tracepaper
+REPO_URL= ./deploy/proxmox-install.sh
 ```
 
-`COPYFILE_DISABLE=1 --no-xattrs --no-mac-metadata` matters only for the noise:
-without them macOS tar writes Apple extended attributes that GNU tar on Debian
-does not recognise, and it prints a `LIBARCHIVE.xattr.com.apple.provenance`
-warning per file. The extraction succeeds either way — the files are fine — but
-it reads like a failure.
+`REPO_URL=` (empty) is what selects the local copy. Note that update.sh needs a
+remote, so a copied install cannot update itself in place.
 
-## 2. Install
+</details>
 
-```bash
-ssh root@<proxmox-host>
-tar xzf tracepaper.tar.gz
-cd tracepaper
-./deploy/proxmox-install.sh
-```
-
-It shows the settings and waits: **D** accepts, **C** customises, **Q** quits.
-Creates an unprivileged LXC, installs the app, enables the service and the scan
-and enrichment timers, and prints the URL. No NAS details needed.
-
-## 3. Attach a folder
+## 2. Attach a folder
 
 ```bash
 ./deploy/add-nas.sh <CTID> <synology-ip>
@@ -60,7 +69,7 @@ outside the container the app runs in. An app that mounts filesystems turns
 every stale handle and credential problem into its own bug. The Settings page
 verifies what it finds and explains what to fix; `/etc/fstab` does the mounting.
 
-## 4. First scan
+## 3. First scan
 
 ```bash
 pct exec <CTID> -- systemctl start tracepaper-scan
@@ -69,6 +78,82 @@ pct exec <CTID> -- journalctl -u tracepaper-scan -f
 
 Hours for a lifetime of documents, and resumable — interrupting it costs only
 the document in flight. The hourly timer picks up everything after that.
+
+---
+
+## 4. HTTPS (optional)
+
+Serves on a hostname instead of `host:8823`, with the plain-HTTP port closed.
+
+```bash
+pct exec <CTID> -- env DOMAIN=tracepaper.example.net \
+  /opt/tracepaper/deploy/caddy-install.sh
+```
+
+Or during install: `TLS_DOMAIN=tracepaper.example.net ./deploy/proxmox-install.sh`.
+
+**Why a self-issued certificate.** A hostname that resolves only inside your
+network cannot be validated from outside, so no public CA will sign for it —
+Let's Encrypt says as much in "Certificates for localhost" and recommends
+issuing your own. `tls internal` runs a small CA inside the container, signs for
+this host, and renews indefinitely. Nothing leaves the LAN and there is no API
+token anywhere.
+
+The cost is trusting that CA root once per device:
+
+```bash
+pct pull <CTID> \
+  /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt \
+  tracepaper-root.crt
+
+# macOS
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain tracepaper-root.crt
+```
+
+iOS needs the profile installed *and* enabled under Settings → General → About →
+Certificate Trust Settings. Android: Settings → Security → Encryption &
+credentials → Install a certificate → CA.
+
+Until then browsers warn. The connection is encrypted either way — the warning
+is about trust, not encryption.
+
+The script switches the app to `--host 127.0.0.1`, so `http://host:8823` stops
+working. That is the point: while it still listened on `0.0.0.0` the plaintext
+path would quietly bypass TLS. To undo it, the script prints the exact command.
+
+---
+
+## 5. Updating
+
+**From the UI:** Settings → Updates → *Check for updates* → *Update now*. The
+page waits for the restart and reloads itself.
+
+**From the command line, either of:**
+
+```bash
+pct exec <CTID> -- systemctl start tracepaper-update   # same path as the button
+pct exec <CTID> -- /opt/tracepaper/deploy/update.sh    # run it in the foreground
+journalctl -u tracepaper-update -f                     # follow either
+```
+
+Both back up the human-authored layer first, fast-forward, reinstall
+dependencies, reinstall any changed unit files, restart, and **roll back
+automatically** if the new version is not healthy within 60 seconds.
+
+**Why the button is safe.** The app never applies the update itself — it runs
+as an unprivileged user with no capabilities and cannot. It asks systemd to
+start `tracepaper-update.service`, which root owns, and a polkit rule grants
+that one user permission to start that one unit with that one verb. Nothing
+else. The worst anyone reaching the endpoint can do is make the machine install
+the code already published at your configured remote.
+
+The endpoint also requires a custom header and rejects cross-site requests.
+Neither is authentication — they close the case where another site makes your
+browser POST here, and nothing more.
+
+Updating needs a **cloned** install (the default). A copied checkout has no
+remote to pull from, and the UI says so instead of offering a dead button.
 
 ---
 
@@ -200,25 +285,6 @@ mistake as putting it on NFS.
 
 ---
 
-## Updating
-
-```bash
-pct exec <CTID> -- /opt/tracepaper/deploy/update.sh
-```
-
-Backs up the human-authored layer, fast-forwards, reinstalls, restarts, and
-**rolls back automatically** if the new version does not come up healthy within
-60 seconds. It reuses whatever extras are already installed, so an update never
-silently turns semantic search off.
-
-Manual rather than a timer, on purpose: this restarts the service that owns
-your index, and that should happen when you are watching.
-
-Only works if the install came from a git clone (`REPO_URL=...`). A copied
-checkout has no remote to pull from.
-
----
-
 ## Operating
 
 ```bash
@@ -257,6 +323,10 @@ even if you move the file.
 |---|---|
 | `proxmox-install.sh` | The installer. Run on the Proxmox host. |
 | `add-nas.sh` | Attach an NFS share to an existing container. Re-runnable, once per folder. |
+| `caddy-install.sh` | HTTPS on a hostname, with a certificate the container issues itself. |
+| `Caddyfile` | The proxy config it installs. |
+| `tracepaper-update.service` | The privileged half of an update. On-demand only. |
+| `49-tracepaper-update.rules` | polkit grant: the app may start that one unit, nothing else. |
 | `update.sh` | Update in place, with automatic rollback. Run in the container. |
 | `tracepaper.service` | The web UI and API. |
 | `tracepaper-scan.{service,timer}` | Hourly scan and index. |
@@ -284,7 +354,8 @@ STORAGE=local-lvm     # default: auto-detected
 APP_PORT=8823
 
 SEMANTIC=1            # install PyTorch and semantic search
-REPO_URL=https://...  # clone instead of copying the local checkout
+TLS_DOMAIN=host.example.net   # serve HTTPS instead of plain HTTP on APP_PORT
+REPO_URL=             # empty copies the local checkout instead of cloning
 ROOT_PASSWORD=...     # otherwise console auto-login only
 SSH_KEY="ssh-ed25519 ..."
 ASSUME_YES=1          # skip the confirmation prompt

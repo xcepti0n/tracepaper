@@ -311,6 +311,48 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     "db_path": str(_config.db_path)}
         return {"ok": True, "db_path": str(_config.db_path)}
 
+    @app.get("/api/updates")
+    def api_updates() -> dict[str, Any]:
+        from . import updates
+        return updates.check().as_dict()
+
+    @app.post("/api/updates/apply")
+    def api_updates_apply(request: Request) -> dict[str, Any]:
+        """Trigger the privileged update unit.
+
+        There is no authentication on this server yet, so this endpoint gets
+        two cheap defences against a drive-by request from a page the user
+        happens to have open:
+
+        - a custom header, which a cross-site form cannot set without CORS
+          preflight, and
+        - a Sec-Fetch-Site check, which browsers send and cannot be forged
+          from script.
+
+        Neither is authentication and neither should be described as such. What
+        they close is the case where some other site makes your browser POST
+        here; they do nothing against anyone who can already reach the port.
+        The real containment is that this only ever installs the code already
+        published at the configured remote.
+        """
+        from . import updates
+
+        if request.headers.get("x-tracepaper-request") != "1":
+            raise HTTPException(
+                status_code=403,
+                detail="Missing X-Tracepaper-Request header. Trigger updates "
+                       "from the web UI, or run `systemctl start "
+                       "tracepaper-update` in the container.")
+        if request.headers.get("sec-fetch-site", "same-origin") not in (
+                "same-origin", "none"):
+            raise HTTPException(status_code=403,
+                                detail="Cross-site update requests are refused.")
+
+        started, message = updates.apply()
+        if not started:
+            raise HTTPException(status_code=409, detail=message)
+        return {"ok": True, "message": message}
+
     @app.get("/api/status")
     def api_status() -> dict[str, Any]:
         conn = open_connection()

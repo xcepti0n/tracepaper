@@ -1,0 +1,39 @@
+# Tracepaper — TLS termination.
+#
+# Installed to /etc/caddy/Caddyfile by deploy/caddy-install.sh, with the domain
+# and upstream port substituted in. After editing by hand:
+#   systemctl reload caddy
+#
+# Why a self-issued certificate: a name that resolves only inside your network
+# (a local DNS rewrite pointing at the container) cannot be validated from
+# outside, so no public CA will sign for it. Let's Encrypt says so themselves in
+# "Certificates for localhost", and their advice for this case is to issue your
+# own. `tls internal` does exactly that -- Caddy runs a small CA in the
+# container, signs for this host, and renews indefinitely. Nothing leaves the
+# LAN and there is no API token anywhere.
+#
+# The cost is trusting the CA root once per device -- see deploy/README.md.
+#
+# There is deliberately no `log` directive. The Debian package runs Caddy under
+# ProtectSystem=full, which remounts /var/log read-only, so pointing a log
+# writer there fails at config load and Caddy exits before binding anything.
+# The default is journald, where the rest of this stack already logs:
+#   journalctl -u caddy -f
+
+https://{$TRACEPAPER_DOMAIN} {
+	tls internal
+
+	encode zstd gzip
+
+	# Documents can be large, and a scan of a big corpus makes the status
+	# endpoints slow before the first results land. The default 100s read
+	# timeout would cut those off mid-response.
+	reverse_proxy 127.0.0.1:{$TRACEPAPER_PORT} {
+		# Without this the app sees 127.0.0.1 as the client for every request.
+		header_up X-Real-IP {remote_host}
+
+		transport http {
+			read_timeout 300s
+		}
+	}
+}

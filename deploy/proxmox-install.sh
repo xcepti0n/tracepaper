@@ -65,6 +65,15 @@ OS_VERSION="${OS_VERSION:-12}"     # Debian 12 (bookworm)
 # Semantic search. Off by default — see the note at the top.
 SEMANTIC="${SEMANTIC:-0}"
 
+# Hostname to serve HTTPS on, e.g. tracepaper.example.net. Empty means plain
+# HTTP on APP_PORT.
+#
+# Off by default deliberately. TLS here uses a certificate the container issues
+# itself, which no device trusts until its CA root is imported — and enabling it
+# closes the plain-HTTP port. Defaulting it on would hand a new install a
+# browser warning and no obvious way back.
+TLS_DOMAIN="${TLS_DOMAIN:-}"
+
 # ------------------------------------------------------------------ output ---
 
 RD=$'\033[01;31m'; GN=$'\033[1;92m'; YW=$'\033[33m'; BL=$'\033[36m'; CL=$'\033[m'
@@ -88,6 +97,7 @@ BANNER
 
 # Set once the container exists, so a later failure can clean up after itself.
 CREATED_CTID=""
+TLS_READY=0
 
 # A failed run must not leave a half-built container behind: the next attempt
 # would allocate a fresh ID and leak this one. Destroy it unless KEEP_ON_FAIL=1,
@@ -438,7 +448,10 @@ chmod 640 /etc/tracepaper.toml"
           cp /opt/tracepaper/deploy/tracepaper-scan.service /etc/systemd/system/
           cp /opt/tracepaper/deploy/tracepaper-scan.timer /etc/systemd/system/
           cp /opt/tracepaper/deploy/tracepaper-enrich.service /etc/systemd/system/
-          cp /opt/tracepaper/deploy/tracepaper-enrich.timer /etc/systemd/system/"
+          cp /opt/tracepaper/deploy/tracepaper-enrich.timer /etc/systemd/system/
+          cp /opt/tracepaper/deploy/tracepaper-update.service /etc/systemd/system/
+          mkdir -p /etc/polkit-1/rules.d
+          cp /opt/tracepaper/deploy/49-tracepaper-update.rules /etc/polkit-1/rules.d/"
   else
     msg_error "deploy/ units are missing from the checkout."
     exit 1
@@ -462,10 +475,17 @@ chmod 640 /etc/tracepaper.toml"
     exit 1
   fi
 
+  # tracepaper-update.service is deliberately NOT enabled: it is triggered on
+  # demand. Enabling it would run an update at every boot, so a power cut could
+  # change the running version unattended.
   inct "systemctl daemon-reload
         systemctl enable --now tracepaper >/dev/null 2>&1
         systemctl enable --now tracepaper-scan.timer >/dev/null 2>&1
         systemctl enable --now tracepaper-enrich.timer >/dev/null 2>&1"
+
+  # polkit only reads its rules at start. Without this the grant exists on disk
+  # but is not in effect, so the update button fails until the next reboot.
+  inct "systemctl restart polkit >/dev/null 2>&1 || true"
   msg_ok "Service and timers enabled"
 }
 
@@ -505,6 +525,28 @@ verify() {
   exit 1
 }
 
+# Put Caddy in front, terminating TLS with a certificate it issues itself.
+#
+# Shells out to deploy/caddy-install.sh rather than reimplementing it, so there
+# is one description of the TLS setup and not two that drift apart. That script
+# is idempotent and does its own verification.
+configure_tls() {
+  [[ -n "$TLS_DOMAIN" ]] || return 0
+
+  msg_info "Setting up HTTPS for ${TLS_DOMAIN}…"
+  # Not fatal: the app is installed and serving by this point. A TLS failure
+  # should leave a working HTTP install behind and say so, not destroy the
+  # container through the ERR trap.
+  if inct "DOMAIN='${TLS_DOMAIN}' /opt/tracepaper/deploy/caddy-install.sh"; then
+    TLS_READY=1
+    msg_ok "HTTPS ready"
+  else
+    msg_warn "HTTPS setup failed — the app is still running over plain HTTP."
+    msg_warn "Re-run inside the container once fixed:"
+    msg_warn "  DOMAIN=${TLS_DOMAIN} /opt/tracepaper/deploy/caddy-install.sh"
+  fi
+}
+
 container_ip() {
   pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}'
 }
@@ -514,7 +556,14 @@ finish() {
   echo
   msg_ok "${APP} is installed and running."
   echo
-  echo -e "  ${GN}http://${ip}:${APP_PORT}${CL}"
+  if [[ "$TLS_READY" == "1" ]]; then
+    echo -e "  ${GN}https://${TLS_DOMAIN}${CL}"
+    echo
+    echo "  Point ${TLS_DOMAIN} at ${ip} in your DNS if you have not already,"
+    echo "  and trust the CA root once per device — caddy-install.sh printed how."
+  else
+    echo -e "  ${GN}http://${ip}:${APP_PORT}${CL}"
+  fi
   echo
   echo "  Container : $CTID ($HOSTNAME_)"
   echo "  Index     : /var/lib/tracepaper/index.db  (local disk, never the NAS)"
@@ -544,6 +593,11 @@ finish() {
   if [[ "$SEMANTIC" != "1" ]]; then
     msg_info "Semantic search is off (it needs PyTorch, ~2.5GB). Keyword search, field"
     msg_info "answers, events and photo tags all work without it. See deploy/README.md."
+  fi
+  if [[ "$TLS_READY" != "1" ]]; then
+    msg_info "Plain HTTP. For HTTPS on a hostname:"
+    msg_info "  pct exec $CTID -- env DOMAIN=<hostname> /opt/tracepaper/deploy/caddy-install.sh"
+    echo
   fi
   msg_warn "No authentication yet — do not port-forward this. Reach it over the LAN or a VPN."
   if [[ "$NET" == "dhcp" ]]; then
@@ -690,6 +744,7 @@ main() {
   configure_access
   configure_service
   verify
+  configure_tls
   CREATED_CTID=""   # success — nothing to clean up
   finish
 }

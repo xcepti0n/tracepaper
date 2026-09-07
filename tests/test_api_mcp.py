@@ -290,3 +290,41 @@ def test_backup_matches_documents_that_moved(populated, cfg, nas, tmp_path):
     assert backup.restore_backup(rebuilt, backup_file)["corrections"] == 1
     assert FieldQuery(rebuilt).get("gross_salary").best.value == 92000.0
     rebuilt.close()
+
+
+def test_api_updates_reports_unsupported_for_a_non_checkout(client, monkeypatch):
+    """A copied-in install has no remote, and the UI must say so rather than
+    offering a button that cannot work."""
+    from tracepaper import updates
+    monkeypatch.setattr(updates, "APP_DIR", Path("/nonexistent-tracepaper"))
+    data = client.get("/api/updates").json()
+    assert data["supported"] is False
+    assert data["can_apply"] is False
+    assert "not a git checkout" in data["reason"]
+
+
+def test_api_update_apply_requires_the_custom_header(client):
+    """A cross-site form cannot set a custom header without a CORS preflight,
+    which closes the drive-by case. Not authentication, and not claimed to be."""
+    response = client.post("/api/updates/apply")
+    assert response.status_code == 403
+    assert "X-Tracepaper-Request" in response.json()["detail"]
+
+
+def test_api_update_apply_refuses_cross_site(client):
+    response = client.post("/api/updates/apply",
+                           headers={"X-Tracepaper-Request": "1",
+                                    "Sec-Fetch-Site": "cross-site"})
+    assert response.status_code == 403
+    assert "Cross-site" in response.json()["detail"]
+
+
+def test_api_update_apply_reports_when_it_cannot(client, monkeypatch):
+    """With the unit absent, this must be a clean 409 naming the manual
+    command -- not a 500."""
+    from tracepaper import updates
+    monkeypatch.setattr(updates, "can_apply", lambda: False)
+    response = client.post("/api/updates/apply",
+                           headers={"X-Tracepaper-Request": "1"})
+    assert response.status_code == 409
+    assert "systemctl start tracepaper-update" in response.json()["detail"]

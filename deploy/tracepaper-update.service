@@ -1,0 +1,31 @@
+[Unit]
+Description=Tracepaper — apply pending updates
+# Ordering only; update.sh checks for itself whether the network is usable and
+# fails cleanly if the fetch does not work.
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as root, unlike tracepaper.service. It has to: it installs systemd
+# units, restarts a service, and writes into a root-owned checkout. This is the
+# whole reason the update endpoint is a thin trigger and not the update logic
+# itself — the app must never be the thing running as root.
+User=root
+ExecStart=/opt/tracepaper/deploy/update.sh
+
+# pip resolving and building wheels needs far more than the app's own ceiling;
+# the service caps at 768M and a dependency install would be killed halfway.
+MemoryMax=2G
+
+# An update that hangs must not hold the service down forever. update.sh has
+# its own health-check timeouts well inside this.
+TimeoutStartSec=1800
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tracepaper-update
+
+# Deliberately no install section, so this is never wanted-by any target.
+# It is triggered on demand — `systemctl start
+# tracepaper-update` — never enabled at boot. Updating automatically on every
+# restart would mean a power cut could change the running version unattended.

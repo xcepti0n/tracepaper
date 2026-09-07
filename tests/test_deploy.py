@@ -85,9 +85,16 @@ def test_execstart_binary_matches_installed_path(unit: Path):
     text = unit.read_text()
     for match in re.finditer(r"^ExecStart=(\S+)", text, re.MULTILINE):
         binary = match.group(1)
-        assert binary.startswith("/opt/tracepaper/.venv/bin/"), (
-            f"{unit.name}: ExecStart={binary} is not the path the installer "
+        allowed = ("/opt/tracepaper/.venv/bin/", "/opt/tracepaper/deploy/")
+        assert binary.startswith(allowed), (
+            f"{unit.name}: ExecStart={binary} is not a path the installer "
             "creates; systemd would fail with 203/EXEC.")
+        # A script ExecStart must actually be executable in the repo, or the
+        # copied-in copy will not run either.
+        if binary.startswith("/opt/tracepaper/deploy/"):
+            local = DEPLOY / Path(binary).name
+            assert local.exists(), f"{unit.name}: {binary} is not shipped"
+            assert local.stat().st_mode & 0o111, f"{local.name} is not executable"
 
 
 @pytest.mark.parametrize("unit", UNITS + TIMERS, ids=lambda p: p.name)
@@ -273,3 +280,110 @@ def test_index_is_never_placed_on_the_nas():
             assert not path.startswith("/mnt/"), (
                 f"{source.name}: db_path={path} is on a mount; SQLite must live "
                 "on local disk")
+
+
+# --------------------------------------------------------------- updates ---
+
+def test_update_unit_is_not_enabled_at_boot():
+    """It has no [Install] section on purpose: enabling it would run an update
+    at every boot, so a power cut could change the running version unattended."""
+    unit = (DEPLOY / "tracepaper-update.service").read_text()
+    assert "[Install]" not in unit, (
+        "tracepaper-update.service must stay on-demand only")
+    installer = (DEPLOY / "proxmox-install.sh").read_text()
+    assert not re.search(r"systemctl enable[^\n]*tracepaper-update", installer)
+
+
+def test_update_unit_runs_as_root_and_the_app_does_not():
+    """The split is the security property: the app triggers, root applies."""
+    update = (DEPLOY / "tracepaper-update.service").read_text()
+    service = (DEPLOY / "tracepaper.service").read_text()
+    assert "User=root" in update
+    assert "User=tracepaper" in service
+    assert "CapabilityBoundingSet=" in service
+
+
+def test_update_unit_has_headroom_and_a_timeout():
+    """pip needs more memory than the app's ceiling, and a hung update must not
+    hold the service down forever."""
+    unit = (DEPLOY / "tracepaper-update.service").read_text()
+    assert re.search(r"MemoryMax=\d+G", unit)
+    assert re.search(r"TimeoutStartSec=\d+", unit)
+
+
+def test_polkit_rule_is_narrow():
+    """One action, one unit, one verb, one user -- not blanket systemd access."""
+    rule = (DEPLOY / "49-tracepaper-update.rules").read_text()
+    assert '"tracepaper-update.service"' in rule
+    assert '"start"' in rule
+    assert 'subject.user === "tracepaper"' in rule
+    assert "org.freedesktop.systemd1.manage-units" in rule
+
+
+def test_installer_installs_the_polkit_rule_and_reloads_polkit():
+    """polkit reads rules at start; without a reload the grant exists on disk
+    but is not in effect until the next reboot."""
+    installer = (DEPLOY / "proxmox-install.sh").read_text()
+    assert "49-tracepaper-update.rules" in installer
+    assert "/etc/polkit-1/rules.d" in installer
+    assert "restart polkit" in installer
+
+
+def test_update_script_installs_every_unit_it_ships():
+    """The units live in /etc, so a git pull alone never updates them. A unit
+    missing from this list is a fix that silently never reaches the host."""
+    updater = (DEPLOY / "update.sh").read_text()
+    for unit in sorted(p.name for p in DEPLOY.glob("tracepaper*.service")):
+        assert unit in updater, f"update.sh does not reinstall {unit}"
+    for timer in sorted(p.name for p in DEPLOY.glob("tracepaper*.timer")):
+        assert timer in updater, f"update.sh does not reinstall {timer}"
+
+
+# ------------------------------------------------------------------- TLS ---
+
+def test_caddyfile_has_no_log_directive():
+    """The Debian package runs Caddy under ProtectSystem=full, so /var/log is
+    read-only in its namespace. A log directive there fails at config load and
+    Caddy exits before binding -- which looks like a network problem."""
+    caddyfile = (DEPLOY / "Caddyfile").read_text()
+    assert not re.search(r"^\s*log\s*\{", caddyfile, re.MULTILINE), (
+        "leave logging on journald")
+
+
+def test_caddy_install_binds_the_app_inward():
+    """While the app still listens on 0.0.0.0 the plain-HTTP port keeps working
+    and quietly bypasses TLS. The plaintext path has to actually go away."""
+    script = (DEPLOY / "caddy-install.sh").read_text()
+    assert "--host 127.0.0.1" in script
+    assert "systemctl daemon-reload" in script, (
+        "the bind address lives in the unit, so a daemon-reload is required")
+
+
+def test_caddy_install_verification_can_fail():
+    script = (DEPLOY / "caddy-install.sh").read_text()
+    assert "healthy=0" in script and "healthy" in script
+    assert "journalctl -u caddy" in script
+    assert "exit 1" in script
+
+
+def test_caddy_install_validates_config_before_restarting():
+    script = (DEPLOY / "caddy-install.sh").read_text()
+    assert "caddy validate" in script
+
+
+def test_tls_is_optional_and_off_by_default():
+    """Enabling TLS closes the plain-HTTP port and needs a CA root trusted per
+    device; defaulting it on would hand a new install a browser warning."""
+    installer = (DEPLOY / "proxmox-install.sh").read_text()
+    assert 'TLS_DOMAIN="${TLS_DOMAIN:-}"' in installer
+    assert "configure_tls" in installer
+
+
+def test_tls_failure_does_not_destroy_the_container():
+    """By the time TLS runs the app is installed and serving. A TLS failure
+    should leave a working HTTP install, not trip the ERR trap."""
+    installer = (DEPLOY / "proxmox-install.sh").read_text()
+    block = installer[installer.index("configure_tls() {"):]
+    block = block[:block.index("\n}")]
+    assert "still running over plain HTTP" in block, (
+        "a TLS failure must be reported as non-fatal")

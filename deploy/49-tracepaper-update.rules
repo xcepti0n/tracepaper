@@ -1,0 +1,27 @@
+/* Let the `tracepaper` service user start exactly one unit:
+ * tracepaper-update.service.
+ *
+ * Installed to /etc/polkit-1/rules.d/49-tracepaper-update.rules.
+ *
+ * Without this the app cannot trigger an update at all — tracepaper.service
+ * runs as an unprivileged user with an empty capability bounding set, and
+ * `systemctl start` is a privileged operation. The alternatives would have
+ * been giving the app sudo or running it as root, both of which grant vastly
+ * more than this does.
+ *
+ * The grant is deliberately narrow: one action, one unit, one verb, one user.
+ * It does not permit stopping tracepaper.service, starting anything else, or
+ * any other systemd verb. What it allows is "install the code that is already
+ * published at the configured remote" — a real capability, but a much smaller
+ * one than "run arbitrary commands as root".
+ */
+polkit.addRule(function (action, subject) {
+  if (
+    action.id === "org.freedesktop.systemd1.manage-units" &&
+    action.lookup("unit") === "tracepaper-update.service" &&
+    action.lookup("verb") === "start" &&
+    subject.user === "tracepaper"
+  ) {
+    return polkit.Result.YES;
+  }
+});

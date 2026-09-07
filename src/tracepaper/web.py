@@ -147,6 +147,88 @@ function addRoot() {
   document.getElementById('roots').appendChild(row);
 }
 
+async function checkUpdates() {
+  const box = document.getElementById('update_status');
+  const detail = document.getElementById('update_detail');
+  box.innerHTML = '<span class="muted">checking…</span>';
+  detail.innerHTML = '';
+
+  let status;
+  try {
+    const response = await fetch('/api/updates');
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    status = await response.json();
+  } catch (error) {
+    box.innerHTML = '<span class="bad">could not check: ' +
+                    escapeHtml(String(error.message)) + '</span>';
+    return;
+  }
+
+  if (status.reason) {
+    box.innerHTML = '<span class="bad">' + escapeHtml(status.reason) + '</span>';
+    return;
+  }
+  if (!status.behind) {
+    box.innerHTML = '<span class="ok">✓ up to date</span>';
+    return;
+  }
+
+  box.innerHTML = '<span class="muted">' + status.behind + ' commit' +
+                  (status.behind === 1 ? '' : 's') + ' behind</span>';
+
+  const list = status.commits.map(c =>
+    '<div class="commit"><code>' + escapeHtml(c.short) + '</code> ' +
+    escapeHtml(c.subject) + '</div>').join('');
+
+  // Only offer the button when the server said it can actually use it: one
+  // that appears and then fails on a permission error is worse than none.
+  const button = status.can_apply
+    ? '<button type="button" onclick="applyUpdate(this)">Update now</button>'
+    : '<p class="hint">Run <code>systemctl start tracepaper-update</code> ' +
+      'in the container to apply these.</p>';
+
+  detail.innerHTML = list + '<div class="actions">' + button + '</div>';
+}
+
+async function applyUpdate(button) {
+  button.disabled = true;
+  button.textContent = 'Updating…';
+  const box = document.getElementById('update_status');
+
+  try {
+    const response = await fetch('/api/updates/apply', {
+      method: 'POST',
+      // Not authentication -- a cross-site form cannot set a custom header
+      // without a CORS preflight, which closes the drive-by case.
+      headers: {'Content-Type': 'application/json', 'X-Tracepaper-Request': '1'},
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || ('HTTP ' + response.status));
+    box.innerHTML = '<span class="ok">' + escapeHtml(body.message) + '</span>';
+    // The service restarts as part of the update, so this page goes away for a
+    // moment. Poll until it answers again rather than leaving a dead page up.
+    setTimeout(waitForRestart, 5000);
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = 'Update now';
+    box.innerHTML = '<span class="bad">' + escapeHtml(String(error.message)) +
+                    '</span>';
+  }
+}
+
+async function waitForRestart() {
+  const box = document.getElementById('update_status');
+  for (let attempt = 0; attempt < 60; attempt++) {
+    try {
+      const response = await fetch('/api/health', {cache: 'no-store'});
+      if (response.ok) { location.reload(); return; }
+    } catch (error) { /* still restarting */ }
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+  box.innerHTML = '<span class="bad">still restarting — check ' +
+                  '<code>journalctl -u tracepaper-update -f</code></span>';
+}
+
 async function checkPath(input, kind, statusId) {
   const box = statusId ? document.getElementById(statusId)
                        : input.parentElement.querySelector('.status');
@@ -517,7 +599,55 @@ def _settings_tab(conn: sqlite3.Connection) -> str:
       <code>{_esc(config_file or "tracepaper.toml")}</code></span>
   </div>
 </form>""")
+
+    out.append(_updates_panel())
     return "".join(out)
+
+
+def _updates_panel() -> str:
+    """Update status and, where permitted, a button to apply one.
+
+    Rendered server-side from the local git state only -- no network call on
+    page load. Checking the remote is a `git fetch`, which is slow and can hang
+    on a bad connection, so it happens when the user asks for it.
+    """
+    from . import updates
+
+    status = updates.check_local()
+
+    if not status.supported:
+        return f'''<h2>Updates</h2>
+<p class="hint">{_esc(status.reason)}</p>
+<p class="hint">To update a copied install, re-copy the source and re-run the
+install steps, or reinstall from the git remote so future updates work in
+place.</p>'''
+
+    current = ""
+    if status.current:
+        current = (f'<p>Running <code>{_esc(status.current.sha[:7])}</code> '
+                   f'{_esc(status.current.subject)} '
+                   f'on <code>{_esc(status.branch)}</code></p>')
+
+    if status.can_apply:
+        action = ('<button type="button" onclick="checkUpdates()">Check for '
+                  'updates</button>'
+                  '<span id="update_status" class="status"></span>')
+    else:
+        # A button that appears and then fails is worse than one that never
+        # appears, so say what to run instead.
+        action = ('<p class="hint">This server cannot apply updates itself '
+                  '— <code>tracepaper-update.service</code> is not installed, '
+                  'or polkit does not permit this user to start it. Run '
+                  '<code>systemctl start tracepaper-update</code> in the '
+                  'container.</p>'
+                  '<button type="button" onclick="checkUpdates()">Check for '
+                  'updates</button>'
+                  '<span id="update_status" class="status"></span>')
+
+    return f'''<h2>Updates</h2>
+{current}
+<div class="actions">{action}</div>
+<div id="update_detail"></div>'''
 
 
 def _root_rows(roots: list[str], checks: list[dict]) -> str:
