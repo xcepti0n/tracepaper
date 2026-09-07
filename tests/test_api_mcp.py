@@ -360,3 +360,15 @@ def test_background_update_check_is_quiet_on_failure(client):
     script = script[:script.index("async function applyUpdate")]
     assert "if (!quiet)" in script, (
         "a background check must suppress its own failure messages")
+
+
+def test_update_check_never_writes_to_the_checkout(client, monkeypatch):
+    """`git fetch` writes FETCH_HEAD, objects and a lock file, and the service
+    cannot write to its own code -- the tree is root-owned so a compromised
+    service cannot rewrite what it runs next. Fetching as this user fails with
+    a generic transport error that hides the permission problem."""
+    from tracepaper import updates
+    source = Path(updates.__file__).read_text()
+    assert '"ls-remote"' in source
+    assert '"fetch"' not in source, (
+        "the read-only check must not fetch; the privileged unit does that")

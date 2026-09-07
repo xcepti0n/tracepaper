@@ -170,7 +170,10 @@ async function checkUpdates(options) {
     return;
   }
 
-  if (status.reason) {
+  // A reason WITH an update waiting is explanatory, not an error: the commit
+  // subjects are not readable without writing to the checkout. A reason with
+  // nothing waiting is a genuine failure to check.
+  if (status.reason && !status.behind) {
     if (!quiet) box.innerHTML = '<span class="bad">' +
                                 escapeHtml(status.reason) + '</span>';
     return;
@@ -195,9 +198,13 @@ async function checkUpdates(options) {
     : '<p class="hint">Run <code>systemctl start tracepaper-update</code> ' +
       'in the container to apply these.</p>';
 
-  detail.innerHTML = '<p class="hint">Changes since ' +
-    escapeHtml(status.current ? status.current.short : 'the running version') +
-    ':</p>' + list + '<div class="actions">' + button + '</div>';
+  const heading = status.commits.length
+    ? '<p class="hint">Changes since ' +
+      escapeHtml(status.current ? status.current.short : 'the running version') +
+      ':</p>'
+    : '<p class="hint">' + escapeHtml(status.reason || '') + '</p>';
+
+  detail.innerHTML = heading + list + '<div class="actions">' + button + '</div>';
 }
 
 async function applyUpdate(button) {

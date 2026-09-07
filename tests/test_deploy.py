@@ -570,3 +570,26 @@ def test_the_service_user_can_read_git_state():
     updater = (DEPLOY / "update.sh").read_text()
     assert "safe.directory" in updater, (
         "an install predating this must get the fix on its next update")
+
+
+def test_pre_update_backup_goes_to_the_configured_share():
+    """A pre-update backup on local disk is the copy that disappears with the
+    container -- which is the case it exists for."""
+    updater = (DEPLOY / "update.sh").read_text()
+    assert "backup_dir" in updater, (
+        "the pre-update backup should prefer the configured share")
+
+
+def test_pre_update_backup_directory_is_writable_by_the_service_user():
+    """The export runs as the service user; a root-owned mkdir made this step
+    fail silently on every update."""
+    updater = (DEPLOY / "update.sh").read_text()
+    assert "chown tracepaper:tracepaper \"$BACKUP_BASE\"" in updater
+
+
+def test_pre_update_backup_failure_is_visible():
+    """Swallowing stderr hid the reason this step was failing."""
+    updater = (DEPLOY / "update.sh").read_text()
+    line = next(l for l in updater.splitlines()
+                if "backup \"$BACKUP\"" in l)
+    assert "2>&1" not in line, "the export's error must reach the operator"

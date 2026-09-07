@@ -46,13 +46,29 @@ PORT="${PORT:-8823}"
 # Before anything else, and specifically the human-authored layer: corrections,
 # notes, entity and vocabulary merges. Everything else in the index is
 # regenerable from your documents; this is not.
-BACKUP="/var/backups/tracepaper-pre-update-$(date +%F-%H%M%S).json"
-mkdir -p /var/backups
+# Prefer the configured backup_dir -- the NAS share. A pre-update backup on
+# local disk is the copy that disappears with the container, which is the very
+# case it exists for. Fall back to /var/backups only when no share is
+# configured, so an install without one still gets something.
+BACKUP_BASE="$(sed -n 's/^backup_dir *= *"\(.*\)"/\1/p' "$CONFIG" 2>/dev/null | head -1)"
+if [[ -z "$BACKUP_BASE" || ! -d "$BACKUP_BASE" ]]; then
+  BACKUP_BASE="/var/backups"
+  msg_warn "No backup_dir configured; using ${BACKUP_BASE} on local disk."
+fi
+
+BACKUP="${BACKUP_BASE}/tracepaper-pre-update-$(date +%F-%H%M%S).json"
+mkdir -p "$BACKUP_BASE"
+# The export runs as the service user, so the directory has to be writable BY
+# that user -- a root-owned mkdir here is why this step used to fail silently.
+chown tracepaper:tracepaper "$BACKUP_BASE" 2>/dev/null || true
+
 msg_info "Backing up corrections and notes…"
-if sudo -u tracepaper "$VENV/bin/tracepaper" --config "$CONFIG" backup "$BACKUP" >/dev/null 2>&1; then
+# Errors shown, not swallowed. This step failing is worth knowing about before
+# an update replaces the code that produced the data.
+if sudo -u tracepaper "$VENV/bin/tracepaper" --config "$CONFIG" backup "$BACKUP" >/dev/null; then
   msg_ok "Saved $BACKUP"
 else
-  msg_warn "Could not export. Continuing without a fresh backup."
+  msg_warn "Could not export — see the error above. Continuing without a fresh backup."
   BACKUP=""
 fi
 

@@ -156,16 +156,34 @@ def check() -> UpdateStatus:
         status.reason = f"could not read local git state: {exc}"
         return status
 
+    # ls-remote, not fetch. A fetch WRITES -- FETCH_HEAD, new objects, a lock
+    # file -- and the service cannot write to its own code: the tree is
+    # root-owned precisely so a compromised service cannot rewrite what it runs
+    # next. Fetching as this user fails with a generic transport error (255)
+    # that hides the permission problem underneath.
+    #
+    # ls-remote asks the remote what it has and writes nothing, which is what a
+    # read-only check should do anyway. The privileged half still fetches for
+    # real, as root, inside tracepaper-update.service.
     try:
-        _git(["fetch", "--quiet", "origin"], directory)
-        target = _git(["rev-parse", f"origin/{status.branch}"], directory)
+        listing = _git(["ls-remote", "origin",
+                        f"refs/heads/{status.branch}"], directory)
     except (subprocess.SubprocessError, OSError) as exc:
-        # Offline is not an error worth failing on -- report what is known.
+        # Offline is not worth failing on -- report what is known locally.
         status.reason = f"could not reach the remote: {exc}"
         status.can_apply = can_apply()
         return status
 
+    target = listing.split("\t")[0].strip() if listing else ""
+    if not target:
+        status.reason = f"the remote has no branch {status.branch}"
+        status.can_apply = can_apply()
+        return status
+
     if target != status.current.sha:
+        # How far ahead the remote is, described from what is available locally.
+        # The commits themselves may not have been fetched yet, in which case
+        # only the count is known -- which is still the useful part.
         try:
             log = _git(["log", "--format=%H%x1f%s",
                         f"{status.current.sha}..{target}"], directory)
@@ -174,7 +192,18 @@ def check() -> UpdateStatus:
                 status.commits.append(Commit(sha, subject))
             status.behind = len(status.commits)
         except (subprocess.SubprocessError, OSError):
+            # The remote is ahead but those objects have never been fetched, so
+            # their subjects cannot be read without writing to the repo -- which
+            # is exactly what this check must not do.
+            #
+            # Reporting the count honestly beats inventing one: "an update is
+            # waiting, applying it will show you what changed" is true and
+            # useful, while a fabricated list would not be.
             status.behind = 1
+            status.commits = []
+            status.reason = (
+                "An update is available. The details are not readable until it "
+                "is applied, because checking must not write to the checkout.")
 
     status.can_apply = can_apply()
     return status
