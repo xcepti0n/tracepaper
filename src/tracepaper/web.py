@@ -249,10 +249,10 @@ def render_page(conn: sqlite3.Connection, *, query: str = "", tab: str = "search
     return f"""<!doctype html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DataManager</title><style>{STYLE}</style></head>
+<title>Tracepaper</title><style>{STYLE}</style></head>
 <body>
 <header><div class="wrap">
-  <h1>DataManager <small>deterministic search — no model in the query path</small></h1>
+  <h1>Tracepaper <small>deterministic search — no model in the query path</small></h1>
   <nav>{nav}</nav>
 </div></header>
 <main><div class="wrap">{body}</div></main>
@@ -291,7 +291,7 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
         if semantic and not embed.is_loaded():
             out.append('<p class="hint">Ask for a value, a merchant, a date, or '
                        'just words you remember. <b>Keyword only</b> — no '
-                       'embedding model loaded; run <code>dm embed</code> and '
+                       'embedding model loaded; run <code>tracepaper embed</code> and '
                        'restart.</p>')
         else:
             out.append('<p class="hint">Ask for a value ("passport expiry"), '
@@ -447,7 +447,7 @@ def _browse_tab(conn: sqlite3.Connection, query: str) -> str:
 
     if len(out) == 1:
         out.append('<div class="empty">Nothing indexed yet. Run '
-                   '<code>dm scan --index</code>.</div>')
+                   '<code>tracepaper scan --index</code>.</div>')
     return "".join(out)
 
 
@@ -469,7 +469,7 @@ def _settings_tab(conn: sqlite3.Connection) -> str:
     out.append('<p class="hint">Mount your NFS shares with the OS '
                '(<code>/etc/fstab</code> or a systemd mount unit) — that '
                'survives reboots and keeps credentials out of this app. '
-               'Point DataManager at the mounted paths here.</p>')
+               'Point Tracepaper at the mounted paths here.</p>')
 
     if found_mounts:
         rows = "".join(
@@ -505,7 +505,7 @@ def _settings_tab(conn: sqlite3.Connection) -> str:
   <div class="field">
     <input type="text" id="backup_dir"
            value="{_esc(cfg.backup_dir or "")}"
-           placeholder="/mnt/nas/backups/datamanager"
+           placeholder="/mnt/nas/backups/tracepaper"
            onchange="checkPath(this,'backup','backup_status')">
     <div id="backup_status" class="status">
       {_check_badge(checks["backup"]) if checks["backup"] else ""}</div>
@@ -514,7 +514,7 @@ def _settings_tab(conn: sqlite3.Connection) -> str:
   <div class="actions">
     <button type="submit">Save</button>
     <span class="hint">Saved to
-      <code>{_esc(config_file or "datamanager.toml")}</code></span>
+      <code>{_esc(config_file or "tracepaper.toml")}</code></span>
   </div>
 </form>""")
     return "".join(out)
@@ -586,7 +586,7 @@ def _status_tab(conn: sqlite3.Connection) -> str:
     embedded = sum(embeddings["by_model"].values())
     if embedded < embeddings["passages"]:
         out.append(f'<p class="hint">{embedded} of {embeddings["passages"]} '
-                   f'passages embedded — run <code>dm embed</code> for '
+                   f'passages embedded — run <code>tracepaper embed</code> for '
                    f'semantic search.</p>')
 
     scan = info["last_scan"]

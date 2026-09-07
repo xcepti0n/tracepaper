@@ -6,7 +6,7 @@ held and what was actually spent -- that is reasoning, and it belongs to the
 caller's LLM, not to this engine.
 
 What the engine guarantees is the **evidence set**: the same question returns
-the same evidence, in the same order, every time. DataManager never generates
+the same evidence, in the same order, every time. Tracepaper never generates
 prose; it hands back records, events and passages with citations.
 
 Entirely deterministic -- no model is loaded here.

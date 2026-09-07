@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "datamanager"
+name = "tracepaper"
 version = "0.1.0"
 description = "Deterministic search over personal documents on a NAS"
 requires-python = ">=3.11"
@@ -49,14 +49,17 @@ dev = [
 ]
 
 [project.scripts]
-dm = "datamanager.cli:main"
-dm-mcp = "datamanager.mcp_server:main"
+tracepaper = "tracepaper.cli:main"
+# Short alias. The full name is the documented one; this exists because you
+# type it dozens of times a day.
+tp = "tracepaper.cli:main"
+tracepaper-mcp = "tracepaper.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-datamanager = ["schema.sql"]
+tracepaper = ["schema.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

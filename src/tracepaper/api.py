@@ -68,7 +68,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         print("sentence-transformers not installed; search will be keyword-only")
     embed.set_lazy_load(False)
 
-    app = FastAPI(title="DataManager", version="0.1.0",
+    app = FastAPI(title="Tracepaper", version="0.1.0",
                   description="Deterministic search over personal documents")
 
     # ------------------------------------------------------------ web UI
@@ -270,7 +270,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/api/settings")
     def api_save_settings(payload: dict) -> dict[str, Any]:
-        config_file = settings.find_config() or Path("datamanager.toml")
+        config_file = settings.find_config() or Path("tracepaper.toml")
         roots = payload.get("roots") or []
         db_path = payload.get("db_path") or str(_config.db_path)
         backup_dir = payload.get("backup_dir") or None

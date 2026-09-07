@@ -70,7 +70,7 @@ class Config:
     def load(path: Path | str | None = None) -> "Config":
         cfg = Config()
         if path is None:
-            for candidate in (Path("datamanager.toml"), Path("config/datamanager.toml")):
+            for candidate in (Path("tracepaper.toml"), Path("config/tracepaper.toml")):
                 if candidate.exists():
                     path = candidate
                     break

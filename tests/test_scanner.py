@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from datamanager.scan.scanner import ScanAborted, Scanner
+from tracepaper.scan.scanner import ScanAborted, Scanner
 
 
 def write(path: Path, text: str) -> Path:

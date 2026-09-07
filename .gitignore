@@ -6,7 +6,7 @@ venv/
 *.egg-info/
 
 # Index data — regenerable, never committed. Anchored to the repo root so the
-# src/datamanager/index package is not caught by these.
+# src/tracepaper/index package is not caught by these.
 *.db
 *.db-wal
 *.db-shm

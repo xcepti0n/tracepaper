@@ -1,16 +1,16 @@
 """Command-line interface.
 
-    dm scan /Volumes/NAS/documents    reconcile the index against the NAS
-    dm index                          process queued extraction jobs
-    dm search "sprinkler valve"       deterministic keyword search
-    dm get expiry_date                direct answer with citation (Tier 1)
-    dm get gross_salary --where tax_year=2023
-    dm agg amount sum --where merchant=Costco
-    dm keys / dm values <key>         discovered vocabulary
-    dm correct <id> <key> <value>     hand-correct an extracted value
-    dm status                         index health
-    dm note add / edit                native notes
-    dm show <id>                      item detail
+    tracepaper scan /Volumes/NAS/documents    reconcile the index against the NAS
+    tracepaper index                          process queued extraction jobs
+    tracepaper search "sprinkler valve"       deterministic keyword search
+    tracepaper get expiry_date                direct answer with citation (Tier 1)
+    tracepaper get gross_salary --where tax_year=2023
+    tracepaper agg amount sum --where merchant=Costco
+    tracepaper keys / tracepaper values <key>         discovered vocabulary
+    tracepaper correct <id> <key> <value>     hand-correct an extracted value
+    tracepaper status                         index health
+    tracepaper note add / edit                native notes
+    tracepaper show <id>                      item detail
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from .scan.scanner import ScanAborted, Scanner
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="dm", description="DataManager — deterministic search over your documents")
+        prog="tracepaper", description="Tracepaper — deterministic search over your documents")
     parser.add_argument("--db", type=Path, default=None, help="index path")
     parser.add_argument("--config", type=Path, default=None, help="TOML config path")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -281,7 +281,7 @@ def _cmd_embed(args, conn) -> int:
         info = embed.stats(conn)
         print(f"passages with text: {info['passages']}")
         if not info["by_model"]:
-            print("no embeddings yet — run: dm embed")
+            print("no embeddings yet — run: tracepaper embed")
             return 0
         for model_id, count in info["by_model"].items():
             missing = info["passages"] - count
@@ -339,8 +339,8 @@ def _cmd_get(args, conn) -> int:
     if not answer.values:
         print(f"no value found for '{args.key}'"
               + (f" with {args.where}" if args.where else ""))
-        print("\ntry: dm keys        (what fields exist)")
-        print("     dm search ...  (full-text instead)")
+        print("\ntry: tracepaper keys        (what fields exist)")
+        print("     tracepaper search ...  (full-text instead)")
         return 0
 
     best = answer.best
@@ -384,7 +384,7 @@ def _cmd_agg(args, conn) -> int:
 def _cmd_keys(args, conn) -> int:
     rows = FieldQuery(conn).list_keys(args.prefix)
     if not rows:
-        print("no fields extracted yet — run: dm index")
+        print("no fields extracted yet — run: tracepaper index")
         return 0
     width = max(len(k) for k, _ in rows)
     for key, count in rows:
@@ -407,7 +407,7 @@ def _cmd_correct(args, cfg: Config, conn) -> int:
     if args.remove:
         if corrections.remove_correction(conn, args.item_id, args.key):
             print(f"removed correction {args.key} on item {args.item_id}")
-            print("re-run 'dm index --item {}' to restore the extracted value"
+            print("re-run 'tracepaper index --item {}' to restore the extracted value"
                   .format(args.item_id))
         else:
             print(f"no correction for '{args.key}' on item {args.item_id}")
@@ -475,7 +475,7 @@ def _cmd_ask(args, conn) -> int:
 
     # The engine returns evidence, never a verdict. The reasoning step belongs
     # to the caller, and that boundary is what keeps results reproducible.
-    print("DataManager returns evidence, not conclusions — reason over the above.")
+    print("Tracepaper returns evidence, not conclusions — reason over the above.")
     return 0
 
 
@@ -485,8 +485,8 @@ def _cmd_events(args, conn) -> int:
                         since=args.since, until=args.until, limit=limit)
     if not rows:
         print("no matching events")
-        print("\ntry: dm events            (everything)")
-        print("     dm entities          (which names are known)")
+        print("\ntry: tracepaper events            (everything)")
+        print("     tracepaper entities          (which names are known)")
         return 0
 
     for row in rows:
@@ -530,7 +530,7 @@ def _cmd_entities(args, conn) -> int:
 
     rows = entities.list_all(conn, args.entity_type)
     if not rows:
-        print("no entities yet — run: dm index")
+        print("no entities yet — run: tracepaper index")
         return 0
     for row in rows:
         print(f"[{row['id']:>4}] {row['canonical_name']:<40} "
@@ -550,7 +550,7 @@ def _cmd_vocab(args, conn) -> int:
         if not rows:
             print("no merge candidates")
             return 0
-        print("keys whose canonical form differs (use: dm vocab --merge FROM TO)\n")
+        print("keys whose canonical form differs (use: tracepaper vocab --merge FROM TO)\n")
         for key, canonical, count in rows:
             print(f"  {key:<40} → {canonical:<30} seen {count}x")
         return 0
@@ -560,7 +560,7 @@ def _cmd_vocab(args, conn) -> int:
         "FROM key_vocabulary ORDER BY occurrences DESC, key"
     ).fetchall()
     if not rows:
-        print("vocabulary is empty — run: dm index")
+        print("vocabulary is empty — run: tracepaper index")
         return 0
     for row in rows:
         pin = " (pinned)" if row["pinned_by_user"] else ""
@@ -582,7 +582,7 @@ def _cmd_serve(args, cfg: Config, conn) -> int:
     # The serving process opens its own per-request connections.
     conn.close()
 
-    print(f"DataManager → http://{args.host}:{args.port}")
+    print(f"Tracepaper → http://{args.host}:{args.port}")
     print(f"index: {cfg.db_path}")
     if args.host == "127.0.0.1":
         print("(bind --host 0.0.0.0 to reach it from other machines)")

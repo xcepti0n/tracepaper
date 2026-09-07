@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Update a running DataManager install. Run inside the container:
+# Update a running Tracepaper install. Run inside the container:
 #
-#   /opt/datamanager/deploy/update.sh
+#   /opt/tracepaper/deploy/update.sh
 #
 # Deliberately manual rather than a timer. This pulls code and restarts a
 # service that owns the only copy of your corrections — not something to do
@@ -11,9 +11,9 @@
 
 set -Eeuo pipefail
 
-APP_DIR="${APP_DIR:-/opt/datamanager}"
+APP_DIR="${APP_DIR:-/opt/tracepaper}"
 UNIT_DIR="/etc/systemd/system"
-CONFIG="${CONFIG:-/etc/datamanager.toml}"
+CONFIG="${CONFIG:-/etc/tracepaper.toml}"
 VENV="$APP_DIR/.venv"
 
 RD=$'\033[01;31m'; GN=$'\033[1;92m'; YW=$'\033[33m'; BL=$'\033[36m'; CL=$'\033[m'
@@ -31,17 +31,17 @@ msg_error() { echo -e " ${RD}✘${CL} $1" >&2; }
 
 cd "$APP_DIR"
 
-PORT="$(grep -oE '\-\-port[= ]+[0-9]+' "$UNIT_DIR/datamanager.service" 2>/dev/null | grep -oE '[0-9]+' | head -1)"
+PORT="$(grep -oE '\-\-port[= ]+[0-9]+' "$UNIT_DIR/tracepaper.service" 2>/dev/null | grep -oE '[0-9]+' | head -1)"
 PORT="${PORT:-8823}"
 
 # ------------------------------------------------------------------ backup ---
 # Before anything else, and specifically the human-authored layer: corrections,
 # notes, entity and vocabulary merges. Everything else in the index is
 # regenerable from your documents; this is not.
-BACKUP="/var/backups/datamanager-pre-update-$(date +%F-%H%M%S).json"
+BACKUP="/var/backups/tracepaper-pre-update-$(date +%F-%H%M%S).json"
 mkdir -p /var/backups
 msg_info "Backing up corrections and notes…"
-if sudo -u datamanager "$VENV/bin/dm" --config "$CONFIG" backup "$BACKUP" >/dev/null 2>&1; then
+if sudo -u tracepaper "$VENV/bin/tracepaper" --config "$CONFIG" backup "$BACKUP" >/dev/null 2>&1; then
   msg_ok "Saved $BACKUP"
 else
   msg_warn "Could not export. Continuing without a fresh backup."
@@ -98,29 +98,29 @@ EXTRAS="${EXTRAS:-formats,ocr,photos,web}"
 msg_info "Extras: ${EXTRAS}"
 "$VENV/bin/pip" install --quiet -e ".[${EXTRAS}]"
 
-if [[ ! -x "$VENV/bin/dm" ]]; then
-  msg_error "install did not produce the \`dm\` entry point."
+if [[ ! -x "$VENV/bin/tracepaper" ]]; then
+  msg_error "install did not produce the \`tracepaper\` entry point."
   exit 1
 fi
 # The schema is applied on connect and is additive, so there is no separate
 # migration step — but proving the module imports catches a broken install
 # before the service restart does.
-if ! "$VENV/bin/python" -c "import datamanager.api" >/dev/null 2>&1; then
+if ! "$VENV/bin/python" -c "import tracepaper.api" >/dev/null 2>&1; then
   msg_error "the package does not import after the update."
-  "$VENV/bin/python" -c "import datamanager.api" 2>&1 | tail -20 || true
+  "$VENV/bin/python" -c "import tracepaper.api" 2>&1 | tail -20 || true
   exit 1
 fi
-chown -R datamanager:datamanager "$VENV" 2>/dev/null || true
+chown -R tracepaper:tracepaper "$VENV" 2>/dev/null || true
 msg_ok "Installed"
 
 # The units live in /etc, so a pull alone never updates them. Skipping this is
 # how a fix to a service file fails to reach a running install.
 UNITS_CHANGED=0
-for unit in datamanager.service datamanager-scan.service datamanager-scan.timer \
-            datamanager-enrich.service datamanager-enrich.timer; do
+for unit in tracepaper.service tracepaper-scan.service tracepaper-scan.timer \
+            tracepaper-enrich.service tracepaper-enrich.timer; do
   if [[ -f "deploy/$unit" ]] && ! cmp -s "deploy/$unit" "$UNIT_DIR/$unit"; then
     # Preserve a non-default port rather than resetting it on every update.
-    if [[ "$unit" == "datamanager.service" && "$PORT" != "8823" ]]; then
+    if [[ "$unit" == "tracepaper.service" && "$PORT" != "8823" ]]; then
       sed "s/--port 8823/--port ${PORT}/" "deploy/$unit" > "$UNIT_DIR/$unit"
     else
       cp "deploy/$unit" "$UNIT_DIR/$unit"
@@ -136,8 +136,8 @@ fi
 
 # ----------------------------------------------------------------- restart ---
 msg_info "Restarting…"
-systemctl reset-failed datamanager 2>/dev/null || true
-systemctl restart datamanager
+systemctl reset-failed tracepaper 2>/dev/null || true
+systemctl restart tracepaper
 
 for _ in $(seq 1 30); do
   if curl -sf "localhost:${PORT}/api/health" >/dev/null 2>&1; then
@@ -157,20 +157,20 @@ msg_error "service did not come up within 60s — rolling back to ${BEFORE:0:7}.
 # it is treated as a pathspec and silently ignored.
 git reset --hard --quiet "$BEFORE"
 "$VENV/bin/pip" install --quiet -e ".[${EXTRAS}]" >/dev/null 2>&1 || true
-chown -R datamanager:datamanager "$VENV" 2>/dev/null || true
-for unit in datamanager.service datamanager-scan.service datamanager-scan.timer \
-            datamanager-enrich.service datamanager-enrich.timer; do
+chown -R tracepaper:tracepaper "$VENV" 2>/dev/null || true
+for unit in tracepaper.service tracepaper-scan.service tracepaper-scan.timer \
+            tracepaper-enrich.service tracepaper-enrich.timer; do
   [[ -f "deploy/$unit" ]] && cp "deploy/$unit" "$UNIT_DIR/$unit" 2>/dev/null || true
 done
-[[ "$PORT" != "8823" ]] && sed -i "s/--port 8823/--port ${PORT}/" "$UNIT_DIR/datamanager.service"
+[[ "$PORT" != "8823" ]] && sed -i "s/--port 8823/--port ${PORT}/" "$UNIT_DIR/tracepaper.service"
 systemctl daemon-reload
-systemctl reset-failed datamanager 2>/dev/null || true
-systemctl restart datamanager
+systemctl reset-failed tracepaper 2>/dev/null || true
+systemctl restart tracepaper
 
 for _ in $(seq 1 30); do
   if curl -sf "localhost:${PORT}/api/health" >/dev/null 2>&1; then
     msg_ok "Rolled back to ${BEFORE:0:7} and healthy."
-    msg_warn "The update failed. Logs: journalctl -u datamanager -n 50"
+    msg_warn "The update failed. Logs: journalctl -u tracepaper -n 50"
     exit 1
   fi
   sleep 2
@@ -178,5 +178,5 @@ done
 
 msg_error "rollback also failed to come up. The index is intact; the service is not running."
 [[ -n "$BACKUP" ]] && msg_warn "Backup: $BACKUP"
-msg_warn "Logs: journalctl -u datamanager -n 50"
+msg_warn "Logs: journalctl -u tracepaper -n 50"
 exit 1

@@ -1,5 +1,5 @@
 [Unit]
-Description=DataManager — deterministic search over personal documents
+Description=Tracepaper — deterministic search over personal documents
 # remote-fs.target matters here in a way it does not for most services: the
 # documents live on an NFS mount. Starting before it means the first scan sees
 # an empty directory.
@@ -20,18 +20,18 @@ StartLimitIntervalSec=60
 
 [Service]
 Type=simple
-User=datamanager
-Group=datamanager
+User=tracepaper
+Group=tracepaper
 
-WorkingDirectory=/opt/datamanager
-ExecStart=/opt/datamanager/.venv/bin/dm --config /etc/datamanager.toml serve --host 0.0.0.0 --port 8823
+WorkingDirectory=/opt/tracepaper
+ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml serve --host 0.0.0.0 --port 8823
 
 Restart=always
 RestartSec=3
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=datamanager
+SyslogIdentifier=tracepaper
 
 # Hardening, limited to what an unprivileged LXC can actually do.
 #

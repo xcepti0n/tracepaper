@@ -1,4 +1,4 @@
-# DataManager — Design
+# Tracepaper — Design
 
 Status: agreed 2026-09-04 (revised)
 Implements: [01-requirements.md](01-requirements.md) · Rationale: [02-alternatives.md](02-alternatives.md)

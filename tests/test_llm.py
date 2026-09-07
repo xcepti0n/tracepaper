@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from datamanager.extract import records
-from datamanager.extract.llm import LlmConfig, _validate
+from tracepaper.extract import records
+from tracepaper.extract.llm import LlmConfig, _validate
 
 
 def test_disabled_by_default():
@@ -107,7 +107,7 @@ def test_extraction_skips_documents_that_are_already_rich(conn, cfg, nas):
         calls.append(text[:20])
         return []
 
-    import datamanager.extract.llm as llm_module
+    import tracepaper.extract.llm as llm_module
     original = llm_module.extract
     llm_module.extract = fake_extract
     try:
@@ -129,7 +129,7 @@ def test_endpoint_failure_does_not_lose_other_records(conn, cfg, nas):
     class Unreachable:
         enabled = True
 
-    import datamanager.extract.llm as llm_module
+    import tracepaper.extract.llm as llm_module
     original = llm_module.extract
 
     def exploding(text, config):

@@ -35,9 +35,9 @@ nas.local:/volume1/documents  /mnt/nas/documents  nfs  ro,soft,timeo=150,retrans
 # nofail on both: an unreachable NAS should leave the container booting with a
 # working UI, not drop it to an emergency shell. The index is local, so search
 # keeps working without the share.
-nas.local:/volume1/backups/datamanager  /mnt/nas/backups/datamanager  nfs  rw,soft,timeo=150,retrans=3,nfsvers=4.1,noatime,_netdev,nofail  0  0
+nas.local:/volume1/backups/tracepaper  /mnt/nas/backups/tracepaper  nfs  rw,soft,timeo=150,retrans=3,nfsvers=4.1,noatime,_netdev,nofail  0  0
 
-# The service runs as the `datamanager` user. Synology NFS squashes uids by
+# The service runs as the `tracepaper` user. Synology NFS squashes uids by
 # default: if the backup mount is not writable, either map all users to the
 # right uid in DSM's NFS permissions, or set the export's squash to
 # "no mapping". The Settings page proves the write rather than trusting the

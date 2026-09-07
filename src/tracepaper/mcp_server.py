@@ -174,7 +174,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "add_note",
         "description": (
-            "Store a note in DataManager. Use for something the user wants "
+            "Store a note in Tracepaper. Use for something the user wants "
             "remembered that is not in any file."
         ),
         "inputSchema": {
@@ -369,7 +369,7 @@ def _serve_with_sdk(handler: Handler) -> int:
     from mcp.server.stdio import stdio_server
     from mcp.types import TextContent, Tool
 
-    server = Server("datamanager")
+    server = Server("tracepaper")
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -407,7 +407,7 @@ def _serve_minimal(handler: Handler) -> int:
             result = {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "datamanager", "version": "0.1.0"},
+                "serverInfo": {"name": "tracepaper", "version": "0.1.0"},
             }
         elif method == "tools/list":
             result = {"tools": TOOLS}

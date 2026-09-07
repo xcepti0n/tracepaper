@@ -1,12 +1,12 @@
 [Unit]
-Description=DataManager — background enrichment (embeddings, photo tags)
-After=network-online.target remote-fs.target datamanager.service
+Description=Tracepaper — background enrichment (embeddings, photo tags)
+After=network-online.target remote-fs.target tracepaper.service
 
 [Service]
 Type=oneshot
-User=datamanager
-Group=datamanager
-WorkingDirectory=/opt/datamanager
+User=tracepaper
+Group=tracepaper
+WorkingDirectory=/opt/tracepaper
 
 # --wait holds until the machine is idle before starting, and the pass yields
 # again the moment load comes back. That is the whole point of running this at
@@ -18,7 +18,7 @@ WorkingDirectory=/opt/datamanager
 # Captions are NOT enabled: they need a vision model, which this container does
 # not have and this host should not run. Add --captions only if you have
 # pointed [llm] at an Ollama endpoint elsewhere (your Mac).
-ExecStart=/opt/datamanager/.venv/bin/dm --config /etc/datamanager.toml enrich --wait
+ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml enrich --wait
 
 # Embeddings are the memory-hungry part. Without semantic extras installed
 # this pass is nearly free, and this cap is simply never approached; with them
@@ -35,4 +35,4 @@ TimeoutStartSec=14400
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=datamanager-enrich
+SyslogIdentifier=tracepaper-enrich

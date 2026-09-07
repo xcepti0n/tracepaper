@@ -1,4 +1,4 @@
-# DataManager — Requirements
+# Tracepaper — Requirements
 
 Status: agreed 2026-09-04 (revised)
 Owner: vaiibhav
@@ -65,9 +65,9 @@ spend. An LLM — or the user — draws the conclusion.
 
 **The guarantee is on the evidence set, not the prose.** The same question returns the
 same evidence, in the same order, every time. Only the final reasoning step varies by
-model, and it is the caller's, not DataManager's.
+model, and it is the caller's, not Tracepaper's.
 
-DataManager never generates prose. It returns values and evidence.
+Tracepaper never generates prose. It returns values and evidence.
 
 ## 4. Core principle
 
@@ -87,7 +87,7 @@ do not change.
 
 ### FR-1 — Item model
 The indexed unit is an **item**: a file-backed document or photo, or a **native note**
-typed directly into DataManager. One identity, tag, and search model for both.
+typed directly into Tracepaper. One identity, tag, and search model for both.
 
 ### FR-2 — Document types
 PDF (text and scanned), images (JPEG/PNG/HEIC), plain text, Markdown, CSV/TSV, XLSX,
@@ -194,7 +194,7 @@ did. No learned reranker in the default query path.
 ## 8. Non-goals
 
 - Not a document management system — originals stay untouched.
-- Not a chat interface. DataManager returns values and evidence; callers narrate.
+- Not a chat interface. Tracepaper returns values and evidence; callers narrate.
 - Tier 2 conclusions are **out of scope for the engine** — it supplies evidence, not
   verdicts.
 - No multi-user accounts or permissions in v1.

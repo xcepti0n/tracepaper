@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from datamanager import settings, storage
+from tracepaper import settings, storage
 
 
 def nfs_at(point: str):
@@ -157,7 +157,7 @@ def test_settings_round_trip(tmp_path: Path):
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "a.txt").write_text("x")
-    config = tmp_path / "datamanager.toml"
+    config = tmp_path / "tracepaper.toml"
 
     ok, problems = settings.save(
         config, roots=[str(docs)], db_path=str(tmp_path / "index.db"),
@@ -171,7 +171,7 @@ def test_settings_round_trip(tmp_path: Path):
 
 def test_settings_refuse_an_invalid_path(tmp_path: Path):
     """A typo must not leave the service pointing at nothing."""
-    config = tmp_path / "datamanager.toml"
+    config = tmp_path / "tracepaper.toml"
 
     ok, problems = settings.save(
         config, roots=[str(tmp_path / "does-not-exist")],
@@ -186,7 +186,7 @@ def test_settings_refuse_an_nfs_index(tmp_path: Path):
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "a.txt").write_text("x")
-    config = tmp_path / "datamanager.toml"
+    config = tmp_path / "tracepaper.toml"
 
     with nfs_at(str(tmp_path.resolve())):
         ok, problems = settings.save(config, roots=[str(docs)],
@@ -201,7 +201,7 @@ def test_settings_preserve_unmanaged_sections(tmp_path: Path):
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "a.txt").write_text("x")
-    config = tmp_path / "datamanager.toml"
+    config = tmp_path / "tracepaper.toml"
     config.write_text('[enrich]\nload_threshold = 0.9\n\n'
                       '[semantic]\nmodel = "custom-model"\n')
 
@@ -219,7 +219,7 @@ def test_settings_write_is_atomic(tmp_path: Path):
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "a.txt").write_text("x")
-    config = tmp_path / "datamanager.toml"
+    config = tmp_path / "tracepaper.toml"
     settings.save(config, roots=[str(docs)], db_path=str(tmp_path / "index.db"))
     original = config.read_text()
 

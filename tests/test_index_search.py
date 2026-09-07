@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from datamanager import notes
-from datamanager.index.indexer import Indexer
-from datamanager.query.search import SearchEngine, to_fts_query
-from datamanager.scan.scanner import Scanner
+from tracepaper import notes
+from tracepaper.index.indexer import Indexer
+from tracepaper.query.search import SearchEngine, to_fts_query
+from tracepaper.scan.scanner import Scanner
 
 
 def build(conn, cfg, nas: Path, files: dict[str, str]):

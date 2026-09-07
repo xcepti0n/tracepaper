@@ -1,6 +1,6 @@
-# DataManager configuration.
+# Tracepaper configuration.
 #
-# Copy to datamanager.toml and edit. Every value shown is the default, so you
+# Copy to tracepaper.toml and edit. Every value shown is the default, so you
 # only need the lines you actually change.
 
 [index]
@@ -19,11 +19,11 @@
 # Do not put this on an SMB/NFS mount: SQLite is unreliable over network
 # filesystems under concurrent access. Local disk on the machine running the
 # service, backed up to the NAS.
-db_path = "/var/lib/datamanager/index.db"
+db_path = "/var/lib/tracepaper/index.db"
 
 # Backups and exports. The NAS write share belongs here: this holds the
 # corrections, notes and merges that cannot be regenerated.
-backup_dir = "/mnt/nas/backups/datamanager"
+backup_dir = "/mnt/nas/backups/tracepaper"
 
 [scan]
 # Folders to index, read-only. Multiple roots are fine.
@@ -82,8 +82,8 @@ min_fields = 3
 # never competes with what you are doing. Resumable: killing it mid-run costs
 # only the item in flight.
 #
-#   dm enrich --wait              hold until idle, then run
-#   dm enrich --captions          also caption photos with thin object tags
+#   tracepaper enrich --wait              hold until idle, then run
+#   tracepaper enrich --captions          also caption photos with thin object tags
 #
 # Yield above this 1-minute load average per core.
 load_threshold = 0.7

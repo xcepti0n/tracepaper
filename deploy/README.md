@@ -1,4 +1,4 @@
-# Deploying DataManager to Proxmox
+# Deploying Tracepaper to Proxmox
 
 One script. Run it on the Proxmox host, get a working install with the UI
 reachable on your LAN.
@@ -56,15 +56,15 @@ restart, not a reservation.
 | Bind-mounts documents `ro` | Read-only at both levels — the kernel enforces NFR-7 |
 | Bind-mounts backups `rw` | The only state that cannot be regenerated |
 | Installs Python + tesseract | OCR for screenshots and scanned PDFs |
-| Writes `/etc/datamanager.toml` | Index on local disk, never the NAS |
+| Writes `/etc/tracepaper.toml` | Index on local disk, never the NAS |
 | Enables service + 2 timers | Hourly scan, nightly enrichment |
 
 Nothing is indexed when it finishes. Start the first scan when you are ready to
 watch it:
 
 ```bash
-pct exec <CTID> -- systemctl start datamanager-scan
-pct exec <CTID> -- journalctl -u datamanager-scan -f
+pct exec <CTID> -- systemctl start tracepaper-scan
+pct exec <CTID> -- journalctl -u tracepaper-scan -f
 ```
 
 A first pass over a lifetime of documents takes hours. It is resumable —
@@ -80,7 +80,7 @@ shape. The third path is the one worth understanding.
 ```
 Synology /volume1/documents        →  /mnt/nas/documents   read-only
 Synology /volume1/backups/...      →  /mnt/nas/backups/... read-write
-Container local disk               →  /var/lib/datamanager/index.db
+Container local disk               →  /var/lib/tracepaper/index.db
 ```
 
 **The index does not go on the NAS.** SQLite corrupts over NFS and SMB: their
@@ -107,8 +107,8 @@ not writable.
 Then on the Proxmox host:
 
 ```bash
-mount /mnt/pve/datamanager-documents
-mount /mnt/pve/datamanager-backups
+mount /mnt/pve/tracepaper-documents
+mount /mnt/pve/tracepaper-backups
 ```
 
 `deploy/nas.fstab.example` documents every mount option and why it is there —
@@ -129,13 +129,13 @@ The seam already exists: the index is a file.
 
 ```bash
 # On the Mac, against the same share, writing a local index
-dm --config datamanager.toml scan --index
+tracepaper --config tracepaper.toml scan --index
 
 # Then copy it in, with the service stopped
-pct exec <CTID> -- systemctl stop datamanager
-pct push <CTID> index.db /var/lib/datamanager/index.db
-pct exec <CTID> -- chown datamanager:datamanager /var/lib/datamanager/index.db
-pct exec <CTID> -- systemctl start datamanager
+pct exec <CTID> -- systemctl stop tracepaper
+pct push <CTID> index.db /var/lib/tracepaper/index.db
+pct exec <CTID> -- chown tracepaper:tracepaper /var/lib/tracepaper/index.db
+pct exec <CTID> -- systemctl start tracepaper
 ```
 
 Stop the service first. Copying over a live SQLite file is the same class of
@@ -146,7 +146,7 @@ mistake as putting it on NFS.
 ## Updating
 
 ```bash
-pct exec <CTID> -- /opt/datamanager/deploy/update.sh
+pct exec <CTID> -- /opt/tracepaper/deploy/update.sh
 ```
 
 Backs up the human-authored layer, fast-forwards, reinstalls, restarts, and
@@ -166,19 +166,19 @@ checkout has no remote to pull from.
 
 ```bash
 # Health and shape of the index
-pct exec <CTID> -- sudo -u datamanager /opt/datamanager/.venv/bin/dm \
-  --config /etc/datamanager.toml status
+pct exec <CTID> -- sudo -u tracepaper /opt/tracepaper/.venv/bin/tracepaper \
+  --config /etc/tracepaper.toml status
 
 # Logs
-pct exec <CTID> -- journalctl -u datamanager -f
-pct exec <CTID> -- journalctl -u datamanager-scan -n 100
+pct exec <CTID> -- journalctl -u tracepaper -f
+pct exec <CTID> -- journalctl -u tracepaper-scan -n 100
 
 # Timers
-pct exec <CTID> -- systemctl list-timers 'datamanager*'
+pct exec <CTID> -- systemctl list-timers 'tracepaper*'
 
 # Back up the irreplaceable layer by hand
-pct exec <CTID> -- sudo -u datamanager /opt/datamanager/.venv/bin/dm \
-  --config /etc/datamanager.toml backup /mnt/nas/backups/datamanager/manual.json
+pct exec <CTID> -- sudo -u tracepaper /opt/tracepaper/.venv/bin/tracepaper \
+  --config /etc/tracepaper.toml backup /mnt/nas/backups/tracepaper/manual.json
 ```
 
 **"Scan aborted, the share is probably not mounted."** Working as intended:
@@ -200,10 +200,10 @@ even if you move the file.
 |---|---|
 | `proxmox-install.sh` | The installer. Run on the Proxmox host. |
 | `update.sh` | Update in place, with automatic rollback. Run in the container. |
-| `datamanager.service` | The web UI and API. |
-| `datamanager-scan.{service,timer}` | Hourly scan and index. |
-| `datamanager-enrich.{service,timer}` | Nightly, idle-only: embeddings and photo tags. |
-| `datamanager.toml.example` | Annotated copy of what the installer writes. |
+| `tracepaper.service` | The web UI and API. |
+| `tracepaper-scan.{service,timer}` | Hourly scan and index. |
+| `tracepaper-enrich.{service,timer}` | Nightly, idle-only: embeddings and photo tags. |
+| `tracepaper.toml.example` | Annotated copy of what the installer writes. |
 | `nas.fstab.example` | Both NFS mounts, with every option explained. |
 
 `docs/DEPLOY.md` covers the same ground for a plain VM or bare metal, where the
@@ -217,7 +217,7 @@ All environment variables:
 
 ```bash
 CTID=122              # container ID (default: next free)
-HOSTNAME_=datamanager
+HOSTNAME_=tracepaper
 CORES=2  RAM=1024  DISK=8
 BRIDGE=vmbr0
 NET=dhcp              # or a CIDR like 192.168.1.50/24 (then set GATEWAY)
@@ -227,7 +227,7 @@ APP_PORT=8823
 
 NAS_HOST=192.168.1.10         # blank skips NFS setup entirely
 NAS_DOCS_EXPORT=/volume1/documents
-NAS_BACKUP_EXPORT=/volume1/backups/datamanager
+NAS_BACKUP_EXPORT=/volume1/backups/tracepaper
 
 SEMANTIC=1            # install PyTorch and semantic search
 FIRST_SCAN=1          # run a full scan before finishing

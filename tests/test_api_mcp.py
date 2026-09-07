@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from datamanager.index.indexer import Indexer
-from datamanager.mcp_server import TOOLS, Handler
-from datamanager.query.evidence import EvidenceQuery
-from datamanager.scan.scanner import Scanner
+from tracepaper.index.indexer import Indexer
+from tracepaper.mcp_server import TOOLS, Handler
+from tracepaper.query.evidence import EvidenceQuery
+from tracepaper.scan.scanner import Scanner
 
 W2 = """Form W-2 Wage and Tax Statement
 Tax Year: 2023
@@ -41,7 +41,7 @@ def client(populated, cfg):
     fastapi = pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
-    from datamanager.api import create_app
+    from tracepaper.api import create_app
 
     return TestClient(create_app(cfg))
 
@@ -51,7 +51,7 @@ def client(populated, cfg):
 def test_ui_renders(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert "DataManager" in response.text
+    assert "Tracepaper" in response.text
 
 
 def test_api_health(client):
@@ -227,9 +227,9 @@ def test_human_layer_survives_a_rebuilt_index(populated, cfg, nas, tmp_path):
     Simulates the real disaster: the index is lost and rebuilt from the source
     folder, where every row id differs.
     """
-    from datamanager import backup, corrections, notes
-    from datamanager.db import connect
-    from datamanager.query.fields import FieldQuery
+    from tracepaper import backup, corrections, notes
+    from tracepaper.db import connect
+    from tracepaper.query.fields import FieldQuery
 
     item_id = int(populated.execute(
         "SELECT id FROM items WHERE title = 'w2.txt'").fetchone()["id"])
@@ -266,9 +266,9 @@ def test_human_layer_survives_a_rebuilt_index(populated, cfg, nas, tmp_path):
 
 def test_backup_matches_documents_that_moved(populated, cfg, nas, tmp_path):
     """A file that moved since the backup is still matched, by content hash."""
-    from datamanager import backup, corrections
-    from datamanager.db import connect
-    from datamanager.query.fields import FieldQuery
+    from tracepaper import backup, corrections
+    from tracepaper.db import connect
+    from tracepaper.query.fields import FieldQuery
 
     item_id = int(populated.execute(
         "SELECT id FROM items WHERE title = 'w2.txt'").fetchone()["id"])

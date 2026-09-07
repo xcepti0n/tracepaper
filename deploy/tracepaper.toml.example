@@ -1,6 +1,6 @@
-# DataManager — configuration as installed on Proxmox.
+# Tracepaper — configuration as installed on Proxmox.
 #
-# Copy to /etc/datamanager.toml. The installer writes this file for you; this
+# Copy to /etc/tracepaper.toml. The installer writes this file for you; this
 # copy is here so you can see what it wrote and why.
 #
 # The Settings page in the web UI edits the paths below and validates them
@@ -16,12 +16,12 @@
 # it quietly costs everything you cannot regenerate (D-008).
 #
 # The settings page refuses an NFS path here rather than warning about it.
-db_path = "/var/lib/datamanager/index.db"
+db_path = "/var/lib/tracepaper/index.db"
 
 # The NAS write share. This is the copy that survives losing the container:
 # corrections, notes and merges are the only state that cannot be regenerated
 # from the documents.
-backup_dir = "/mnt/nas/backups/datamanager"
+backup_dir = "/mnt/nas/backups/tracepaper"
 
 [scan]
 # The NAS read share, mounted `ro` in /etc/fstab. Multiple roots are fine.

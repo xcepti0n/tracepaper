@@ -20,7 +20,7 @@ from pathlib import Path
 from .config import Config
 from .storage import check_backup, check_index, check_source
 
-DEFAULT_CONFIG_NAMES = ("datamanager.toml", "config/datamanager.toml")
+DEFAULT_CONFIG_NAMES = ("tracepaper.toml", "config/tracepaper.toml")
 
 
 def find_config() -> Path | None:
@@ -123,7 +123,7 @@ def _write_atomic(path: Path, text: str) -> None:
 
 def _to_toml(data: dict) -> str:
     """Serialise the config. Only the shapes this file actually uses."""
-    lines = ["# DataManager configuration.",
+    lines = ["# Tracepaper configuration.",
              "# Managed by the settings page; hand edits are preserved.", ""]
 
     for section in ("index", "scan", "semantic", "llm", "enrich"):

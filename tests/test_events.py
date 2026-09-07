@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from datamanager import entities, events, vocabulary
-from datamanager.index.indexer import Indexer
-from datamanager.scan.scanner import Scanner
+from tracepaper import entities, events, vocabulary
+from tracepaper.index.indexer import Indexer
+from tracepaper.scan.scanner import Scanner
 
 FLIGHT_EMAIL = """From: noreply@alaskaair.com
 Subject: Your Alaska Airlines itinerary

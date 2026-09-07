@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from datamanager import corrections
-from datamanager.extract import records
-from datamanager.index.indexer import Indexer
-from datamanager.query.fields import FieldQuery
-from datamanager.scan.scanner import Scanner
+from tracepaper import corrections
+from tracepaper.extract import records
+from tracepaper.index.indexer import Indexer
+from tracepaper.query.fields import FieldQuery
+from tracepaper.scan.scanner import Scanner
 
 W2_2023 = """Form W-2  Wage and Tax Statement
 Tax Year: 2023

@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from datamanager import embed
-from datamanager.index.indexer import Indexer
-from datamanager.query.search import SearchEngine
-from datamanager.scan.scanner import Scanner
+from tracepaper import embed
+from tracepaper.index.indexer import Indexer
+from tracepaper.query.search import SearchEngine
+from tracepaper.scan.scanner import Scanner
 
 requires_model = pytest.mark.skipif(
     not embed.available(), reason="sentence-transformers not installed")

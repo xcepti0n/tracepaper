@@ -39,7 +39,7 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    sql = resources.files("datamanager").joinpath("schema.sql").read_text()
+    sql = resources.files("tracepaper").joinpath("schema.sql").read_text()
     conn.executescript(sql)
     conn.execute(
         "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "

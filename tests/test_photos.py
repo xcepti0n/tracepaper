@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from datamanager.extract import photos
-from datamanager.index.indexer import Indexer
-from datamanager.scan.scanner import Scanner
+from tracepaper.extract import photos
+from tracepaper.index.indexer import Indexer
+from tracepaper.scan.scanner import Scanner
 
 
 def make_photo(path: Path, *, taken: str | None = None) -> Path:
@@ -192,7 +192,7 @@ def test_place_and_year_narrow_together(conn, cfg, nas):
     """"photos from Goa in 2019" must not return the union of Goa and 2019."""
     from fractions import Fraction
 
-    from datamanager.query.unified import UnifiedSearch
+    from tracepaper.query.unified import UnifiedSearch
 
     make_geo_photo(nas / "goa_2019.jpg", "2019:12:25 14:30:00",
                    (15, 17, Fraction(5757, 100)), (74, 7, Fraction(2640, 100)))

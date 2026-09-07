@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# DataManager — one-shot Proxmox LXC installer.
+# Tracepaper — one-shot Proxmox LXC installer.
 #
 # Run this ON THE PROXMOX HOST (not inside a container). It creates an
 # unprivileged LXC, installs Python and the app, mounts your two Synology NFS
@@ -28,7 +28,7 @@ set -Eeuo pipefail
 
 # ------------------------------------------------------------------ config ---
 
-APP="DataManager"
+APP="Tracepaper"
 
 # Cloned inside the container. Set REPO_URL="" to copy the local checkout
 # instead — which is what you want for testing a change before pushing it.
@@ -38,7 +38,7 @@ BRANCH="${BRANCH:-main}"
 # Defaults, all overridable from the environment:
 #   CTID=122 RAM=2048 ./deploy/proxmox-install.sh
 CTID="${CTID:-}"
-HOSTNAME_="${HOSTNAME_:-datamanager}"
+HOSTNAME_="${HOSTNAME_:-tracepaper}"
 DISK="${DISK:-8}"                  # GB
 CORES="${CORES:-2}"
 RAM="${RAM:-1024}"                 # MB
@@ -55,9 +55,9 @@ OS_VERSION="${OS_VERSION:-12}"     # Debian 12 (bookworm)
 # later from the Settings page.
 NAS_HOST="${NAS_HOST:-}"
 NAS_DOCS_EXPORT="${NAS_DOCS_EXPORT:-/volume1/documents}"
-NAS_BACKUP_EXPORT="${NAS_BACKUP_EXPORT:-/volume1/backups/datamanager}"
+NAS_BACKUP_EXPORT="${NAS_BACKUP_EXPORT:-/volume1/backups/tracepaper}"
 DOCS_MOUNT="${DOCS_MOUNT:-/mnt/nas/documents}"
-BACKUP_MOUNT="${BACKUP_MOUNT:-/mnt/nas/backups/datamanager}"
+BACKUP_MOUNT="${BACKUP_MOUNT:-/mnt/nas/backups/tracepaper}"
 NFS_VERS="${NFS_VERS:-4.1}"
 
 # Semantic search. Off by default — see the note at the top.
@@ -209,8 +209,8 @@ create_container() {
     --unprivileged 1 \
     --features nesting=0 \
     --onboot "$START_ON_BOOT" \
-    --tags "datamanager;search;documents" \
-    --description "DataManager — deterministic search over personal documents" >/dev/null
+    --tags "tracepaper;search;documents" \
+    --description "Tracepaper — deterministic search over personal documents" >/dev/null
 
   CREATED_CTID="$CTID"
   pct start "$CTID" >/dev/null
@@ -268,8 +268,8 @@ setup_nfs() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nfs-common >/dev/null 2>&1 || true
   fi
 
-  local host_docs="/mnt/pve/datamanager-documents"
-  local host_backup="/mnt/pve/datamanager-backups"
+  local host_docs="/mnt/pve/tracepaper-documents"
+  local host_backup="/mnt/pve/tracepaper-backups"
   mkdir -p "$host_docs" "$host_backup"
 
   # soft,timeo=150,retrans=3 rather than the default `hard`: a NAS that goes
@@ -368,16 +368,16 @@ install_app() {
   msg_info "Creating service user…"
   # A system account with nologin, the same way www-data and postgres are.
   # Nobody logs in as it; it exists so the service is not root.
-  inct "adduser --system --group --home /opt/datamanager --shell /usr/sbin/nologin datamanager >/dev/null 2>&1 || true
-        mkdir -p /opt/datamanager /var/lib/datamanager
-        chown datamanager:datamanager /var/lib/datamanager"
+  inct "adduser --system --group --home /opt/tracepaper --shell /usr/sbin/nologin tracepaper >/dev/null 2>&1 || true
+        mkdir -p /opt/tracepaper /var/lib/tracepaper
+        chown tracepaper:tracepaper /var/lib/tracepaper"
   msg_ok "Service user created"
 
   if [[ -n "$REPO_URL" ]]; then
     msg_info "Cloning ${REPO_URL}…"
-    inct "git clone --depth 1 --branch '$BRANCH' '$REPO_URL' /tmp/dm-src >/dev/null
-          cp -a /tmp/dm-src/. /opt/datamanager/
-          rm -rf /tmp/dm-src"
+    inct "git clone --depth 1 --branch '$BRANCH' '$REPO_URL' /tmp/tracepaper-src >/dev/null
+          cp -a /tmp/tracepaper-src/. /opt/tracepaper/
+          rm -rf /tmp/tracepaper-src"
     msg_ok "Source cloned"
   else
     # No remote: push the checkout this script is running from.
@@ -395,7 +395,7 @@ install_app() {
     tar -C "$here" \
       --exclude=.venv --exclude=.git --exclude=data --exclude=__pycache__ \
       --exclude='*.pyc' --exclude=.pytest_cache --exclude='*.swp' \
-      -cf - . | pct exec "$CTID" -- tar -C /opt/datamanager -xf -
+      -cf - . | pct exec "$CTID" -- tar -C /opt/tracepaper -xf -
     msg_ok "Source copied"
   fi
 
@@ -413,14 +413,14 @@ install_app() {
   fi
 
   msg_info "Installing Python dependencies (${extras})…"
-  inct "cd /opt/datamanager
+  inct "cd /opt/tracepaper
         python3 -m venv .venv
         .venv/bin/pip install --quiet --upgrade pip setuptools wheel
         .venv/bin/pip install --quiet -e '.[${extras}]'"
 
-  if ! inct "test -x /opt/datamanager/.venv/bin/dm"; then
-    msg_error "install finished but the \`dm\` entry point is missing."
-    inct "cd /opt/datamanager && .venv/bin/pip install -e '.[${extras}]' 2>&1 | tail -20" || true
+  if ! inct "test -x /opt/tracepaper/.venv/bin/tracepaper"; then
+    msg_error "install finished but the \`tracepaper\` entry point is missing."
+    inct "cd /opt/tracepaper && .venv/bin/pip install -e '.[${extras}]' 2>&1 | tail -20" || true
     exit 1
   fi
   msg_ok "Dependencies installed"
@@ -429,9 +429,9 @@ install_app() {
   # and chowning the whole tree makes git refuse to operate as root ("dubious
   # ownership"), which silently breaks every future update. Only the state the
   # service writes belongs to the service account.
-  inct "chown -R root:root /opt/datamanager
-        chown -R datamanager:datamanager /opt/datamanager/.venv /var/lib/datamanager
-        chmod 755 /opt/datamanager"
+  inct "chown -R root:root /opt/tracepaper
+        chown -R tracepaper:tracepaper /opt/tracepaper/.venv /var/lib/tracepaper
+        chmod 755 /opt/tracepaper"
 }
 
 configure_access() {
@@ -486,17 +486,17 @@ configure_service() {
     roots_line="roots = [\"${DOCS_MOUNT}\"]"
   fi
 
-  inct "cat >/etc/datamanager.toml <<'EOF'
+  inct "cat >/etc/tracepaper.toml <<'EOF'
 # Written by deploy/proxmox-install.sh. Editable from the Settings page in the
 # web UI, which validates every path before saving.
 #
-# See deploy/datamanager.toml.example for what each value means.
+# See deploy/tracepaper.toml.example for what each value means.
 
 [index]
 # Local disk, never the NAS: SQLite corrupts over NFS and does so silently
 # (D-008). The index rebuilds from your documents; the backup below holds the
 # part that cannot be rebuilt.
-db_path = \"/var/lib/datamanager/index.db\"
+db_path = \"/var/lib/tracepaper/index.db\"
 ${backup_line}
 
 [scan]
@@ -518,18 +518,18 @@ model = \"gemma4:e4b-mlx\"
 [enrich]
 load_threshold = 0.7
 EOF
-chown root:datamanager /etc/datamanager.toml
-chmod 640 /etc/datamanager.toml"
-  msg_ok "Configuration written to /etc/datamanager.toml"
+chown root:tracepaper /etc/tracepaper.toml
+chmod 640 /etc/tracepaper.toml"
+  msg_ok "Configuration written to /etc/tracepaper.toml"
 
   msg_info "Installing systemd units…"
   # Prefer the units from the checkout, so there is one source of truth.
-  if inct "test -f /opt/datamanager/deploy/datamanager.service"; then
-    inct "cp /opt/datamanager/deploy/datamanager.service /etc/systemd/system/
-          cp /opt/datamanager/deploy/datamanager-scan.service /etc/systemd/system/
-          cp /opt/datamanager/deploy/datamanager-scan.timer /etc/systemd/system/
-          cp /opt/datamanager/deploy/datamanager-enrich.service /etc/systemd/system/
-          cp /opt/datamanager/deploy/datamanager-enrich.timer /etc/systemd/system/"
+  if inct "test -f /opt/tracepaper/deploy/tracepaper.service"; then
+    inct "cp /opt/tracepaper/deploy/tracepaper.service /etc/systemd/system/
+          cp /opt/tracepaper/deploy/tracepaper-scan.service /etc/systemd/system/
+          cp /opt/tracepaper/deploy/tracepaper-scan.timer /etc/systemd/system/
+          cp /opt/tracepaper/deploy/tracepaper-enrich.service /etc/systemd/system/
+          cp /opt/tracepaper/deploy/tracepaper-enrich.timer /etc/systemd/system/"
   else
     msg_error "deploy/ units are missing from the checkout."
     exit 1
@@ -538,7 +538,7 @@ chmod 640 /etc/datamanager.toml"
   # The port is a flag in the unit, not an env file, so rewrite it if the user
   # chose a different one.
   if [[ "$APP_PORT" != "8823" ]]; then
-    inct "sed -i 's/--port 8823/--port ${APP_PORT}/' /etc/systemd/system/datamanager.service"
+    inct "sed -i 's/--port 8823/--port ${APP_PORT}/' /etc/systemd/system/tracepaper.service"
   fi
 
   # Catch the namespace directives before starting rather than after five
@@ -546,17 +546,17 @@ chmod 640 /etc/datamanager.toml"
   # only wrong inside an unprivileged LXC, so no syntax check would find them.
   # docs/DEPLOY.md documents the VM variant, which does include them — this is
   # exactly the mix-up worth catching.
-  if inct "grep -qE '^(ProtectSystem|PrivateTmp|PrivateDevices|ProtectHome|ProtectKernel|ProtectControlGroups|ReadWritePaths)' /etc/systemd/system/datamanager.service"; then
+  if inct "grep -qE '^(ProtectSystem|PrivateTmp|PrivateDevices|ProtectHome|ProtectKernel|ProtectControlGroups|ReadWritePaths)' /etc/systemd/system/tracepaper.service"; then
     msg_error "the unit contains mount-namespace directives, which an unprivileged LXC cannot honour."
-    inct "grep -nE '^(ProtectSystem|PrivateTmp|PrivateDevices|ProtectHome|ProtectKernel|ProtectControlGroups|ReadWritePaths)' /etc/systemd/system/datamanager.service" || true
+    inct "grep -nE '^(ProtectSystem|PrivateTmp|PrivateDevices|ProtectHome|ProtectKernel|ProtectControlGroups|ReadWritePaths)' /etc/systemd/system/tracepaper.service" || true
     msg_warn "This unit would fail with status=226/NAMESPACE. Remove those lines."
     exit 1
   fi
 
   inct "systemctl daemon-reload
-        systemctl enable --now datamanager >/dev/null 2>&1
-        systemctl enable --now datamanager-scan.timer >/dev/null 2>&1
-        systemctl enable --now datamanager-enrich.timer >/dev/null 2>&1"
+        systemctl enable --now tracepaper >/dev/null 2>&1
+        systemctl enable --now tracepaper-scan.timer >/dev/null 2>&1
+        systemctl enable --now tracepaper-enrich.timer >/dev/null 2>&1"
   msg_ok "Service and timers enabled"
 }
 
@@ -571,7 +571,7 @@ verify() {
       if inct "curl -sf localhost:${APP_PORT}/ | grep -qi '<title>'"; then
         msg_ok "UI is being served"
       else
-        msg_warn "API is up but the UI did not respond — check: pct exec $CTID -- journalctl -u datamanager -n 50"
+        msg_warn "API is up but the UI did not respond — check: pct exec $CTID -- journalctl -u tracepaper -n 50"
       fi
       return 0
     fi
@@ -584,15 +584,15 @@ verify() {
   # A unit that never executed its binary fails differently from an app that
   # crashed, and 226 is the failure this deployment target produces. Name it
   # rather than dumping logs and leaving the reader to spot it.
-  if inct "systemctl show datamanager -p ExecMainStatus --value | grep -qx 226" 2>/dev/null; then
+  if inct "systemctl show tracepaper -p ExecMainStatus --value | grep -qx 226" 2>/dev/null; then
     msg_error "systemd could not set up the unit's mount namespace (status 226)."
     msg_warn  "An unprivileged LXC cannot remount /proc, so ProtectSystem, PrivateTmp and"
     msg_warn  "the ProtectKernel* directives make the unit unstartable."
     echo
   fi
 
-  inct "systemctl status datamanager --no-pager -l | head -20" || true
-  inct "journalctl -u datamanager -n 30 --no-pager" || true
+  inct "systemctl status tracepaper --no-pager -l | head -20" || true
+  inct "journalctl -u tracepaper -n 30 --no-pager" || true
   exit 1
 }
 
@@ -601,9 +601,9 @@ verify() {
 first_scan() {
   [[ "$FIRST_SCAN" == "1" && "$NFS_READY" == "1" ]] || return 0
   msg_info "Running the first scan (this can take a long time)…"
-  inct "sudo -u datamanager /opt/datamanager/.venv/bin/dm --config /etc/datamanager.toml scan --index" || {
+  inct "sudo -u tracepaper /opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml scan --index" || {
     msg_warn "The first scan did not finish cleanly. Re-run it by hand:"
-    msg_warn "  pct exec $CTID -- sudo -u datamanager /opt/datamanager/.venv/bin/dm --config /etc/datamanager.toml scan --index"
+    msg_warn "  pct exec $CTID -- sudo -u tracepaper /opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml scan --index"
     return 0
   }
   msg_ok "First scan complete"
@@ -621,8 +621,8 @@ finish() {
   echo -e "  ${GN}http://${ip}:${APP_PORT}${CL}"
   echo
   echo "  Container : $CTID ($HOSTNAME_)"
-  echo "  Index     : /var/lib/datamanager/index.db  (local disk, never the NAS)"
-  echo "  Config    : /etc/datamanager.toml"
+  echo "  Index     : /var/lib/tracepaper/index.db  (local disk, never the NAS)"
+  echo "  Config    : /etc/tracepaper.toml"
   if [[ "$NFS_READY" == "1" ]]; then
     echo "  Documents : ${DOCS_MOUNT}  (read-only)"
     echo "  Backups   : ${BACKUP_MOUNT}"
@@ -630,16 +630,16 @@ finish() {
     echo "  Documents : not mounted — set them up on the Settings tab"
   fi
   echo
-  echo "  Logs      : pct exec $CTID -- journalctl -u datamanager -f"
-  echo "  Restart   : pct exec $CTID -- systemctl restart datamanager"
-  echo "  Scan now  : pct exec $CTID -- systemctl start datamanager-scan"
-  echo "  Scan log  : pct exec $CTID -- journalctl -u datamanager-scan -f"
-  echo "  Status    : pct exec $CTID -- sudo -u datamanager /opt/datamanager/.venv/bin/dm --config /etc/datamanager.toml status"
+  echo "  Logs      : pct exec $CTID -- journalctl -u tracepaper -f"
+  echo "  Restart   : pct exec $CTID -- systemctl restart tracepaper"
+  echo "  Scan now  : pct exec $CTID -- systemctl start tracepaper-scan"
+  echo "  Scan log  : pct exec $CTID -- journalctl -u tracepaper-scan -f"
+  echo "  Status    : pct exec $CTID -- sudo -u tracepaper /opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml status"
   echo
   if [[ "$FIRST_SCAN" != "1" && "$NFS_READY" == "1" ]]; then
     echo "  Nothing is indexed yet. The hourly timer will pick it up, or start now:"
     echo
-    echo -e "    ${BL}pct exec $CTID -- systemctl start datamanager-scan${CL}"
+    echo -e "    ${BL}pct exec $CTID -- systemctl start tracepaper-scan${CL}"
     echo
     echo "  A first pass over a lifetime of documents takes hours. It is resumable —"
     echo "  interrupting it costs only the document in flight."

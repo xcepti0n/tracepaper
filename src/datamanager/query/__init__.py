@@ -1,1 +1,0 @@
-"""DataManager query package."""

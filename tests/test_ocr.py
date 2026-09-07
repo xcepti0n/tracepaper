@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from datamanager.extract import ocr, text
-from datamanager.index.indexer import Indexer
-from datamanager.query.search import SearchEngine
-from datamanager.scan.scanner import Scanner
+from tracepaper.extract import ocr, text
+from tracepaper.index.indexer import Indexer
+from tracepaper.query.search import SearchEngine
+from tracepaper.scan.scanner import Scanner
 
 RECEIPT_LINES = [
     "HOME DEPOT STORE 4521",
@@ -79,7 +79,7 @@ def test_screenshot_becomes_searchable_end_to_end(conn, cfg, nas):
 @requires_ocr
 def test_ocr_text_yields_records(conn, cfg, nas):
     """Fields extract from OCR output like any other text."""
-    from datamanager.query.fields import FieldQuery
+    from tracepaper.query.fields import FieldQuery
 
     make_receipt_image(nas / "receipt.png")
     Scanner(conn, cfg).scan(nas)

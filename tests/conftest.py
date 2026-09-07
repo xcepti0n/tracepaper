@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from datamanager.config import Config
-from datamanager.db import connect
+from tracepaper.config import Config
+from tracepaper.db import connect
 
 
 @pytest.fixture

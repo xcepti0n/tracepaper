@@ -1,7 +1,12 @@
-# DataManager
+# Tracepaper
 
 Search over a lifetime of personal documents on a NAS — IDs, passports, visas, leases,
 receipts, tax forms, appointments, statements, photos, and notes.
+
+*Tracing paper is the sheet you lay over a document to copy out what matters
+without altering the original — and a paper trail is what you follow back to
+the source. Both are what this does: your documents are never written to, and
+every answer arrives with the citation that proves it.*
 
 ## The problem
 
@@ -43,7 +48,7 @@ spend. An agent on top concludes.
 
 The guarantee is on the **evidence set**: same question, same evidence, same order, every
 time. Only the final reasoning varies by model — and that step belongs to the caller.
-DataManager never generates prose.
+Tracepaper never generates prose.
 
 ## Why it won't go stale
 
@@ -84,9 +89,9 @@ churn the corpus through re-extraction.
 python3 -m venv .venv
 .venv/bin/pip install -e ".[formats,semantic,web,ocr-macos]"   # ocr on Linux
 
-cp datamanager.example.toml datamanager.toml    # set roots and db_path
-.venv/bin/dm scan --index --embed
-.venv/bin/dm serve                              # http://127.0.0.1:8823
+cp tracepaper.example.toml tracepaper.toml    # set roots and db_path
+.venv/bin/tracepaper scan --index --embed
+.venv/bin/tracepaper serve                              # http://127.0.0.1:8823
 ```
 
 To deploy on Proxmox, run [`deploy/proxmox-install.sh`](deploy/) on the host —
@@ -98,29 +103,29 @@ behind. See [deploy/README.md](deploy/README.md).
 
 ```bash
 # Tier 1 — a value with a citation, no LLM
-dm get gross_salary --where tax_year=2023
-dm get expiry_date
-dm agg amount sum --where merchant=Costco     # total + every contributing doc
+tracepaper get gross_salary --where tax_year=2023
+tracepaper get expiry_date
+tracepaper agg amount sum --where merchant=Costco     # total + every contributing doc
 
 # Events — things that happened, whatever document recorded them
-dm events --entity "Alaska Airlines" --last
+tracepaper events --entity "Alaska Airlines" --last
 
 # Search — keyword and semantic, fused deterministically
-dm search "sprinkler valve" --explain          # finds "irrigation solenoid"
+tracepaper search "sprinkler valve" --explain          # finds "irrigation solenoid"
 
 # Tier 2 — evidence for an LLM to reason over, never a verdict
-dm ask "which card is best at Costco" --entity Costco --json
+tracepaper ask "which card is best at Costco" --entity Costco --json
 
 # Vocabulary discovered from your documents, not declared
-dm keys
-dm values tax_year
+tracepaper keys
+tracepaper values tax_year
 
 # Corrections outrank every extractor, permanently
-dm correct 12 gross_salary 92000.00
-dm backup /mnt/nas/backups/human-layer.json    # the irreplaceable part
+tracepaper correct 12 gross_salary 92000.00
+tracepaper backup /mnt/nas/backups/human-layer.json    # the irreplaceable part
 
-dm serve            # web UI + REST API
-dm-mcp index.db     # 11 typed tools for an agent
+tracepaper serve            # web UI + REST API
+tracepaper-mcp index.db     # 11 typed tools for an agent
 ```
 
 ### Formats

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from datamanager.extract import passages, text
+from tracepaper.extract import passages, text
 
 
 def test_plaintext(tmp_path: Path):

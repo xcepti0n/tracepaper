@@ -27,7 +27,7 @@ Tier 1 returns a **value plus citation** where the fact is written in a document
 set** where it is not (*best card at Costco*), for a caller's LLM to reason over.
 
 *Consequence:* the determinism guarantee attaches to the evidence set, which the engine
-controls. DataManager never generates prose.
+controls. Tracepaper never generates prose.
 
 ---
 

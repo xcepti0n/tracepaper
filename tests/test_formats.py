@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from datamanager.extract import text
-from datamanager.index.indexer import Indexer
-from datamanager.query.search import SearchEngine
-from datamanager.scan.scanner import Scanner
+from tracepaper.extract import text
+from tracepaper.index.indexer import Indexer
+from tracepaper.query.search import SearchEngine
+from tracepaper.scan.scanner import Scanner
 
 
 def test_docx_paragraphs_and_tables(tmp_path: Path):

@@ -1,4 +1,4 @@
-"""Native notes (FR-1): text typed into DataManager, no file on disk.
+"""Native notes (FR-1): text typed into Tracepaper, no file on disk.
 
 Notes share the item model with documents, so they are searchable by the same
 engine. Edits append a version rather than overwriting (FR-10).

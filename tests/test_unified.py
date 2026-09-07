@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from datamanager.index.indexer import Indexer
-from datamanager.query.unified import UnifiedSearch
-from datamanager.scan.scanner import Scanner
+from tracepaper.index.indexer import Indexer
+from tracepaper.query.unified import UnifiedSearch
+from tracepaper.scan.scanner import Scanner
 
 W2_2023 = """Form W-2 Wage and Tax Statement
 Tax Year: 2023

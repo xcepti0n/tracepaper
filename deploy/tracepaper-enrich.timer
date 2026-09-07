@@ -1,5 +1,5 @@
 [Unit]
-Description=DataManager — nightly enrichment
+Description=Tracepaper — nightly enrichment
 
 [Timer]
 OnCalendar=*-*-* 03:00:00

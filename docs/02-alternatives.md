@@ -1,4 +1,4 @@
-# DataManager — Alternatives Considered
+# Tracepaper — Alternatives Considered
 
 Status: agreed 2026-09-04 (revised)
 
@@ -82,7 +82,7 @@ complete, reproducibly-ordered evidence set for a caller's LLM to reason over.
 - **Against:** callers must handle two response shapes; the Tier 1/Tier 2 boundary is a
   judgment call for ambiguous queries (resolved by rules over query structure and
   extraction confidence, never by a model).
-- **Verdict:** chosen. DataManager never generates prose.
+- **Verdict:** chosen. Tracepaper never generates prose.
 
 ---
 

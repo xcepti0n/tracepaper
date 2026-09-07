@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from datamanager import enrich
-from datamanager.extract import vision
-from datamanager.index.indexer import Indexer
-from datamanager.query.unified import UnifiedSearch
-from datamanager.scan.scanner import Scanner
+from tracepaper import enrich
+from tracepaper.extract import vision
+from tracepaper.index.indexer import Indexer
+from tracepaper.query.unified import UnifiedSearch
+from tracepaper.scan.scanner import Scanner
 
 requires_vision = pytest.mark.skipif(
     not vision.available(), reason="macOS Vision not available")

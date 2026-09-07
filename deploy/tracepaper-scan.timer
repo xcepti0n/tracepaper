@@ -1,5 +1,5 @@
 [Unit]
-Description=DataManager — hourly scan
+Description=Tracepaper — hourly scan
 
 [Timer]
 OnCalendar=hourly

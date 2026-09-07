@@ -1,4 +1,4 @@
-# Deploying DataManager
+# Deploying Tracepaper
 
 ## Two NFS shares: one to read, one to write
 
@@ -16,7 +16,7 @@ nas.local:/volume1/backups    /mnt/nas/backups    nfs  rw,soft,timeo=30,_netdev 
 the application. `soft,timeo=30` means an unreachable NAS returns errors
 instead of hanging the service forever.
 
-Then point DataManager at the mounted paths from **Settings** in the web UI,
+Then point Tracepaper at the mounted paths from **Settings** in the web UI,
 which validates each one before saving — or set them in the config file below.
 
 ### Why the index does not go on the NAS
@@ -38,12 +38,12 @@ rebuilds from your documents, the NAS still holds everything irreplaceable.
 
 ## Read one folder, write another
 
-DataManager **never writes to the folder it reads**. The source tree is opened
+Tracepaper **never writes to the folder it reads**. The source tree is opened
 read-only and is never modified, moved, or renamed (NFR-7).
 
 ```toml
 [index]
-db_path = "/var/lib/datamanager/index.db"   # written here, and nowhere else
+db_path = "/var/lib/tracepaper/index.db"   # written here, and nowhere else
 
 [scan]
 roots = ["/mnt/nas/documents"]              # read-only, never touched
@@ -68,10 +68,10 @@ The second holds your corrections, notes, entity merges, pinned vocabulary and
 face-cluster names. Everything else regenerates:
 
 ```bash
-dm backup /mnt/nas/backups/datamanager-human-layer.json
+tracepaper backup /mnt/nas/backups/tracepaper-human-layer.json
 ```
 
-Restore into a rebuilt index with `dm backup <file> --restore`. Corrections are
+Restore into a rebuilt index with `tracepaper backup <file> --restore`. Corrections are
 matched by content hash, so a file that moved since the backup still matches.
 
 ---
@@ -96,16 +96,16 @@ things. Those need the real deployment, and neither is likely to surprise you.
 
 ```bash
 # On the Mac, against a mounted share, read-only
-git clone <this repo> && cd DataManager
+git clone <this repo> && cd tracepaper
 python3 -m venv .venv && .venv/bin/pip install -e ".[formats,semantic,web,ocr-macos]"
 
-cp datamanager.example.toml datamanager.toml
+cp tracepaper.example.toml tracepaper.toml
 # edit: roots = ["/Volumes/YourShare/Documents"], db_path = "./data/index.db"
 
-.venv/bin/dm scan --index          # start with a subfolder, not everything
-.venv/bin/dm status
-.venv/bin/dm keys                  # what did it actually find?
-.venv/bin/dm serve                 # http://127.0.0.1:8823
+.venv/bin/tracepaper scan --index          # start with a subfolder, not everything
+.venv/bin/tracepaper status
+.venv/bin/tracepaper keys                  # what did it actually find?
+.venv/bin/tracepaper serve                 # http://127.0.0.1:8823
 ```
 
 Point `roots` at **one subfolder** first — a few hundred documents. A full
@@ -127,20 +127,20 @@ NAS_HOST=192.168.1.10 ./deploy/proxmox-install.sh
 
 The rest of this section is the manual equivalent, and the reference for a VM
 or bare metal — where the systemd hardening below can be stricter than an
-unprivileged LXC allows. `deploy/datamanager.service` is the LXC variant and
+unprivileged LXC allows. `deploy/tracepaper.service` is the LXC variant and
 deliberately omits the mount-namespace directives, which cannot work there.
 
 ```bash
 sudo apt install -y python3-venv tesseract-ocr poppler-utils
 #                                 ^ OCR         ^ rasterises scanned PDFs
 
-sudo useradd -r -s /usr/sbin/nologin datamanager
-sudo mkdir -p /var/lib/datamanager /opt/datamanager
-sudo chown datamanager: /var/lib/datamanager
+sudo useradd -r -s /usr/sbin/nologin tracepaper
+sudo mkdir -p /var/lib/tracepaper /opt/tracepaper
+sudo chown tracepaper: /var/lib/tracepaper
 
-cd /opt/datamanager
-sudo -u datamanager python3 -m venv .venv
-sudo -u datamanager .venv/bin/pip install -e ".[formats,semantic,web,ocr]"
+cd /opt/tracepaper
+sudo -u tracepaper python3 -m venv .venv
+sudo -u tracepaper .venv/bin/pip install -e ".[formats,semantic,web,ocr]"
 ```
 
 Mount the NAS share **read-only** — belt and braces alongside the application's
@@ -148,26 +148,26 @@ own guarantee:
 
 ```
 # /etc/fstab
-//nas.local/documents /mnt/nas/documents cifs ro,credentials=/etc/samba/creds,uid=datamanager,iocharset=utf8 0 0
+//nas.local/documents /mnt/nas/documents cifs ro,credentials=/etc/samba/creds,uid=tracepaper,iocharset=utf8 0 0
 ```
 
 ### Service
 
 ```ini
-# /etc/systemd/system/datamanager.service
+# /etc/systemd/system/tracepaper.service
 [Unit]
-Description=DataManager
+Description=Tracepaper
 After=network-online.target remote-fs.target
 
 [Service]
-User=datamanager
-WorkingDirectory=/opt/datamanager
-ExecStart=/opt/datamanager/.venv/bin/dm --config /etc/datamanager.toml serve --host 0.0.0.0
+User=tracepaper
+WorkingDirectory=/opt/tracepaper
+ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml serve --host 0.0.0.0
 Restart=on-failure
 
 # The service needs to write only its own index directory.
 ProtectSystem=strict
-ReadWritePaths=/var/lib/datamanager
+ReadWritePaths=/var/lib/tracepaper
 PrivateTmp=true
 NoNewPrivileges=true
 
@@ -181,20 +181,20 @@ Filesystem events do not cross SMB/NFS, so discovery is a scheduled scan
 (D-009). A missed run costs nothing — the next pass reconciles.
 
 ```ini
-# /etc/systemd/system/datamanager-scan.service
+# /etc/systemd/system/tracepaper-scan.service
 [Unit]
-Description=DataManager reconciliation scan
+Description=Tracepaper reconciliation scan
 After=remote-fs.target
 
 [Service]
 Type=oneshot
-User=datamanager
-ExecStart=/opt/datamanager/.venv/bin/dm --config /etc/datamanager.toml scan --index --embed
-ExecStartPost=/opt/datamanager/.venv/bin/dm --config /etc/datamanager.toml backup /mnt/nas/backups/datamanager-human-layer.json
+User=tracepaper
+ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml scan --index --embed
+ExecStartPost=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml backup /mnt/nas/backups/tracepaper-human-layer.json
 ```
 
 ```ini
-# /etc/systemd/system/datamanager-scan.timer
+# /etc/systemd/system/tracepaper-scan.timer
 [Unit]
 Description=Scan the document folder hourly
 
@@ -207,7 +207,7 @@ WantedBy=timers.target
 ```
 
 ```bash
-sudo systemctl enable --now datamanager.service datamanager-scan.timer
+sudo systemctl enable --now tracepaper.service tracepaper-scan.timer
 ```
 
 ### Nightly enrichment
@@ -217,20 +217,20 @@ the machine is idle and stop the moment it is busy, so this is safe to leave
 running overnight.
 
 ```ini
-# /etc/systemd/system/datamanager-enrich.service
+# /etc/systemd/system/tracepaper-enrich.service
 [Unit]
-Description=DataManager background enrichment
+Description=Tracepaper background enrichment
 
 [Service]
 Type=oneshot
-User=datamanager
+User=tracepaper
 Nice=19
 IOSchedulingClass=idle
-ExecStart=/opt/datamanager/.venv/bin/dm --config /etc/datamanager.toml enrich --wait
+ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml enrich --wait
 ```
 
 ```ini
-# /etc/systemd/system/datamanager-enrich.timer
+# /etc/systemd/system/tracepaper-enrich.timer
 [Timer]
 OnCalendar=*-*-* 03:00:00
 Persistent=true
@@ -240,7 +240,7 @@ RandomizedDelaySec=1h
 WantedBy=timers.target
 ```
 
-Note that `dm enrich` uses macOS Vision for object tagging, which exists only
+Note that `tracepaper enrich` uses macOS Vision for object tagging, which exists only
 on the Mac. On Proxmox this pass does embeddings only, unless you enable
 captions against an Ollama endpoint.
 
@@ -253,7 +253,7 @@ stays on Proxmox (D-007). Worth doing only if Proxmox struggles with embeddings
 or you want the LLM layer; otherwise keep it simple and run everything on
 Proxmox.
 
-The seam already exists — the index is a file, and `dm scan --index --embed`
+The seam already exists — the index is a file, and `tracepaper scan --index --embed`
 against it is the worker. Point the Mac at the same index over a share **only
 while the Proxmox service is stopped**, or better: run ingest on the Mac
 against a local copy and rsync the result. Concurrent SQLite writes over a
@@ -276,9 +276,9 @@ model = "gemma4:e4b-mlx"
 ```json
 {
   "mcpServers": {
-    "datamanager": {
-      "command": "/opt/datamanager/.venv/bin/dm-mcp",
-      "args": ["/var/lib/datamanager/index.db"]
+    "tracepaper": {
+      "command": "/opt/tracepaper/.venv/bin/tracepaper-mcp",
+      "args": ["/var/lib/tracepaper/index.db"]
     }
   }
 }
@@ -287,7 +287,7 @@ model = "gemma4:e4b-mlx"
 Eleven tools: `search`, `get_value`, `aggregate`, `get_events`,
 `gather_evidence`, `list_keys`, `list_values`, `get_item`, `find_entity`,
 `add_note`, `correct_value`. They return data, never prose — the agent
-narrates, DataManager does not.
+narrates, Tracepaper does not.
 
 ---
 
@@ -298,22 +298,22 @@ than half the known paths vanished at once, so the scan refused to soft-delete
 the index. Fix the mount and re-run.
 
 **Items stuck at `partial`.** Something is missing rather than broken. Check
-`dm status`; usually a scanned PDF with no OCR backend installed, or an image
+`tracepaper status`; usually a scanned PDF with no OCR backend installed, or an image
 OCR could not read. The document stays findable by filename either way.
 
-**A field extracted wrongly.** `dm correct <item_id> <key> <value>`. That value
+**A field extracted wrongly.** `tracepaper correct <item_id> <key> <value>`. That value
 then outranks every extractor and survives reindexing forever — including a
 re-run by a better model in 2028.
 
-**Search feels wrong.** `dm search "..." --explain` shows every ranking signal
+**Search feels wrong.** `tracepaper search "..." --explain` shows every ranking signal
 and its contribution. Nothing about ranking is hidden or learned.
 
-**Two names for one merchant.** `dm entities` to find both ids, then
-`dm entities --merge <from> <to>`. Permanent.
+**Two names for one merchant.** `tracepaper entities` to find both ids, then
+`tracepaper entities --merge <from> <to>`. Permanent.
 
-**Two names for one field.** `dm vocab --suggest` proposes merges;
-`dm vocab --merge <from> <to>` applies one and rewrites stored rows.
+**Two names for one field.** `tracepaper vocab --suggest` proposes merges;
+`tracepaper vocab --merge <from> <to>` applies one and rewrites stored rows.
 
 **Changing the embedding model.** Set it in config, then
-`sqlite3 index.db 'DELETE FROM embeddings'` and `dm embed`. Vectors are a
+`sqlite3 index.db 'DELETE FROM embeddings'` and `tracepaper embed`. Vectors are a
 rebuildable cache; nothing else is affected.

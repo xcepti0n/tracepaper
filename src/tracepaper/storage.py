@@ -161,7 +161,7 @@ def check_source(path: str | Path) -> PathCheck:
         # Not an error -- the application never writes here -- but a read-only
         # mount makes that guarantee enforceable by the OS too (NFR-7).
         check.warnings.append(
-            "Mounted read-write. DataManager never writes here, but mounting "
+            "Mounted read-write. Tracepaper never writes here, but mounting "
             "with `ro` makes that guarantee enforced by the OS as well.")
 
     try:
@@ -270,7 +270,7 @@ def check_backup(path: str | Path) -> PathCheck:
     # Proving the write works matters more than the permission bits, which lie
     # on a squashed NFS export.
     try:
-        with tempfile.NamedTemporaryFile(dir=target, prefix=".dm-write-test-",
+        with tempfile.NamedTemporaryFile(dir=target, prefix=".tp-write-test-",
                                          delete=True) as fh:
             fh.write(b"ok")
             fh.flush()
@@ -296,7 +296,7 @@ def _free_bytes(path: Path) -> int:
 
 def _locking_works(directory: Path) -> bool:
     """Whether SQLite can actually take the locks it needs here."""
-    probe = directory / f".dm-lock-probe-{os.getpid()}.db"
+    probe = directory / f".tp-lock-probe-{os.getpid()}.db"
     try:
         conn = sqlite3.connect(str(probe))
         conn.execute("PRAGMA journal_mode=WAL")

@@ -1,4 +1,4 @@
--- DataManager index schema.
+-- Tracepaper index schema.
 -- See docs/03-design.md §3. Tables beyond M1 are created now so that later
 -- milestones add extractors, not migrations.
 
