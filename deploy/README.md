@@ -69,6 +69,47 @@ outside the container the app runs in. An app that mounts filesystems turns
 every stale handle and credential problem into its own bug. The Settings page
 verifies what it finds and explains what to fix; `/etc/fstab` does the mounting.
 
+### Documents in a subfolder
+
+NFS exports a whole share, but your documents are usually a folder inside one.
+Mount the share, index the subtree:
+
+```bash
+NAS_DOCS_EXPORT=/volume1/data DOCS_SUBDIR=Documents \
+  ./add-nas.sh <CTID> <synology-ip>
+```
+
+Everything else under the share stays visible to the container but is never
+read — the scan only walks the root it is given.
+
+### Using a dedicated NAS account
+
+**NFS does not authenticate users.** With `sec=sys` it trusts whatever uid the
+client sends, and access is granted per client IP. A DSM account is never
+consulted, so a user created to scope access does nothing on an NFS mount.
+
+SMB does authenticate, and mounts a subfolder directly:
+
+```bash
+# On the Proxmox host
+install -m600 /dev/null /etc/samba/tracepaper.cred
+cat > /etc/samba/tracepaper.cred <<'CRED'
+username=tracepaper
+password=<the password you set in DSM>
+CRED
+
+PROTOCOL=smb NAS_DOCS_EXPORT=/data/Documents \
+  ./add-nas.sh <CTID> <synology-ip>
+```
+
+Give that user **Read only** on the documents share and **Read/Write** on
+backups, under Control Panel → User → Permissions.
+
+The tradeoff: credentials live in a file on the host, and SMB is slower at the
+many-small-file walking a scan does. For read-only documents on a home LAN, NFS
+by IP is usually the better trade; use SMB when you want the access tied to an
+account you can revoke.
+
 ## 3. First scan
 
 ```bash

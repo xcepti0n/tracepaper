@@ -26,6 +26,32 @@ NAS_HOST="${2:-${NAS_HOST:-}}"
 NAS_DOCS_EXPORT="${NAS_DOCS_EXPORT:-/volume1/documents}"
 NAS_BACKUP_EXPORT="${NAS_BACKUP_EXPORT:-/volume1/backups/tracepaper}"
 DOCS_MOUNT="${DOCS_MOUNT:-/mnt/nas/documents}"
+
+# The folder to actually index, relative to DOCS_MOUNT.
+#
+# NFS usually exports a whole share, but the documents you want are often a
+# subfolder of it. Mounting the share and scanning a subtree keeps the mount
+# simple and the scan narrow: everything else under the share stays visible but
+# is never read.
+#
+#   NAS_DOCS_EXPORT=/volume1/data DOCS_SUBDIR=Documents/Personal
+#   -> mounts /volume1/data, scans /mnt/nas/documents/Documents/Personal
+DOCS_SUBDIR="${DOCS_SUBDIR:-}"
+
+# nfs (default) or smb.
+#
+# NFS with sec=sys does not authenticate users at all -- it trusts the uid the
+# client sends, and access is granted per client IP. SMB authenticates with a
+# real account, which is what you want if you created a dedicated NAS user to
+# scope access. SMB also mounts a subfolder directly, so DOCS_SUBDIR is usually
+# unnecessary with it.
+PROTOCOL="${PROTOCOL:-nfs}"
+
+# SMB only: a credentials file on the HOST, mode 600, containing
+#   username=tracepaper
+#   password=...
+SMB_CREDENTIALS="${SMB_CREDENTIALS:-/etc/samba/tracepaper.cred}"
+SMB_VERS="${SMB_VERS:-3.0}"
 BACKUP_MOUNT="${BACKUP_MOUNT:-/mnt/nas/backups/tracepaper}"
 NFS_VERS="${NFS_VERS:-4.1}"
 CONFIG="${CONFIG:-/etc/tracepaper.toml}"
@@ -41,8 +67,18 @@ usage() {
   echo
   echo "  e.g. $0 122 192.168.0.20"
   echo
-  echo "  NAS_DOCS_EXPORT    default $NAS_DOCS_EXPORT"
-  echo "  NAS_BACKUP_EXPORT  default $NAS_BACKUP_EXPORT"
+  echo "  NAS_DOCS_EXPORT    share to mount        default $NAS_DOCS_EXPORT"
+  echo "  NAS_BACKUP_EXPORT  writable share        default $NAS_BACKUP_EXPORT"
+  echo "  DOCS_SUBDIR        folder inside it to index (default: the whole share)"
+  echo "  PROTOCOL           nfs | smb             default $PROTOCOL"
+  echo "  SMB_CREDENTIALS    smb only              default $SMB_CREDENTIALS"
+  echo
+  echo "  Documents in a subfolder of a share:"
+  echo "    NAS_DOCS_EXPORT=/volume1/data DOCS_SUBDIR=Documents \\"
+  echo "      $0 122 192.168.0.20"
+  echo
+  echo "  Using a dedicated NAS account instead of IP-based access:"
+  echo "    PROTOCOL=smb NAS_DOCS_EXPORT=/data/Documents $0 122 192.168.0.20"
   exit 1
 }
 
@@ -70,24 +106,72 @@ add_fstab_line() {
   printf '%s %s nfs %s 0 0\n' "$source" "$point" "$options" >> /etc/fstab
 }
 
-msg_info "Mounting NFS on the Proxmox host…"
-command -v mount.nfs >/dev/null 2>&1 || \
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nfs-common >/dev/null 2>&1 || true
-
 mkdir -p "$host_docs" "$host_backup"
 
-# soft,timeo=150,retrans=3 rather than the default `hard`: a NAS that goes away
-# must not wedge a scan in uninterruptible sleep forever. Soft returns an error,
-# the scan hits its vanish guard and aborts, and nothing is deleted.
-common="soft,timeo=150,retrans=3,nfsvers=${NFS_VERS},noatime,_netdev,nofail"
-add_fstab_line "${NAS_HOST}:${NAS_DOCS_EXPORT}"   "$host_docs"   "ro,${common}"
-add_fstab_line "${NAS_HOST}:${NAS_BACKUP_EXPORT}" "$host_backup" "rw,${common}"
+case "$PROTOCOL" in
+  nfs)
+    msg_info "Mounting NFS on the Proxmox host…"
+    command -v mount.nfs >/dev/null 2>&1 || \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nfs-common >/dev/null 2>&1 || true
+
+    # soft,timeo=150,retrans=3 rather than the default `hard`: a NAS that goes
+    # away must not wedge a scan in uninterruptible sleep forever. Soft returns
+    # an error, the scan hits its vanish guard and aborts, nothing is deleted.
+    common="soft,timeo=150,retrans=3,nfsvers=${NFS_VERS},noatime,_netdev,nofail"
+    add_fstab_line "${NAS_HOST}:${NAS_DOCS_EXPORT}"   "$host_docs"   "ro,${common}"
+    add_fstab_line "${NAS_HOST}:${NAS_BACKUP_EXPORT}" "$host_backup" "rw,${common}"
+    ;;
+
+  smb|cifs)
+    msg_info "Mounting SMB on the Proxmox host…"
+    command -v mount.cifs >/dev/null 2>&1 || \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cifs-utils >/dev/null 2>&1 || true
+
+    if [[ ! -f "$SMB_CREDENTIALS" ]]; then
+      msg_error "no credentials file at ${SMB_CREDENTIALS}."
+      msg_warn  "Create it on this host, readable only by root:"
+      echo
+      echo "    install -m600 /dev/null ${SMB_CREDENTIALS}"
+      echo "    cat > ${SMB_CREDENTIALS} <<'EOF'"
+      echo "    username=tracepaper"
+      echo "    password=<the password you set in DSM>"
+      echo "    EOF"
+      echo
+      exit 1
+    fi
+    # A credentials file readable by anyone is a password anyone can read.
+    perms=$(stat -c '%a' "$SMB_CREDENTIALS")
+    if [[ "$perms" != "600" && "$perms" != "400" ]]; then
+      msg_warn "${SMB_CREDENTIALS} is mode ${perms}; tightening to 600."
+      chmod 600 "$SMB_CREDENTIALS"
+    fi
+
+    # uid=100000 is root inside an unprivileged LXC as seen from the host: the
+    # default id-map shifts container uids by 100000. Files land owned by the
+    # container's root, which the service can read.
+    common="credentials=${SMB_CREDENTIALS},vers=${SMB_VERS},iocharset=utf8,uid=100000,gid=100000,_netdev,nofail"
+    add_fstab_line "//${NAS_HOST}/${NAS_DOCS_EXPORT#/}"   "$host_docs"   "ro,${common}"
+    add_fstab_line "//${NAS_HOST}/${NAS_BACKUP_EXPORT#/}" "$host_backup" "rw,${common}"
+    ;;
+
+  *)
+    msg_error "PROTOCOL must be nfs or smb, got '${PROTOCOL}'."
+    exit 1
+    ;;
+esac
+
 systemctl daemon-reload >/dev/null 2>&1 || true
 
 if ! mount "$host_docs" 2>/dev/null && ! mountpoint -q "$host_docs"; then
-  msg_error "could not mount ${NAS_HOST}:${NAS_DOCS_EXPORT}."
-  msg_warn  "In DSM: Control Panel → Shared Folder → the share → Edit → NFS Permissions."
-  msg_warn  "Add a rule for this host's IP, then re-run this script."
+  msg_error "could not mount the documents share."
+  if [[ "$PROTOCOL" == "nfs" ]]; then
+    msg_warn "In DSM: Control Panel → Shared Folder → the share → Edit → NFS Permissions."
+    msg_warn "Add a rule for THIS HOST's IP (not the container's), then re-run."
+    msg_warn "NFS grants access by client IP, not by user — a DSM account is not consulted."
+  else
+    msg_warn "Check the username and password in ${SMB_CREDENTIALS}, and that"
+    msg_warn "the user has at least read access to the share in DSM."
+  fi
   exit 1
 fi
 msg_ok "Documents mounted read-only at ${host_docs}"
@@ -121,13 +205,28 @@ inct "test -d '${DOCS_MOUNT}'" || {
   msg_error "the documents path is not visible inside the container."
   exit 1
 }
-count=$(inct "ls -1 '${DOCS_MOUNT}' 2>/dev/null | head -1000 | wc -l" || echo 0)
-msg_ok "Documents visible inside the container (${count// /} entries at the top level)"
+
+# The folder Tracepaper will actually scan. Checked separately, because a typo
+# in DOCS_SUBDIR otherwise surfaces much later as a scan that finds nothing.
+SCAN_ROOT="$DOCS_MOUNT"
+if [[ -n "$DOCS_SUBDIR" ]]; then
+  SCAN_ROOT="${DOCS_MOUNT%/}/${DOCS_SUBDIR#/}"
+  if ! inct "test -d '${SCAN_ROOT}'"; then
+    msg_error "${DOCS_SUBDIR} does not exist inside the mounted share."
+    msg_warn  "What is actually there:"
+    inct "ls -1 '${DOCS_MOUNT}' 2>/dev/null | head -20" | sed 's/^/    /' || true
+    msg_warn  "The mount itself worked — fix DOCS_SUBDIR and re-run."
+    exit 1
+  fi
+fi
+
+count=$(inct "ls -1 '${SCAN_ROOT}' 2>/dev/null | head -1000 | wc -l" || echo 0)
+msg_ok "Will index ${SCAN_ROOT} (${count// /} entries at the top level)"
 
 # Point the config at what is now mounted. sed rather than a rewrite, so any
 # hand edits to the rest of the file survive.
 msg_info "Updating ${CONFIG}…"
-inct "sed -i 's#^roots = \\[\\]#roots = [\"${DOCS_MOUNT}\"]#' '${CONFIG}'"
+inct "sed -i 's#^roots = \\[\\]#roots = [\"${SCAN_ROOT}\"]#' '${CONFIG}'"
 if [[ "$backup_ok" == "1" ]] && ! inct "grep -q '^backup_dir' '${CONFIG}'"; then
   inct "sed -i '/^db_path/a backup_dir = \"${BACKUP_MOUNT}\"' '${CONFIG}'"
 fi

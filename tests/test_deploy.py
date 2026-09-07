@@ -387,3 +387,46 @@ def test_tls_failure_does_not_destroy_the_container():
     block = block[:block.index("\n}")]
     assert "still running over plain HTTP" in block, (
         "a TLS failure must be reported as non-fatal")
+
+
+# ------------------------------------------------------- attaching storage ---
+
+def test_add_nas_supports_a_subfolder_of_a_share():
+    """NFS exports a whole share, but the documents are usually a subfolder.
+    Mount the share, scan the subtree -- the rest stays visible but unread."""
+    attach = (DEPLOY / "add-nas.sh").read_text()
+    assert "DOCS_SUBDIR" in attach
+    assert 'SCAN_ROOT="${DOCS_MOUNT%/}/${DOCS_SUBDIR#/}"' in attach
+    assert 'roots = [\\"${SCAN_ROOT}\\"]' in attach, (
+        "the config must point at the subfolder, not the mount root")
+
+
+def test_add_nas_verifies_the_subfolder_exists():
+    """A typo in DOCS_SUBDIR otherwise surfaces much later, as a scan that
+    silently finds nothing."""
+    attach = (DEPLOY / "add-nas.sh").read_text()
+    assert "does not exist inside the mounted share" in attach
+
+
+def test_add_nas_supports_smb_for_account_based_access():
+    """NFS with sec=sys grants by client IP and never consults a user account.
+    SMB is the option that honours a dedicated NAS user."""
+    attach = (DEPLOY / "add-nas.sh").read_text()
+    assert "PROTOCOL" in attach and "cifs-utils" in attach
+    assert "SMB_CREDENTIALS" in attach
+
+
+def test_smb_credentials_are_not_world_readable():
+    """A credentials file anyone can read is a password anyone can read."""
+    attach = (DEPLOY / "add-nas.sh").read_text()
+    assert "chmod 600" in attach
+    assert 'stat -c' in attach, "the script should check the mode it was given"
+
+
+def test_documents_stay_read_only_under_both_protocols():
+    attach = (DEPLOY / "add-nas.sh").read_text()
+    # Host-side mount options, one per protocol branch.
+    assert attach.count('"ro,${common}"') == 2, (
+        "both the nfs and smb branches must mount documents ro")
+    # And the bind mount into the container.
+    assert "ro=1" in attach
