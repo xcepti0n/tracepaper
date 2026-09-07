@@ -323,12 +323,35 @@ def test_update_unit_has_headroom_and_a_timeout():
 
 
 def test_polkit_rule_is_narrow():
-    """One action, one unit, one verb, one user -- not blanket systemd access."""
+    """One action, one verb, one user, and a fixed unit list -- not blanket
+    systemd access. The units the app can trigger are exactly the ones it has
+    buttons for; anything else must stay out of the grant."""
     rule = (DEPLOY / "49-tracepaper-update.rules").read_text()
-    assert '"tracepaper-update.service"' in rule
     assert '"start"' in rule
     assert 'subject.user === "tracepaper"' in rule
     assert "org.freedesktop.systemd1.manage-units" in rule
+
+    for unit in ("tracepaper-update.service", "tracepaper-scan.service",
+                 "tracepaper-enrich.service", "tracepaper-backup.service"):
+        assert f'"{unit}"' in rule, f"{unit} is not grantable"
+
+    # The web service itself must never be startable/stoppable through polkit:
+    # that would let a request reaching the port take the server down.
+    assert '"tracepaper.service"' not in rule
+    for verb in ("stop", "restart", "disable", "mask"):
+        assert f'"{verb}"' not in rule, f"{verb} must not be granted"
+
+
+def test_polkit_grants_exactly_the_units_the_app_can_trigger():
+    """The allowlist in jobs.py and the polkit rule have to agree. If they
+    drift, either a button appears that fails on authentication, or a unit is
+    grantable that nothing needs -- both are silent until someone clicks."""
+    from tracepaper import jobs, updates
+
+    rule = (DEPLOY / "49-tracepaper-update.rules").read_text()
+    granted = set(re.findall(r'"(tracepaper[\w-]*\.service)"', rule))
+    expected = set(jobs.UNITS.values()) | {updates.UPDATE_UNIT}
+    assert granted == expected
 
 
 def test_installer_installs_the_polkit_rule_and_reloads_polkit():

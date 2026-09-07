@@ -353,6 +353,45 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail=message)
         return {"ok": True, "message": message}
 
+    @app.get("/api/jobs")
+    def api_jobs() -> dict[str, Any]:
+        from . import jobs
+        return jobs.status().as_dict()
+
+    @app.post("/api/jobs/{name}/start")
+    def api_jobs_start(name: str, request: Request) -> dict[str, Any]:
+        """Trigger one background unit (scan, enrich, backup).
+
+        Same two cheap defences as the update endpoint, for the same reason:
+        there is no authentication here, so a page the user happens to have
+        open must not be able to POST work onto this server. Neither check is
+        authentication and neither should be described as such -- what they
+        close is drive-by CSRF, not anyone who can already reach the port.
+
+        The blast radius is smaller than the update endpoint's: these units run
+        on timers anyway, so the worst case is running scheduled work early.
+        """
+        from . import jobs
+
+        if request.headers.get("x-tracepaper-request") != "1":
+            raise HTTPException(
+                status_code=403,
+                detail="Missing X-Tracepaper-Request header. Start jobs from "
+                       "the web UI, or run `systemctl start tracepaper-"
+                       f"{name}` in the container.")
+        if request.headers.get("sec-fetch-site", "same-origin") not in (
+                "same-origin", "none"):
+            raise HTTPException(status_code=403,
+                                detail="Cross-site job requests are refused.")
+
+        if name not in jobs.UNITS:
+            raise HTTPException(status_code=404, detail=f"unknown job {name!r}.")
+
+        started, message = jobs.start(name)
+        if not started:
+            raise HTTPException(status_code=409, detail=message)
+        return {"ok": True, "message": message}
+
     @app.get("/api/status")
     def api_status() -> dict[str, Any]:
         conn = open_connection()

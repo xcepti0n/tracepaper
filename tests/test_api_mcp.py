@@ -372,3 +372,119 @@ def test_update_check_never_writes_to_the_checkout(client, monkeypatch):
     assert '"ls-remote"' in source
     assert '"fetch"' not in source, (
         "the read-only check must not fetch; the privileged unit does that")
+
+
+# ------------------------------------------------------------------- jobs
+#
+# The job endpoints start privileged systemd units, so their guards matter as
+# much as their happy path. These pin both.
+
+
+def test_jobs_endpoint_reports_unavailable_off_systemd(client):
+    """Off a systemd host nothing is loaded, and the UI must say so rather
+    than offering buttons that cannot work."""
+    body = client.get("/api/jobs").json()
+    assert body["available"] is False
+    assert body["jobs"] == []
+    assert body["detail"]
+
+
+def test_starting_a_job_requires_the_custom_header(client):
+    """Without the header a cross-site form could POST work onto the server."""
+    response = client.post("/api/jobs/scan/start")
+    assert response.status_code == 403
+    assert "X-Tracepaper-Request" in response.json()["detail"]
+
+
+def test_starting_a_job_refuses_a_cross_site_request(client):
+    response = client.post("/api/jobs/scan/start", headers={
+        "X-Tracepaper-Request": "1", "Sec-Fetch-Site": "cross-site"})
+    assert response.status_code == 403
+    assert "Cross-site" in response.json()["detail"]
+
+
+def test_unknown_job_names_are_refused(client):
+    """The name reaches a systemd unit lookup, so it must be an allowlist --
+    never interpolated into a unit name."""
+    response = client.post("/api/jobs/../../etc/passwd/start",
+                           headers={"X-Tracepaper-Request": "1"})
+    assert response.status_code in (403, 404)
+
+    response = client.post("/api/jobs/tracepaper/start",
+                           headers={"X-Tracepaper-Request": "1"})
+    assert response.status_code == 404
+
+
+def test_job_names_map_to_a_fixed_unit_list():
+    """jobs.start must never build a unit name from its argument."""
+    from tracepaper import jobs
+    for name, unit in jobs.UNITS.items():
+        assert unit.startswith("tracepaper-") and unit.endswith(".service")
+    assert jobs.start("nope; systemctl stop tracepaper")[0] is False
+
+
+def test_starting_a_job_reports_why_it_could_not(client, monkeypatch):
+    """A refusal must arrive as a message the UI can show, not a 500."""
+    from tracepaper import jobs
+    monkeypatch.setattr(jobs, "start",
+                        lambda name: (False, "scan is already running."))
+    response = client.post("/api/jobs/scan/start",
+                           headers={"X-Tracepaper-Request": "1"})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "scan is already running."
+
+
+def test_running_oneshot_units_are_reported_as_running(monkeypatch):
+    """A oneshot unit is 'activating' for its entire run -- treating only
+    'active' as running would report a multi-hour scan as idle, and light up
+    a Run button that then refuses."""
+    from tracepaper import jobs
+
+    monkeypatch.setattr(jobs, "_show", lambda unit: {
+        "LoadState": "loaded", "ActiveState": "activating",
+        "Result": "success", "ExecMainStartTimestamp": "Sun 2026-09-07 21:57"})
+    monkeypatch.setattr(jobs, "_can_start", lambda unit: True)
+
+    status = jobs.status()
+    assert status.available
+    for job in status.jobs:
+        assert job.running is True
+        assert job.can_start is False, "a running job must not offer a button"
+
+
+def test_a_job_already_running_is_not_started_again(monkeypatch):
+    """systemd treats starting a running oneshot as a no-op, so reporting it
+    as started would be a lie the UI shows as a fresh run."""
+    from tracepaper import jobs
+    monkeypatch.setattr(jobs, "_show", lambda unit: {
+        "LoadState": "loaded", "ActiveState": "activating"})
+
+    started, message = jobs.start("scan")
+    assert started is False
+    assert "already running" in message
+
+
+def test_a_failed_job_is_reported_not_hidden(monkeypatch):
+    """`systemctl show` exits 0 for a failed unit, which is why it is used
+    instead of `status` -- the failure must reach the UI."""
+    from tracepaper import jobs
+    monkeypatch.setattr(jobs, "_show", lambda unit: {
+        "LoadState": "loaded", "ActiveState": "failed",
+        "Result": "exit-code", "ExecMainStartTimestamp": "Sun 2026-09-07 21:57"})
+    monkeypatch.setattr(jobs, "_can_start", lambda unit: True)
+
+    job = jobs.status().jobs[0]
+    assert job.running is False
+    assert job.result == "exit-code"
+    assert job.can_start is True, "a failed job must be retryable"
+
+
+def test_jobs_panel_polls_only_while_something_runs(client):
+    """An idle Settings tab must not poll forever."""
+    page = client.get("/?tab=settings").text
+    assert 'id="jobs_list"' in page
+    assert "refreshJobs" in page
+    script = page[page.index("async function refreshJobs"):]
+    script = script[:script.index("async function startJob")]
+    assert "anyRunning" in script
+    assert "clearTimeout" in script, "a finished job must stop the timer"

@@ -1,24 +1,30 @@
-/* Let the `tracepaper` service user start exactly one unit:
- * tracepaper-update.service.
+/* Let the `tracepaper` service user start exactly the units it needs:
+ * the update, and the three background jobs (scan, enrich, backup).
  *
  * Installed to /etc/polkit-1/rules.d/49-tracepaper-update.rules.
  *
- * Without this the app cannot trigger an update at all — tracepaper.service
- * runs as an unprivileged user with an empty capability bounding set, and
+ * Without this the app cannot trigger any of them — tracepaper.service runs
+ * as an unprivileged user with an empty capability bounding set, and
  * `systemctl start` is a privileged operation. The alternatives would have
  * been giving the app sudo or running it as root, both of which grant vastly
  * more than this does.
  *
- * The grant is deliberately narrow: one action, one unit, one verb, one user.
- * It does not permit stopping tracepaper.service, starting anything else, or
- * any other systemd verb. What it allows is "install the code that is already
- * published at the configured remote" — a real capability, but a much smaller
- * one than "run arbitrary commands as root".
+ * The grant is deliberately narrow: one action, one verb, one user, and a
+ * fixed list of units. It does not permit stopping tracepaper.service,
+ * starting anything else, or any other systemd verb — so the worst a request
+ * reaching this server can do is run work the machine already runs on a timer,
+ * or install the code already published at the configured remote.
  */
 polkit.addRule(function (action, subject) {
+  var allowed = [
+    "tracepaper-update.service",
+    "tracepaper-scan.service",
+    "tracepaper-enrich.service",
+    "tracepaper-backup.service",
+  ];
   if (
     action.id === "org.freedesktop.systemd1.manage-units" &&
-    action.lookup("unit") === "tracepaper-update.service" &&
+    allowed.indexOf(action.lookup("unit")) !== -1 &&
     action.lookup("verb") === "start" &&
     subject.user === "tracepaper"
   ) {

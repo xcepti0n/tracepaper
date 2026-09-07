@@ -138,6 +138,12 @@ account you can revoke.
 
 ## 3. First scan
 
+**From the UI:** Settings → Jobs → *Run now* next to "Scan for new and changed
+files". The panel polls while it runs, so progress is visible without a
+terminal, and the button stays disabled until it finishes.
+
+From the command line, if you prefer:
+
 ```bash
 pct exec <CTID> -- systemctl start --no-block tracepaper-scan
 pct exec <CTID> -- journalctl -u tracepaper-scan -f
@@ -371,6 +377,13 @@ mistake as putting it on NFS.
 
 ## Operating
 
+Scan, enrich and backup all run on timers, and all three have a *Run now*
+button under Settings → Jobs — the panel shows whether one is running, when it
+last ran, and whether it failed. The buttons appear only when polkit actually
+permits this user to start the unit, so one that appears will work.
+
+The rest is easier from a shell:
+
 ```bash
 # Health and shape of the index
 pct exec <CTID> -- sudo -u tracepaper /opt/tracepaper/.venv/bin/tracepaper \
@@ -410,7 +423,7 @@ even if you move the file.
 | `caddy-install.sh` | HTTPS on a hostname, with a certificate the container issues itself. |
 | `Caddyfile` | The proxy config it installs. |
 | `tracepaper-update.service` | The privileged half of an update. On-demand only. |
-| `49-tracepaper-update.rules` | polkit grant: the app may start that one unit, nothing else. |
+| `49-tracepaper-update.rules` | polkit grant: the app may start the update and the three job units, nothing else. |
 | `update.sh` | Update in place, with automatic rollback. Run in the container. |
 | `tracepaper.service` | The web UI and API. |
 | `tracepaper-scan.{service,timer}` | Hourly scan and index. |

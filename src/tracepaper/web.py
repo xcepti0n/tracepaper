@@ -97,6 +97,9 @@ button.fix:hover { color:var(--accent); border-color:var(--accent); }
 .field.root { display:flex; gap:8px; flex-wrap:wrap; }
 .field.root input { flex:1; min-width:260px; }
 .field.root .status, .field .status { flex-basis:100%; }
+.field.job { display:flex; gap:12px; align-items:center;
+             justify-content:space-between; flex-wrap:wrap; }
+.field.job .actions { margin:0; }
 .status { font-size:12.5px; margin-top:5px; min-height:17px; }
 .status .ok { color:var(--accent); font-weight:600; }
 .status .bad { color:#b3261e; font-weight:600; }
@@ -244,6 +247,90 @@ async function waitForRestart() {
   }
   box.innerHTML = '<span class="bad">still restarting — check ' +
                   '<code>journalctl -u tracepaper-update -f</code></span>';
+}
+
+// Poll while any job runs so a scan's progress is visible without a terminal.
+// Slow enough (5s) that an idle Settings tab costs nothing.
+let jobsTimer = null;
+
+async function refreshJobs(options) {
+  const quiet = options && options.quiet;
+  const box = document.getElementById('jobs_list');
+  if (!box) return;
+
+  let status;
+  try {
+    const response = await fetch('/api/jobs', {cache: 'no-store'});
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    status = await response.json();
+  } catch (error) {
+    if (!quiet) {
+      box.innerHTML = '<span class="bad">could not read jobs: ' +
+                      escapeHtml(String(error.message)) + '</span>';
+    }
+    return;
+  }
+
+  if (!status.available) {
+    box.innerHTML = '<p class="hint">' + escapeHtml(status.detail) + '</p>';
+    return;
+  }
+
+  box.innerHTML = status.jobs.map(job => {
+    let state;
+    if (job.running) {
+      state = '<span class="warn-line">running…</span>';
+    } else if (job.result && job.result !== 'success') {
+      state = '<span class="bad">last run: ' + escapeHtml(job.result) + '</span>';
+    } else if (job.last_run) {
+      state = '<span class="muted">last run ' + escapeHtml(job.last_run) + '</span>';
+    } else {
+      state = '<span class="muted">not run yet</span>';
+    }
+
+    // Only offer the button when the server said polkit will allow it.
+    const button = job.running
+      ? '<button type="button" disabled>Running…</button>'
+      : (job.can_start
+          ? '<button type="button" onclick="startJob(this, \'' +
+            escapeHtml(job.name) + '\')">Run now</button>'
+          : '<span class="hint">systemctl start ' + escapeHtml(job.unit) + '</span>');
+
+    return '<div class="field job"><div><strong>' + escapeHtml(job.label) +
+           '</strong><div class="status">' + state + '</div></div>' +
+           '<div class="actions">' + button + '</div></div>';
+  }).join('');
+
+  // Keep polling only while something is running.
+  const anyRunning = status.jobs.some(job => job.running);
+  if (jobsTimer) { clearTimeout(jobsTimer); jobsTimer = null; }
+  if (anyRunning) {
+    jobsTimer = setTimeout(() => refreshJobs({quiet: true}), 5000);
+  }
+}
+
+async function startJob(button, name) {
+  button.disabled = true;
+  button.textContent = 'Starting…';
+  try {
+    const response = await fetch('/api/jobs/' + encodeURIComponent(name) + '/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Tracepaper-Request': '1'},
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || ('HTTP ' + response.status));
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = 'Run now';
+    const box = document.getElementById('jobs_list');
+    if (box) {
+      box.insertAdjacentHTML('afterbegin', '<div class="status"><span class="bad">' +
+        escapeHtml(String(error.message)) + '</span></div>');
+    }
+    return;
+  }
+  // systemd takes a moment to report the unit as active.
+  setTimeout(() => refreshJobs({quiet: true}), 1000);
 }
 
 async function checkPath(input, kind, statusId) {
@@ -617,8 +704,24 @@ def _settings_tab(conn: sqlite3.Connection) -> str:
   </div>
 </form>""")
 
+    out.append(_jobs_panel())
     out.append(_updates_panel())
     return "".join(out)
+
+
+def _jobs_panel() -> str:
+    """Buttons for the background units, so routine work needs no terminal.
+
+    The list is filled in from the browser rather than server-side: reading
+    systemd state costs several `systemctl` calls, and a page that blocks on
+    those is worse than one that fills in a moment later. It also lets the
+    panel keep polling while a scan runs.
+    """
+    return """<h2>Jobs</h2>
+<p class="hint">These run on timers already &mdash; the buttons run them now.
+A first scan can take hours; it is safe to leave this page.</p>
+<div id="jobs_list"><span class="muted">loading&hellip;</span></div>
+<script>refreshJobs({quiet: true});</script>"""
 
 
 def _updates_panel() -> str:
