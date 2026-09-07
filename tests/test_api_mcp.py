@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -488,3 +489,47 @@ def test_jobs_panel_polls_only_while_something_runs(client):
     script = script[:script.index("async function startJob")]
     assert "anyRunning" in script
     assert "clearTimeout" in script, "a finished job must stop the timer"
+
+
+def test_can_start_is_false_without_a_polkit_daemon(monkeypatch):
+    """`systemctl start --dry-run` does NOT consult polkit: it plans the job
+    and exits 0 even where the real start would be refused. A container with
+    no polkitd running therefore passed the check and then failed the actual
+    start with exit 4 (EXIT_NOPERMISSION), lighting up a button that could
+    never work. The daemon has to be checked separately."""
+    from tracepaper import jobs
+
+    calls = []
+
+    def fake_run(args):
+        calls.append(args)
+        if "is-active" in args:
+            raise subprocess.CalledProcessError(3, args)
+        return ""
+
+    monkeypatch.setattr(jobs, "_run", fake_run)
+    assert jobs._can_start("tracepaper-scan.service") is False
+    assert not any("--dry-run" in a for a in calls), (
+        "the dry run must not even be attempted once polkit is known to be down")
+
+
+def test_update_can_apply_is_false_without_a_polkit_daemon(monkeypatch):
+    from tracepaper import updates
+
+    def fake_run(args, cwd=None):
+        if "is-active" in args:
+            raise subprocess.CalledProcessError(3, args)
+        return ""
+
+    monkeypatch.setattr(updates, "_run", fake_run)
+    monkeypatch.setattr(Path, "exists", lambda self: True)
+    assert updates.can_apply() is False
+
+
+def test_installer_installs_the_polkit_daemon():
+    """The rule is inert without a daemon to read it, and the restart was
+    swallowed by `|| true` -- so a container missing polkitd looked like a
+    clean install and only failed when someone pressed a button."""
+    installer = (Path(__file__).resolve().parents[1] / "deploy"
+                 / "proxmox-install.sh").read_text()
+    assert "polkitd" in installer, "polkitd must be installed, not assumed"

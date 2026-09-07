@@ -84,8 +84,11 @@ def can_apply() -> bool:
     file would light up a button that then fails with an authentication error,
     which is worse than not offering it at all.
 
-    `--dry-run` asks systemd to authorise and plan the job without running it,
-    so this is a real permission check rather than a guess.
+    `--dry-run` plans the job without running it, but it does NOT go through
+    polkit -- a container with no polkitd running passes the dry run and then
+    fails the real start with exit 4 (EXIT_NOPERMISSION). So the polkit daemon
+    is checked separately; without it, no unprivileged start can be authorised
+    at all.
     """
     installed = any(
         Path(d, UPDATE_UNIT).exists()
@@ -94,6 +97,9 @@ def can_apply() -> bool:
     if not installed:
         return False
     try:
+        # polkit must be running to authorise an unprivileged start at all;
+        # `--dry-run` does not consult it, so it cannot see this on its own.
+        _run(["systemctl", "is-active", "--quiet", "polkit"])
         _run(["systemctl", "start", "--dry-run", "--no-block", UPDATE_UNIT])
         return True
     except (subprocess.SubprocessError, OSError):

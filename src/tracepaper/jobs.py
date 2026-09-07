@@ -106,13 +106,33 @@ def _show(unit: str) -> dict[str, str]:
     return values
 
 
+def _polkit_running() -> bool:
+    """Whether a polkit daemon is up to authorise unprivileged starts.
+
+    Without it systemd refuses every `systemctl start` from the service user
+    with exit 4, no matter what the rule in /etc/polkit-1/rules.d says -- the
+    rule is only read by the daemon. Checked separately because `--dry-run`
+    does not consult polkit and so cannot see this.
+    """
+    try:
+        _run(["systemctl", "is-active", "--quiet", "polkit"])
+        return True
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
 def _can_start(unit: str) -> bool:
     """Whether polkit will actually let this user start the unit.
 
-    `--dry-run` asks systemd to authorise and plan the job without running it,
-    so this is a real permission check. A button that appears and then fails
+    `--dry-run` plans the job without running it, but it does NOT go through
+    polkit -- a container with no polkitd running passes the dry run and then
+    fails the real start with exit 4 (EXIT_NOPERMISSION). So the polkit daemon
+    is checked separately; without it, no unprivileged start can be authorised
+    at all. A button that appears and then fails
     with an authentication error is worse than one that never appears.
     """
+    if not _polkit_running():
+        return False
     try:
         _run(["systemctl", "start", "--dry-run", "--no-block", unit])
         return True

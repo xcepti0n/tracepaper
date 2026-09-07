@@ -273,7 +273,7 @@ install_base() {
         apt-get update -qq
         apt-get install -y -qq --no-install-recommends \
           python3 python3-venv python3-pip git curl ca-certificates rsync sudo \
-          sqlite3 tesseract-ocr poppler-utils >/dev/null"
+          sqlite3 tesseract-ocr poppler-utils polkitd >/dev/null"
   msg_ok "Base packages installed"
 
   local python_version
@@ -499,7 +499,16 @@ chmod 640 /etc/tracepaper.toml"
 
   # polkit only reads its rules at start. Without this the grant exists on disk
   # but is not in effect, so the update button fails until the next reboot.
-  inct "systemctl restart polkit >/dev/null 2>&1 || true"
+  # polkitd must actually be running, or every `systemctl start` from the app
+  # fails with exit 4 (EXIT_NOPERMISSION) while the rule sits unread on disk.
+  # This was silent before: the restart was swallowed by `|| true`, so a
+  # container without polkitd installed looked like a clean install and only
+  # failed when someone pressed a button.
+  inct "systemctl restart polkit >/dev/null 2>&1 || systemctl start polkit >/dev/null 2>&1 || true"
+  if ! inct "systemctl is-active --quiet polkit"; then
+    msg_warn "polkitd is not running: the app cannot start updates or jobs itself."
+    msg_warn "Run them with 'systemctl start <unit>' in the container instead."
+  fi
   msg_ok "Service and timers enabled"
 }
 
