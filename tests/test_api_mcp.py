@@ -54,6 +54,14 @@ def test_ui_renders(client):
     assert "DataManager" in response.text
 
 
+def test_api_health(client):
+    """The installer and update script gate on this, so it must stay cheap
+    and must report a broken index rather than raising."""
+    data = client.get("/api/health").json()
+    assert data["ok"] is True
+    assert data["db_path"]
+
+
 def test_api_search(client):
     data = client.get("/api/search",
                       params={"q": "wages", "semantic": False}).json()

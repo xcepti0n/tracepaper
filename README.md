@@ -89,7 +89,10 @@ cp datamanager.example.toml datamanager.toml    # set roots and db_path
 .venv/bin/dm serve                              # http://127.0.0.1:8823
 ```
 
-See [docs/DEPLOY.md](docs/DEPLOY.md) for the Proxmox deployment.
+To deploy on Proxmox, run [`deploy/proxmox-install.sh`](deploy/) on the host —
+it creates the LXC, mounts both Synology shares, and leaves a running service
+behind. See [deploy/README.md](deploy/README.md).
+[docs/DEPLOY.md](docs/DEPLOY.md) covers the manual install and VM/bare-metal.
 
 ### What it does
 

@@ -288,6 +288,29 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return {"ok": True, "config_file": str(config_file),
                 "restart_required": str(_config.db_path) != db_path}
 
+    @app.get("/api/health")
+    def api_health() -> dict[str, Any]:
+        """Liveness for the installer, systemd and any monitor.
+
+        Deliberately cheap and deliberately not a status page: it opens the
+        index and reads one row. A health check that counted rows would get
+        slower as the corpus grew, which is backwards -- the check matters most
+        on the largest install.
+
+        An unreadable index is reported as unhealthy with the reason, rather
+        than raising: a 200 with `ok: false` is something a script can act on.
+        """
+        try:
+            conn = open_connection()
+            try:
+                conn.execute("SELECT 1 FROM items LIMIT 1").fetchone()
+            finally:
+                conn.close()
+        except Exception as exc:
+            return {"ok": False, "error": str(exc),
+                    "db_path": str(_config.db_path)}
+        return {"ok": True, "db_path": str(_config.db_path)}
+
     @app.get("/api/status")
     def api_status() -> dict[str, Any]:
         conn = open_connection()

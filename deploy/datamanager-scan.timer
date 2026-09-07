@@ -1,0 +1,18 @@
+[Unit]
+Description=DataManager — hourly scan
+
+[Timer]
+OnCalendar=hourly
+# A host that was asleep or off at the top of the hour still scans when it
+# comes back, rather than waiting for the next one.
+Persistent=true
+# Without this every timer on the box fires at :00 together. Five minutes of
+# jitter costs nothing here and keeps the scan off the same second as
+# everything else.
+RandomizedDelaySec=300
+# Not sooner than 10 minutes after boot: let the mounts settle and the service
+# come up first.
+OnBootSec=10min
+
+[Install]
+WantedBy=timers.target

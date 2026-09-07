@@ -1,0 +1,70 @@
+# DataManager — configuration as installed on Proxmox.
+#
+# Copy to /etc/datamanager.toml. The installer writes this file for you; this
+# copy is here so you can see what it wrote and why.
+#
+# The Settings page in the web UI edits the paths below and validates them
+# before saving, so you should rarely need to edit this by hand.
+
+[index]
+# Local disk, inside the container. NOT the NAS.
+#
+# SQLite corrupts over NFS and SMB: their advisory locking is unreliable across
+# clients, and WAL mode depends on it. It fails silently and weeks later, which
+# is the worst possible failure for the one file holding your corrections. The
+# index rebuilds from your documents, so losing it costs a re-scan; corrupting
+# it quietly costs everything you cannot regenerate (D-008).
+#
+# The settings page refuses an NFS path here rather than warning about it.
+db_path = "/var/lib/datamanager/index.db"
+
+# The NAS write share. This is the copy that survives losing the container:
+# corrections, notes and merges are the only state that cannot be regenerated
+# from the documents.
+backup_dir = "/mnt/nas/backups/datamanager"
+
+[scan]
+# The NAS read share, mounted `ro` in /etc/fstab. Multiple roots are fine.
+roots = ["/mnt/nas/documents"]
+
+# Synology scatters these through every share and none of them are content.
+excludes = ["@eaDir", "#recycle", "#snapshot", ".DS_Store", ".Trashes",
+            ".Spotlight-V100", ".fseventsd", "__MACOSX", ".git", "@tmp",
+            "desktop.ini", "Thumbs.db"]
+
+max_file_bytes = 536870912
+
+# A file must be missing from three consecutive scans before it is soft-deleted,
+# and a scan aborts entirely if more than half the known paths vanish at once.
+# Together these mean an unmounted share cannot empty your index.
+miss_threshold = 3
+vanish_guard = 0.5
+
+follow_symlinks = false
+
+passage_target_chars = 1200
+passage_overlap_chars = 150
+
+[llm]
+# Off, and it should stay off on this host.
+#
+# This layer runs at INGEST ONLY — never at query time — so leaving it disabled
+# changes no search result. It fills gaps in free prose (a letter, a quote in
+# an email) where no `Label: value` pattern exists. Without it you simply get
+# fewer structured fields from prose documents; everything else is identical.
+#
+# A 16GB Proxmox host already running other things should not run a model. If
+# you want this layer, point it at Ollama on your Mac:
+#
+#   enabled  = true
+#   endpoint = "http://mac.local:11434"
+enabled = false
+endpoint = "http://localhost:11434"
+model = "gemma4:e4b-mlx"
+timeout = 120
+min_fields = 3
+
+[enrich]
+# Yield above this 1-minute load average per core. The nightly pass checks
+# between every item, so it backs off within seconds of the host getting busy.
+load_threshold = 0.7

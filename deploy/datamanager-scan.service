@@ -1,0 +1,39 @@
+[Unit]
+Description=DataManager — scan the NAS and index what changed
+# The scan reads the NFS mount. Without this it can run before the share is
+# there, and every file looks missing.
+After=network-online.target remote-fs.target datamanager.service
+
+[Service]
+Type=oneshot
+User=datamanager
+Group=datamanager
+WorkingDirectory=/opt/datamanager
+
+# scan reconciles the tree, --index extracts what changed. No --embed: on a
+# small Proxmox host embeddings belong in the nightly enrich pass, where they
+# yield to anything else running (see datamanager-enrich.service).
+ExecStart=/opt/datamanager/.venv/bin/dm --config /etc/datamanager.toml scan --index
+
+# Extraction is heavier than the service's own ceiling — OCR rasterises pages
+# into memory — and it must not be killed halfway through a large PDF.
+MemoryMax=1G
+
+# Politeness rather than a limit: the scan competes with everything else on
+# this host, and it has nowhere to be. Nice alone is not enough, because the
+# cost here is IO against the NAS, not CPU.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+# A hung mount must not leave this running forever, holding the next run off.
+# A full first-time index of a large corpus can legitimately exceed this: run
+# that one by hand (deploy/README.md) rather than raising the timer's limit.
+TimeoutStartSec=3600
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=datamanager-scan
+
+# No [Install]. The timer pulls this in; enabling it directly would run a scan
+# on every boot.

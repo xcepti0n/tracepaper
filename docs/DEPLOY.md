@@ -116,6 +116,20 @@ small one you can actually inspect.
 
 ## Deploy to Proxmox
 
+**There is an installer for this.** `deploy/proxmox-install.sh`, run on the
+Proxmox host, does everything in this section: creates an unprivileged LXC,
+mounts both Synology shares, installs the app, and enables the service and
+timers. See `deploy/README.md`.
+
+```bash
+NAS_HOST=192.168.1.10 ./deploy/proxmox-install.sh
+```
+
+The rest of this section is the manual equivalent, and the reference for a VM
+or bare metal — where the systemd hardening below can be stricter than an
+unprivileged LXC allows. `deploy/datamanager.service` is the LXC variant and
+deliberately omits the mount-namespace directives, which cannot work there.
+
 ```bash
 sudo apt install -y python3-venv tesseract-ocr poppler-utils
 #                                 ^ OCR         ^ rasterises scanned PDFs
