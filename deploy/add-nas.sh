@@ -5,7 +5,7 @@
 # Run this ON THE PROXMOX HOST, any time after the install:
 #
 #   ./add-nas.sh <CTID> <nas-ip>
-#   NAS_DOCS_EXPORT=/volume1/docs ./add-nas.sh 122 192.168.0.20
+#   READ_SHARE=/volume1/data DOCS_SUBDIR=Documents ./add-nas.sh 122 192.168.0.20
 #
 # The installer takes NAS_HOST and does this during setup, but it is optional
 # there on purpose: you can install first, confirm the UI works, and attach
@@ -23,8 +23,18 @@ set -Eeuo pipefail
 CTID="${1:-}"
 NAS_HOST="${2:-${NAS_HOST:-}}"
 
-NAS_DOCS_EXPORT="${NAS_DOCS_EXPORT:-/volume1/documents}"
-NAS_BACKUP_EXPORT="${NAS_BACKUP_EXPORT:-/volume1/backups/tracepaper}"
+# The two shares, named for what Tracepaper does with each.
+#
+# READ_SHARE   the share holding your documents. Mounted READ-ONLY; Tracepaper
+#              never writes here, and the kernel enforces that.
+# WRITE_SHARE  a DIFFERENT share where Tracepaper writes backups of the things
+#              that cannot be regenerated: your corrections, notes and merges.
+#
+# Both are the "Mount path" DSM shows at the bottom of the NFS Permissions
+# dialog -- e.g. /volume1/documents. In NFS jargon that path is called an
+# "export", which is why the older names said EXPORT; they are accepted still.
+READ_SHARE="${READ_SHARE:-${NAS_DOCS_EXPORT:-/volume1/documents}}"
+WRITE_SHARE="${WRITE_SHARE:-${NAS_BACKUP_EXPORT:-/volume1/backups/tracepaper}}"
 DOCS_MOUNT="${DOCS_MOUNT:-/mnt/nas/documents}"
 
 # The folder to actually index, relative to DOCS_MOUNT.
@@ -34,7 +44,7 @@ DOCS_MOUNT="${DOCS_MOUNT:-/mnt/nas/documents}"
 # simple and the scan narrow: everything else under the share stays visible but
 # is never read.
 #
-#   NAS_DOCS_EXPORT=/volume1/data DOCS_SUBDIR=Documents/Personal
+#   READ_SHARE=/volume1/data DOCS_SUBDIR=Documents/Personal
 #   -> mounts /volume1/data, scans /mnt/nas/documents/Documents/Personal
 DOCS_SUBDIR="${DOCS_SUBDIR:-}"
 
@@ -67,18 +77,21 @@ usage() {
   echo
   echo "  e.g. $0 122 192.168.0.20"
   echo
-  echo "  NAS_DOCS_EXPORT    share to mount        default $NAS_DOCS_EXPORT"
-  echo "  NAS_BACKUP_EXPORT  writable share        default $NAS_BACKUP_EXPORT"
-  echo "  DOCS_SUBDIR        folder inside it to index (default: the whole share)"
-  echo "  PROTOCOL           nfs | smb             default $PROTOCOL"
-  echo "  SMB_CREDENTIALS    smb only              default $SMB_CREDENTIALS"
+  echo "  READ_SHARE   the share with your documents, mounted READ-ONLY"
+  echo "               default $READ_SHARE"
+  echo "  DOCS_SUBDIR  folder inside READ_SHARE to actually index"
+  echo "               default: the whole share"
+  echo "  WRITE_SHARE  a DIFFERENT share, mounted read-write, for backups"
+  echo "               default $WRITE_SHARE"
+  echo "  PROTOCOL     nfs | smb  (default $PROTOCOL)"
+  echo "  SMB_CREDENTIALS  smb only, default $SMB_CREDENTIALS"
   echo
   echo "  Documents in a subfolder of a share:"
-  echo "    NAS_DOCS_EXPORT=/volume1/data DOCS_SUBDIR=Documents \\"
+  echo "    READ_SHARE=/volume1/data DOCS_SUBDIR=Documents \\"
   echo "      $0 122 192.168.0.20"
   echo
   echo "  Using a dedicated NAS account instead of IP-based access:"
-  echo "    PROTOCOL=smb NAS_DOCS_EXPORT=/data/Documents $0 122 192.168.0.20"
+  echo "    PROTOCOL=smb READ_SHARE=/data/Documents $0 122 192.168.0.20"
   exit 1
 }
 
@@ -118,8 +131,8 @@ case "$PROTOCOL" in
     # away must not wedge a scan in uninterruptible sleep forever. Soft returns
     # an error, the scan hits its vanish guard and aborts, nothing is deleted.
     common="soft,timeo=150,retrans=3,nfsvers=${NFS_VERS},noatime,_netdev,nofail"
-    add_fstab_line "${NAS_HOST}:${NAS_DOCS_EXPORT}"   "$host_docs"   "ro,${common}"
-    add_fstab_line "${NAS_HOST}:${NAS_BACKUP_EXPORT}" "$host_backup" "rw,${common}"
+    add_fstab_line "${NAS_HOST}:${READ_SHARE}"   "$host_docs"   "ro,${common}"
+    add_fstab_line "${NAS_HOST}:${WRITE_SHARE}" "$host_backup" "rw,${common}"
     ;;
 
   smb|cifs)
@@ -150,8 +163,8 @@ case "$PROTOCOL" in
     # default id-map shifts container uids by 100000. Files land owned by the
     # container's root, which the service can read.
     common="credentials=${SMB_CREDENTIALS},vers=${SMB_VERS},iocharset=utf8,uid=100000,gid=100000,_netdev,nofail"
-    add_fstab_line "//${NAS_HOST}/${NAS_DOCS_EXPORT#/}"   "$host_docs"   "ro,${common}"
-    add_fstab_line "//${NAS_HOST}/${NAS_BACKUP_EXPORT#/}" "$host_backup" "rw,${common}"
+    add_fstab_line "//${NAS_HOST}/${READ_SHARE#/}"   "$host_docs"   "ro,${common}"
+    add_fstab_line "//${NAS_HOST}/${WRITE_SHARE#/}" "$host_backup" "rw,${common}"
     ;;
 
   *)
@@ -180,7 +193,7 @@ backup_ok=1
 if ! mount "$host_backup" 2>/dev/null && ! mountpoint -q "$host_backup"; then
   backup_ok=0
   msg_warn "Could not mount the backup export — continuing without it."
-  msg_warn "Create ${NAS_BACKUP_EXPORT} in DSM and re-run to add backups."
+  msg_warn "Create ${WRITE_SHARE} in DSM and re-run to add backups."
 fi
 [[ "$backup_ok" == "1" ]] && msg_ok "Backups mounted read-write at ${host_backup}" || true
 

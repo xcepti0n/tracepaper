@@ -50,15 +50,26 @@ remote, so a copied install cannot update itself in place.
 ## 2. Attach a folder
 
 ```bash
-./deploy/add-nas.sh <CTID> <synology-ip>
+READ_SHARE=/volume1/documents \
+WRITE_SHARE=/volume1/backups \
+  ./deploy/add-nas.sh <CTID> <synology-ip>
 ```
+
+| | what it is | mounted |
+|---|---|---|
+| `READ_SHARE` | the share holding your documents | **read-only** |
+| `DOCS_SUBDIR` | the folder inside it to index — optional | — |
+| `WRITE_SHARE` | a **different** share, for backups | read-write |
+
+Both are the **Mount path** DSM shows at the bottom of the NFS Permissions
+dialog, e.g. `/volume1/documents`.
 
 Mounts the export on the Proxmox host, binds it into the container read-only,
 updates the config and restarts the service. Run it again for each additional
 share:
 
 ```bash
-NAS_DOCS_EXPORT=/volume1/photos DOCS_MOUNT=/mnt/nas/photos \
+READ_SHARE=/volume1/photos DOCS_MOUNT=/mnt/nas/photos \
   ./deploy/add-nas.sh 122 <synology-ip>
 ```
 
@@ -75,7 +86,7 @@ NFS exports a whole share, but your documents are usually a folder inside one.
 Mount the share, index the subtree:
 
 ```bash
-NAS_DOCS_EXPORT=/volume1/data DOCS_SUBDIR=Documents \
+READ_SHARE=/volume1/data DOCS_SUBDIR=Documents \
   ./add-nas.sh <CTID> <synology-ip>
 ```
 
@@ -98,7 +109,7 @@ username=tracepaper
 password=<the password you set in DSM>
 CRED
 
-PROTOCOL=smb NAS_DOCS_EXPORT=/data/Documents \
+PROTOCOL=smb READ_SHARE=/data/Documents \
   ./add-nas.sh <CTID> <synology-ip>
 ```
 
@@ -406,8 +417,8 @@ KEEP_ON_FAIL=1        # keep a failed container for inspection
 `add-nas.sh <CTID> <nas-ip>`:
 
 ```bash
-NAS_DOCS_EXPORT=/volume1/documents          # the export to index
-NAS_BACKUP_EXPORT=/volume1/backups/tracepaper
+READ_SHARE=/volume1/documents          # the export to index
+WRITE_SHARE=/volume1/backups/tracepaper
 DOCS_MOUNT=/mnt/nas/documents               # where it lands in the container
 BACKUP_MOUNT=/mnt/nas/backups/tracepaper
 NFS_VERS=4.1                                # 3 for older DSM

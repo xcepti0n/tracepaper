@@ -430,3 +430,13 @@ def test_documents_stay_read_only_under_both_protocols():
         "both the nfs and smb branches must mount documents ro")
     # And the bind mount into the container.
     assert "ro=1" in attach
+
+
+def test_share_variables_are_named_for_what_they_do():
+    """NAS_DOCS_EXPORT / NAS_BACKUP_EXPORT both said "EXPORT" and neither said
+    which one is read and which is written. The old names still work so nobody
+    mid-setup is broken."""
+    attach = (DEPLOY / "add-nas.sh").read_text()
+    assert "READ_SHARE" in attach and "WRITE_SHARE" in attach
+    assert "${NAS_DOCS_EXPORT:-" in attach, "old name must still be honoured"
+    assert "${NAS_BACKUP_EXPORT:-" in attach
