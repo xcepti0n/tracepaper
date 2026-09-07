@@ -547,5 +547,12 @@ def test_backup_exports_json_not_a_copy_of_the_database():
     """A SQLite file copied while the service holds it open can be torn
     mid-transaction, and would restore only into a schema-compatible build."""
     unit = (DEPLOY / "tracepaper-backup.service").read_text()
-    assert ".json" in unit
-    assert "index.db" not in unit.split("[Service]")[1].split("Environment")[0]
+    # The directives only -- a comment explaining why this is not a database
+    # copy legitimately mentions index.db.
+    directives = [l for l in unit.splitlines()
+                  if l.strip() and not l.strip().startswith("#")]
+    exec_lines = [l for l in directives if l.startswith("ExecStart")]
+    assert exec_lines, "the unit must run something"
+    assert any(".json" in l for l in exec_lines)
+    assert not any("index.db" in l for l in exec_lines), (
+        "back up the export, never the live database file")
