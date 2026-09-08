@@ -415,6 +415,20 @@ function toast(message) {
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 2600);
 }
+
+
+// Panels render before this block, so they queue their startup call rather
+// than invoking a function that does not exist yet. Draining here runs them in
+// order, once every definition above is parsed.
+(window.__tpOnReady || []).forEach(function (fn) {
+  try {
+    fn();
+  } catch (error) {
+    // One panel failing to start must not stop the others.
+    console.error('startup task failed', error);
+  }
+});
+window.__tpOnReady = {push: function (fn) { fn(); }};
 """
 
 
@@ -731,7 +745,7 @@ def _jobs_panel() -> str:
 <p class="hint">These run on timers already &mdash; the buttons run them now.
 A first scan can take hours; it is safe to leave this page.</p>
 <div id="jobs_list"><span class="muted">loading&hellip;</span></div>
-<script>refreshJobs({quiet: true});</script>"""
+<script>(window.__tpOnReady = window.__tpOnReady || []).push(function () { refreshJobs({quiet: true}); });</script>"""
 
 
 def _updates_panel() -> str:
@@ -784,7 +798,7 @@ place.</p>'''
 {current}
 <div class="actions">{action}</div>
 <div id="update_detail"></div>
-<script>checkUpdates({{quiet: true}});</script>'''
+<script>(window.__tpOnReady = window.__tpOnReady || []).push(function () {{ checkUpdates({{quiet: true}}); }});</script>'''
 
 
 def _root_rows(roots: list[str], checks: list[dict]) -> str:

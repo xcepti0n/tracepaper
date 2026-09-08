@@ -584,3 +584,47 @@ def test_job_buttons_do_not_build_inline_onclick_handlers(client):
     assert "startJob(this, " not in page, (
         "build the handler from data-job, not an inline onclick")
     assert 'class="run-job"' in page or "run-job" in page
+
+
+@pytest.mark.parametrize("tab", ["search", "browse", "settings", "status"])
+def test_no_script_calls_a_function_before_it_is_defined(client, tab):
+    """Panels render inside {body}, which comes before the {SCRIPT} block that
+    defines the page's functions. A panel that called one inline therefore threw
+    ReferenceError on load.
+
+    That is how the Jobs panel sat on "loading…" forever: its only invocation
+    was that broken auto-call. The update panel had the identical bug but hid
+    it, because its manual "Check again" button worked once the page finished
+    loading -- so the same defect looked like two different problems.
+
+    Panels must queue their startup call; the definitions block drains it.
+    """
+    html_text = client.get(f"/?tab={tab}").text
+    for name in ("refreshJobs", "checkUpdates"):
+        call = html_text.find(f"<script>{name}(")
+        if call == -1:
+            continue
+        definition = html_text.find(f"async function {name}")
+        assert definition != -1 and definition < call, (
+            f"{name} is called at {call} but defined at {definition}: it does "
+            "not exist yet. Queue it on window.__tpOnReady instead.")
+
+
+def test_startup_queue_is_drained_after_the_definitions(client):
+    """The queue is only useful if something empties it."""
+    html_text = client.get("/?tab=settings").text
+    assert "__tpOnReady" in html_text, "panels must queue their startup call"
+    drain = html_text.find("(window.__tpOnReady || []).forEach")
+    assert drain != -1, "nothing drains the startup queue"
+    assert drain > html_text.find("async function refreshJobs"), (
+        "the queue must drain after the functions it calls are defined")
+
+
+def test_one_failing_startup_task_does_not_stop_the_others(client):
+    """A panel whose endpoint is unavailable must not leave every other panel
+    unstarted -- they share one queue."""
+    html_text = client.get("/?tab=settings").text
+    drain = html_text[html_text.find("(window.__tpOnReady || []).forEach"):]
+    drain = drain[:400]
+    assert "try {" in drain and "catch" in drain, (
+        "draining must isolate each task, or the first failure ends startup")
