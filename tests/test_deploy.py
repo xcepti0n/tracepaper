@@ -616,3 +616,16 @@ def test_pre_update_backup_failure_is_visible():
     line = next(l for l in updater.splitlines()
                 if "backup \"$BACKUP\"" in l)
     assert "2>&1" not in line, "the export's error must reach the operator"
+
+
+def test_update_reinstalls_the_polkit_rule():
+    """The polkit rule lives in /etc, so a git pull never updates it -- the
+    same trap the unit files have, and worse: a stale rule does not break
+    loudly, it just refuses to authorise units it has never heard of. Adding a
+    job button without this leaves the new unit ungranted, and the start fails
+    with a bare exit 1 that reads like a broken unit rather than a denial."""
+    update = (DEPLOY / "update.sh").read_text()
+    assert "49-tracepaper-update.rules" in update
+    assert "/etc/polkit-1/rules.d" in update
+    assert "restart polkit" in update, (
+        "polkit reads rules at start; without a restart the grant is not live")

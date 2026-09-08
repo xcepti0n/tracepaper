@@ -161,6 +161,23 @@ if [[ "$UNITS_CHANGED" == "1" ]]; then
   msg_ok "Units updated"
 fi
 
+# The polkit rule lives in /etc too, and is exactly as invisible when stale:
+# it is what decides whether the app may start a unit at all. Adding a job
+# button without reinstalling this leaves the new unit ungranted, so the button
+# appears and the start is refused -- with the daemon installed that surfaces
+# as a bare exit 1, which looks like the unit is broken rather than forbidden.
+POLKIT_RULE="49-tracepaper-update.rules"
+POLKIT_DIR="/etc/polkit-1/rules.d"
+if [[ -f "deploy/$POLKIT_RULE" ]] \
+   && ! cmp -s "deploy/$POLKIT_RULE" "$POLKIT_DIR/$POLKIT_RULE"; then
+  mkdir -p "$POLKIT_DIR"
+  cp "deploy/$POLKIT_RULE" "$POLKIT_DIR/$POLKIT_RULE"
+  # polkit reads its rules at start, so the grant is not in effect until the
+  # daemon restarts.
+  systemctl restart polkit >/dev/null 2>&1 || true
+  msg_ok "polkit rule updated"
+fi
+
 # ----------------------------------------------------------------- restart ---
 msg_info "Restarting…"
 systemctl reset-failed tracepaper 2>/dev/null || true
