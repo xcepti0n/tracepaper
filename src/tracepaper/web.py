@@ -866,9 +866,20 @@ def _status_tab(conn: sqlite3.Connection) -> str:
     embeddings = info["embeddings"]
     embedded = sum(embeddings["by_model"].values())
     if embedded < embeddings["passages"]:
+        # Telling someone to run `tracepaper embed` on an install without the
+        # semantic extras sends them to a command that exits 1 -- the model is
+        # what is missing, not the run. Say which of the two it actually is.
+        from . import embed as _embed
+
+        if _embed.available():
+            action = ('run <code>tracepaper embed</code>, or start '
+                      '<em>Enrich</em> under Jobs')
+        else:
+            action = ('install semantic search first — this build has no '
+                      'embedding model, so <code>tracepaper embed</code> would '
+                      'exit with an error')
         out.append(f'<p class="hint">{embedded} of {embeddings["passages"]} '
-                   f'passages embedded — run <code>tracepaper embed</code> for '
-                   f'semantic search.</p>')
+                   f'passages embedded — {action}.</p>')
 
     scan = info["last_scan"]
     if scan:

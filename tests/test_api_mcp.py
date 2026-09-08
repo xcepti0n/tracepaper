@@ -628,3 +628,30 @@ def test_one_failing_startup_task_does_not_stop_the_others(client):
     drain = drain[:400]
     assert "try {" in drain and "catch" in drain, (
         "draining must isolate each task, or the first failure ends startup")
+
+
+def test_embedding_hint_does_not_suggest_a_command_that_cannot_work(client, monkeypatch):
+    """`tracepaper embed` exits 1 when sentence-transformers is absent, so
+    telling someone to run it on a keyword-only install sends them to an error
+    and reads like the index is broken. The missing piece is the model, and the
+    hint has to say so."""
+    from tracepaper import embed
+
+    monkeypatch.setattr(embed, "available", lambda: False)
+    page = client.get("/?tab=status").text
+    if "passages embedded" not in page:
+        pytest.skip("no pending embeddings in this fixture")
+    hint = page[page.index("passages embedded"):][:300]
+    assert "install semantic search first" in hint
+    assert "run <code>tracepaper embed</code>," not in hint
+
+
+def test_embedding_hint_suggests_the_command_when_it_would_work(client, monkeypatch):
+    from tracepaper import embed
+
+    monkeypatch.setattr(embed, "available", lambda: True)
+    page = client.get("/?tab=status").text
+    if "passages embedded" not in page:
+        pytest.skip("no pending embeddings in this fixture")
+    hint = page[page.index("passages embedded"):][:300]
+    assert "tracepaper embed" in hint
