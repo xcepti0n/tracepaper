@@ -289,17 +289,27 @@ async function refreshJobs(options) {
     }
 
     // Only offer the button when the server said polkit will allow it.
+    // The name rides in a data attribute rather than an inline onclick: this
+    // string passes through a Python literal before it reaches the browser,
+    // and the nested quotes an onclick needs did not survive that -- the whole
+    // script block failed to parse, taking every other handler with it.
     const button = job.running
       ? '<button type="button" disabled>Running…</button>'
       : (job.can_start
-          ? '<button type="button" onclick="startJob(this, \'' +
-            escapeHtml(job.name) + '\')">Run now</button>'
+          ? '<button type="button" class="run-job" data-job="' +
+            escapeHtml(job.name) + '">Run now</button>'
           : '<span class="hint">systemctl start ' + escapeHtml(job.unit) + '</span>');
 
     return '<div class="field job"><div><strong>' + escapeHtml(job.label) +
            '</strong><div class="status">' + state + '</div></div>' +
            '<div class="actions">' + button + '</div></div>';
   }).join('');
+
+  box.querySelectorAll('button.run-job').forEach(function (button) {
+    button.addEventListener('click', function () {
+      startJob(button, button.dataset.job);
+    });
+  });
 
   // Keep polling only while something is running.
   const anyRunning = status.jobs.some(job => job.running);

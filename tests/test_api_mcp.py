@@ -533,3 +533,54 @@ def test_installer_installs_the_polkit_daemon():
     installer = (Path(__file__).resolve().parents[1] / "deploy"
                  / "proxmox-install.sh").read_text()
     assert "polkitd" in installer, "polkitd must be installed, not assumed"
+
+
+def _script_blocks(html: str) -> list[str]:
+    import re
+    return re.findall(r"<script[^>]*>(.*?)</script>", html, re.S)
+
+
+@pytest.mark.parametrize("tab", ["search", "browse", "settings", "status"])
+def test_served_javascript_parses(client, tab):
+    """Syntax-check the JS the browser actually receives, not the source.
+
+    This caught a real outage: the jobs button was built with an inline
+    onclick, whose nested quotes had to survive a Python string literal on the
+    way out. They did not -- the browser received `'' +`, the whole <script>
+    block failed to parse, and every handler in it died at once. The Jobs panel
+    sat on "loading…" and the update button stopped responding.
+
+    Reading web.py showed correct-looking JS, because the escaping was correct
+    *there*. Only the rendered output shows the bug, so that is what is checked.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is needed to parse the served JavaScript")
+
+    blocks = _script_blocks(client.get(f"/?tab={tab}").text)
+    assert blocks, f"the {tab} tab served no script at all"
+
+    for index, block in enumerate(blocks):
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as handle:
+            handle.write(block)
+            path = handle.name
+        result = subprocess.run([node, "--check", path],
+                                capture_output=True, text=True)
+        assert result.returncode == 0, (
+            f"script block {index} on the {tab} tab is not valid JavaScript:\n"
+            f"{result.stderr}")
+
+
+def test_job_buttons_do_not_build_inline_onclick_handlers(client):
+    """An inline onclick needs quotes nested inside the HTML attribute, inside
+    the JS string, inside the Python literal. That is three levels of escaping
+    for one click handler, and it broke. A data attribute plus a delegated
+    listener has none."""
+    page = client.get("/?tab=settings").text
+    assert "startJob(this, " not in page, (
+        "build the handler from data-job, not an inline onclick")
+    assert 'class="run-job"' in page or "run-job" in page
