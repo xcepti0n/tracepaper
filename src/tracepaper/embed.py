@@ -174,7 +174,12 @@ def embed_pending(conn: sqlite3.Connection, *, model_id: str = DEFAULT_MODEL,
     """
     result = EmbedResult(model_id=model_id)
 
-    rows = conn.execute(
+    # Stream the rows. fetchall() here loaded every pending passage WITH ITS
+    # FULL TEXT before embedding any of them -- at 3.25M passages that is
+    # gigabytes resident before the model even loads, and the unit was
+    # OOM-killed every time. The work is already batched; the query has to be
+    # too, or the batching buys nothing.
+    cursor = conn.execute(
         "SELECT p.id, p.text FROM passages p "
         "LEFT JOIN embeddings e ON e.passage_id = p.id AND e.model_id = ? "
         "JOIN items i ON i.id = p.item_id "
@@ -182,18 +187,25 @@ def embed_pending(conn: sqlite3.Connection, *, model_id: str = DEFAULT_MODEL,
         "AND length(trim(p.text)) > 0 "
         "ORDER BY p.id" + (f" LIMIT {int(limit)}" if limit else ""),
         (model_id,),
-    ).fetchall()
+    )
 
-    if not rows:
+    first = cursor.fetchmany(batch_size)
+    if not first:
         return result
 
     model = load_model(model_id, force=True)
     if model is None:
-        result.skipped = len(rows)
+        # Drain what is left only to count it; the text is not held.
+        result.skipped = len(first)
+        while True:
+            more = cursor.fetchmany(batch_size)
+            if not more:
+                break
+            result.skipped += len(more)
         return result
 
-    for start in range(0, len(rows), batch_size):
-        batch = rows[start:start + batch_size]
+    batch = first
+    while batch:
         texts = [row["text"] for row in batch]
         try:
             vectors = model.encode(texts, normalize_embeddings=True,
@@ -213,6 +225,8 @@ def embed_pending(conn: sqlite3.Connection, *, model_id: str = DEFAULT_MODEL,
                 (row["id"], blob, model_id, len(vector)),
             )
             result.embedded += 1
+
+        batch = cursor.fetchmany(batch_size)
 
     return result
 

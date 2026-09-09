@@ -332,3 +332,41 @@ def test_vector_search_returns_the_strongest_hits_under_a_small_limit(conn, cfg,
 
     everything = embed.search(conn, "sprinkler valve", limit=1000)
     assert [pid for pid, _ in top] == [pid for pid, _ in everything[:3]]
+
+
+def test_embed_pending_does_not_load_every_passage_at_once():
+    """`fetchall()` here held every pending passage WITH ITS FULL TEXT before
+    embedding any of them. At 3.25M passages that is gigabytes resident before
+    the model even loads, and systemd OOM-killed the unit every time -- while
+    the code below it batched carefully in 64s, which bought nothing.
+
+    Pinning the source is crude, but the failure only appears at a scale no
+    fixture can reach, and the shape is what matters."""
+    source = Path(embed.__file__).read_text()
+    body = source[source.index("def embed_pending"):]
+    body = body[:body.index("\ndef ")]
+    assert ".fetchall()" not in body, (
+        "embed_pending must stream its rows, not materialise the whole queue")
+    assert "fetchmany(batch_size)" in body
+
+
+@requires_model
+def test_embed_pending_streams_every_pending_passage(conn, cfg, nas):
+    """Streaming must not lose rows: the loop writes to `embeddings`, which is
+    the very table its own query filters on, and commits between batches."""
+    build(conn, cfg, nas, {
+        f"note{i}.txt": f"document number {i} about irrigation and valves"
+        for i in range(30)
+    })
+    pending = conn.execute(
+        "SELECT COUNT(*) FROM passages WHERE length(trim(text)) > 0"
+    ).fetchone()[0]
+    assert pending >= 30, "fixture must produce enough passages to batch"
+
+    result = embed.embed_pending(conn, batch_size=4)
+    assert result.embedded == pending, "every pending passage must be embedded"
+
+    stored = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+    assert stored == pending
+    # A second pass has nothing left to do -- proof none were silently skipped.
+    assert embed.embed_pending(conn, batch_size=4).embedded == 0
