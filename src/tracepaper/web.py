@@ -281,7 +281,17 @@ async function refreshJobs(options) {
     if (job.running) {
       state = '<span class="warn-line">running…</span>';
     } else if (job.result && job.result !== 'success') {
-      state = '<span class="bad">last run: ' + escapeHtml(job.result) + '</span>';
+      // systemd's raw Result string ("signal", "oom-kill", "exit-code") is
+      // not English. Say what happened, and keep the raw word for the journal.
+      const reasons = {
+        'signal': 'stopped before it finished',
+        'oom-kill': 'ran out of memory',
+        'exit-code': 'exited with an error',
+        'timeout': 'timed out',
+        'core-dump': 'crashed',
+      };
+      const why = reasons[job.result] || ('failed: ' + job.result);
+      state = '<span class="bad">last run ' + escapeHtml(why) + '</span>';
     } else if (job.last_run) {
       state = '<span class="muted">last run ' + escapeHtml(job.last_run) + '</span>';
     } else {

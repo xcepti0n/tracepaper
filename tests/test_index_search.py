@@ -262,3 +262,56 @@ def test_snippets_are_single_line(conn, cfg, nas):
     hits = SearchEngine(conn).search("second line").hits
     assert hits
     assert "\n" not in hits[0].snippet
+
+
+def test_list_keys_skips_the_join_when_nothing_is_deleted(conn, cfg, nas):
+    """The two joins in list_keys exist only to hide fields of deleted items,
+    and they are the whole cost: grouping a million record_fields through them
+    is ~465ms and two temp B-trees, against ~48ms on the table alone. Deletes
+    are rare, so the join is skipped when there are none -- but the answer has
+    to be identical, not merely close."""
+    from tracepaper.query.fields import FieldQuery
+
+    conn.execute("INSERT INTO items (kind, uri, extraction_status) "
+                 "VALUES ('document', '/a', 'complete')")
+    item_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("INSERT INTO records (item_id, version, record_type, source, "
+                 "created_at) VALUES (?, 1, 'payslip', 'pattern', '2026-01-01')",
+                 (item_id,))
+    record_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    for key in ("gross_salary", "gross_salary", "tax_year"):
+        conn.execute("INSERT INTO record_fields (record_id, key, value_text) "
+                     "VALUES (?, ?, 'x')", (record_id, key))
+    conn.commit()
+
+    fq = FieldQuery(conn)
+    fast = fq.list_keys()
+
+    joined = [(r["key"], int(r["n"])) for r in conn.execute(
+        "SELECT rf.key, COUNT(*) AS n FROM record_fields rf "
+        "JOIN records r ON r.id = rf.record_id "
+        "JOIN items i ON i.id = r.item_id WHERE i.deleted_at IS NULL "
+        "GROUP BY rf.key ORDER BY n DESC, rf.key LIMIT 200")]
+    assert fast == joined
+
+
+def test_list_keys_still_hides_deleted_items(conn, cfg, nas):
+    """The fast path must engage only when it is safe: once anything is
+    soft-deleted, its fields have to disappear from the vocabulary."""
+    from tracepaper.query.fields import FieldQuery
+
+    conn.execute("INSERT INTO items (kind, uri, extraction_status) "
+                 "VALUES ('document', '/gone', 'complete')")
+    item_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("INSERT INTO records (item_id, version, record_type, source, "
+                 "created_at) VALUES (?, 1, 'payslip', 'pattern', '2026-01-01')",
+                 (item_id,))
+    record_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("INSERT INTO record_fields (record_id, key, value_text) "
+                 "VALUES (?, 'only_on_deleted', 'x')", (record_id,))
+    conn.execute("UPDATE items SET deleted_at = '2026-01-02' WHERE id = ?",
+                 (item_id,))
+    conn.commit()
+
+    keys = dict(FieldQuery(conn).list_keys())
+    assert "only_on_deleted" not in keys

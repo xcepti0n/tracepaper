@@ -224,15 +224,38 @@ class FieldQuery:
         return all(a_context[key] == b_context[key] for key in shared)
 
     def list_keys(self, prefix: str | None = None, limit: int = 200) -> list[tuple[str, int]]:
-        """Discovered vocabulary with usage counts (FR-4)."""
-        sql = ["SELECT rf.key, COUNT(*) AS n FROM record_fields rf",
-               "JOIN records r ON r.id = rf.record_id",
-               "JOIN items i ON i.id = r.item_id",
-               "WHERE i.deleted_at IS NULL"]
+        """Discovered vocabulary with usage counts (FR-4).
+
+        The two joins exist only to hide fields belonging to deleted items.
+        They are also the whole cost: grouping a million record_fields through
+        them takes ~460ms and two temp B-trees, because LIMIT cannot apply
+        until the grouping is done. Grouping the table alone is ~47ms, since
+        idx_rf_key orders the scan.
+
+        Deletions are rare -- an item is soft-deleted only when it vanishes
+        from the NAS -- so check for one first and take the cheap path when
+        there are none. The result is identical either way; this is not an
+        approximation.
+        """
         params: list[object] = []
-        if prefix:
-            sql.append("AND rf.key LIKE ?")
-            params.append(f"{prefix}%")
+        deleted = self.conn.execute(
+            "SELECT 1 FROM items WHERE deleted_at IS NOT NULL LIMIT 1"
+        ).fetchone()
+
+        if deleted:
+            sql = ["SELECT rf.key, COUNT(*) AS n FROM record_fields rf",
+                   "JOIN records r ON r.id = rf.record_id",
+                   "JOIN items i ON i.id = r.item_id",
+                   "WHERE i.deleted_at IS NULL"]
+            if prefix:
+                sql.append("AND rf.key LIKE ?")
+                params.append(f"{prefix}%")
+        else:
+            sql = ["SELECT rf.key, COUNT(*) AS n FROM record_fields rf"]
+            if prefix:
+                sql.append("WHERE rf.key LIKE ?")
+                params.append(f"{prefix}%")
+
         sql.append("GROUP BY rf.key ORDER BY n DESC, rf.key LIMIT ?")
         params.append(limit)
         return [(r["key"], int(r["n"]))

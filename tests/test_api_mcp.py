@@ -709,3 +709,44 @@ def test_status_cache_expires(client, monkeypatch):
     finally:
         api._status_uncached = real
         api._STATUS_CACHE["value"] = None
+
+
+def test_a_running_backfill_is_visible_even_though_it_is_transient(monkeypatch):
+    """A long embed backfill is usually a systemd-run transient unit, so it is
+    not in UNITS -- the panel reported nothing running while the box sat at
+    99% CPU. It must be shown, but never offered as a button: the panel cannot
+    control a unit it did not define."""
+    from tracepaper import jobs
+
+    def fake_show(unit):
+        if unit in jobs.WATCHED_UNITS:
+            return {"LoadState": "loaded", "ActiveState": "activating",
+                    "Result": "success", "ExecMainStartTimestamp": "now"}
+        return {"LoadState": "loaded", "ActiveState": "inactive",
+                "Result": "success", "ExecMainStartTimestamp": ""}
+
+    monkeypatch.setattr(jobs, "_show", fake_show)
+    monkeypatch.setattr(jobs, "_can_start", lambda unit: True)
+
+    backfill = [j for j in jobs.status().jobs if j.unit in jobs.WATCHED_UNITS]
+    assert backfill, "a running backfill must appear in the panel"
+    assert backfill[0].running is True
+    assert backfill[0].can_start is False, "it must not offer a Run button"
+
+
+def test_a_finished_transient_unit_is_not_listed(monkeypatch):
+    """Only show it while it is actually running; a finished transient unit
+    lingers briefly with nothing useful to say."""
+    from tracepaper import jobs
+
+    monkeypatch.setattr(jobs, "_show", lambda unit: {
+        "LoadState": "loaded", "ActiveState": "inactive", "Result": "success"})
+    monkeypatch.setattr(jobs, "_can_start", lambda unit: True)
+    assert not [j for j in jobs.status().jobs if j.unit in jobs.WATCHED_UNITS]
+
+
+def test_systemd_result_strings_are_translated(client):
+    """"last run: signal" is systemd's vocabulary, not the reader's."""
+    page = client.get("/?tab=settings").text
+    assert "'oom-kill': 'ran out of memory'" in page
+    assert "'signal': 'stopped before it finished'" in page

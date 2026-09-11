@@ -29,6 +29,11 @@ UNITS = {
     "backup": "tracepaper-backup.service",
 }
 
+# A long backfill is usually started as a transient unit (systemd-run), which
+# is not in UNITS and so was invisible: the panel said nothing was running
+# while the machine sat at 99% CPU. It is reported, never offered as a button.
+WATCHED_UNITS = ("tracepaper-embed.service",)
+
 LABELS = {
     "scan": "Scan for new and changed files",
     "enrich": "Enrich photos and documents",
@@ -168,6 +173,26 @@ def status() -> JobsStatus:
         )
         job.can_start = (not job.running) and _can_start(unit)
         result.jobs.append(job)
+
+    for unit in WATCHED_UNITS:
+        values = _show(unit)
+        if not values or values.get("LoadState") not in ("loaded", None):
+            continue
+        active = values.get("ActiveState", "unknown")
+        if active not in ("active", "activating", "reloading"):
+            # A finished transient unit disappears; nothing useful to show.
+            continue
+        result.jobs.append(JobStatus(
+            name=unit.removeprefix("tracepaper-").removesuffix(".service"),
+            unit=unit,
+            label="Backfill in progress",
+            running=True,
+            can_start=False,
+            state=active,
+            result=values.get("Result", ""),
+            last_run=values.get("ExecMainStartTimestamp", "") or "",
+            detail="Started outside the timers; it cannot be controlled here.",
+        ))
 
     result.available = bool(result.jobs)
     if not result.available:
