@@ -629,3 +629,30 @@ def test_update_reinstalls_the_polkit_rule():
     assert "/etc/polkit-1/rules.d" in update
     assert "restart polkit" in update, (
         "polkit reads rules at start; without a restart the grant is not live")
+
+
+def test_enrich_does_not_wait_for_an_idle_machine():
+    """--wait gave up after five minutes and exited reporting success, so a
+    backlog silently never got embedded. Nice=19 plus idle IO expresses the
+    same intent without ever refusing to run."""
+    unit = (DEPLOY / "tracepaper-enrich.service").read_text()
+    assert "enrich --wait" not in unit
+    assert "Nice=19" in unit
+    assert "IOSchedulingClass=idle" in unit
+
+
+def test_enrich_has_a_writable_model_cache():
+    """/opt/tracepaper is root-owned, and HuggingFace caches to the working
+    directory by default -- the download failed with EACCES and was reported
+    as 'skipped' rather than an error."""
+    unit = (DEPLOY / "tracepaper-enrich.service").read_text()
+    assert "HF_HOME=" in unit
+    assert "/opt/tracepaper" not in unit.split("HF_HOME=")[1].split("\n")[0]
+
+
+def test_enrich_leaves_cpu_for_the_web_service():
+    """PyTorch saturates every visible core, and Nice only helps against
+    something runnable -- a request blocked on SQLite is not."""
+    unit = (DEPLOY / "tracepaper-enrich.service").read_text()
+    assert "CPUQuota=" in unit
+    assert "OMP_NUM_THREADS=" in unit

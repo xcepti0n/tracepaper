@@ -370,3 +370,45 @@ def test_embed_pending_streams_every_pending_passage(conn, cfg, nas):
     assert stored == pending
     # A second pass has nothing left to do -- proof none were silently skipped.
     assert embed.embed_pending(conn, batch_size=4).embedded == 0
+
+
+def test_embed_pending_keeps_passages_outermost_in_the_join():
+    """Left to itself SQLite starts this join from `items`, which makes
+    ORDER BY p.id unsatisfiable by an index -- it sorts every pending passage
+    into a temp B-tree to return one batch of 64, on EVERY batch. Measured at
+    3.25M passages that is 1539ms per batch against 104ms with the join order
+    pinned. CROSS JOIN is the documented way to pin it; it is not a different
+    join, so results are unchanged."""
+    source = Path(embed.__file__).read_text()
+    body = source[source.index("def embed_pending"):]
+    body = body[:body.index("\ndef ")]
+    assert "CROSS JOIN items" in body, (
+        "the planner must be pinned, or each batch re-sorts the whole queue")
+
+
+@requires_model
+def test_cross_join_returns_the_same_passages(conn, cfg, nas):
+    """Pinning the join order must not change which rows come back."""
+    build(conn, cfg, nas, {f"n{i}.txt": f"valve number {i}" for i in range(8)})
+
+    expected = [r[0] for r in conn.execute(
+        "SELECT p.id FROM passages p "
+        "JOIN items i ON i.id = p.item_id "
+        "WHERE i.deleted_at IS NULL AND length(trim(p.text)) > 0 "
+        "ORDER BY p.id")]
+    assert expected
+
+    result = embed.embed_pending(conn, batch_size=3)
+    assert result.embedded == len(expected)
+    got = [r[0] for r in conn.execute(
+        "SELECT passage_id FROM embeddings ORDER BY passage_id")]
+    assert got == expected
+
+
+def test_status_count_uses_the_partial_index(conn):
+    """COUNT over non-empty passage text read every blob; the partial index
+    answers it without touching the table."""
+    plan = [r[-1] for r in conn.execute(
+        "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM passages "
+        "WHERE length(trim(text)) > 0")]
+    assert any("idx_passages_nonempty" in step for step in plan), plan

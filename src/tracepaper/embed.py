@@ -179,10 +179,15 @@ def embed_pending(conn: sqlite3.Connection, *, model_id: str = DEFAULT_MODEL,
     # gigabytes resident before the model even loads, and the unit was
     # OOM-killed every time. The work is already batched; the query has to be
     # too, or the batching buys nothing.
+    # CROSS JOIN is not a different join -- it forces SQLite to keep `passages`
+    # outermost. Left to itself the planner starts from `items`, which makes
+    # ORDER BY p.id unsatisfiable by an index: it sorts every pending passage
+    # into a temp B-tree to return 64 rows, on every batch. Measured at 3.25M
+    # passages that is 1539ms per batch; this is 104ms.
     cursor = conn.execute(
         "SELECT p.id, p.text FROM passages p "
         "LEFT JOIN embeddings e ON e.passage_id = p.id AND e.model_id = ? "
-        "JOIN items i ON i.id = p.item_id "
+        "CROSS JOIN items i ON i.id = p.item_id "
         "WHERE e.passage_id IS NULL AND i.deleted_at IS NULL "
         "AND length(trim(p.text)) > 0 "
         "ORDER BY p.id" + (f" LIMIT {int(limit)}" if limit else ""),

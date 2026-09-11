@@ -498,11 +498,24 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
 
     if not query:
         from . import embed
+        # is_loaded() reflects THIS process's cache, and the query path is
+        # forbidden from loading a model lazily -- so a service that started
+        # before the model was on disk says "keyword only" forever. Fall back
+        # to asking whether the model exists at all, which is the thing the
+        # reader actually needs to know.
         if semantic and not embed.is_loaded():
+            if embed.available() and embed.local_path() is not None:
+                hint = ('Semantic search is installed but this process started '
+                        'before the model was ready — restart tracepaper to '
+                        'enable it.')
+            elif embed.available():
+                hint = ('Semantic search is installed; the model is still '
+                        'downloading. Keyword search works meanwhile.')
+            else:
+                hint = ('<b>Keyword only</b> — no embedding model installed. '
+                        'Semantic search needs the <code>semantic</code> extra.')
             out.append('<p class="hint">Ask for a value, a merchant, a date, or '
-                       'just words you remember. <b>Keyword only</b> — no '
-                       'embedding model loaded; run <code>tracepaper embed</code> and '
-                       'restart.</p>')
+                       'just words you remember. ' + hint + '</p>')
         else:
             out.append('<p class="hint">Ask for a value ("passport expiry"), '
                        'something that happened ("Alaska"), or words you half '

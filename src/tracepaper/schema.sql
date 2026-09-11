@@ -231,6 +231,13 @@ CREATE TABLE IF NOT EXISTS embeddings (
 
 CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings(model_id);
 
+-- COUNT(*) over passages with a non-empty text cannot use an ordinary
+-- index -- the predicate reads every text blob, which at millions of
+-- passages made the status page time out. A partial index answers it
+-- from the index alone.
+CREATE INDEX IF NOT EXISTS idx_passages_nonempty
+    ON passages(id) WHERE length(trim(text)) > 0;
+
 -- ------------------------------------------------------------------ tags
 
 CREATE TABLE IF NOT EXISTS tags (

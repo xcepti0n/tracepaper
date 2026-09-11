@@ -655,3 +655,57 @@ def test_embedding_hint_suggests_the_command_when_it_would_work(client, monkeypa
         pytest.skip("no pending embeddings in this fixture")
     hint = page[page.index("passages embedded"):][:300]
     assert "tracepaper embed" in hint
+
+
+def test_status_is_cached_so_a_large_index_cannot_stall_the_page(client):
+    """/api/status is ten full table scans; COUNT(*) over millions of passages
+    has no shortcut in SQLite. On a real index that timed the request out and
+    made a healthy server look broken. The figures are a dashboard, so a few
+    seconds stale is invisible -- a page that renders beats a count exact to
+    the row."""
+    from tracepaper import api
+
+    api._STATUS_CACHE["value"] = None
+    first = client.get("/api/status").json()
+
+    calls = []
+    real = api._status_uncached
+
+    def counting(conn):
+        calls.append(1)
+        return real(conn)
+
+    api._status_uncached = counting
+    try:
+        for _ in range(5):
+            assert client.get("/api/status").json() == first
+        assert not calls, "repeat reads inside the TTL must not re-scan"
+    finally:
+        api._status_uncached = real
+        api._STATUS_CACHE["value"] = None
+
+
+def test_status_cache_expires(client, monkeypatch):
+    """Stale forever would be worse than slow: the page has to catch up."""
+    from tracepaper import api
+
+    api._STATUS_CACHE["value"] = None
+    client.get("/api/status")
+    assert api._STATUS_CACHE["value"] is not None
+
+    # Age the entry past the TTL and confirm the next read recomputes.
+    api._STATUS_CACHE["at"] -= (api.STATUS_CACHE_SECONDS + 1)
+    calls = []
+    real = api._status_uncached
+
+    def counting(conn):
+        calls.append(1)
+        return real(conn)
+
+    api._status_uncached = counting
+    try:
+        client.get("/api/status")
+        assert calls, "an expired entry must be recomputed"
+    finally:
+        api._status_uncached = real
+        api._STATUS_CACHE["value"] = None

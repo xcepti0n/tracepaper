@@ -8,9 +8,13 @@ User=tracepaper
 Group=tracepaper
 WorkingDirectory=/opt/tracepaper
 
-# --wait holds until the machine is idle before starting, and the pass yields
-# again the moment load comes back. That is the whole point of running this at
-# 3am on a host doing other work: it never competes, it just takes longer.
+# No --wait. It waited five minutes for the load average to fall, then gave up
+# and exited reporting success -- "embedded=0 in 5s" with systemd logging
+# Finished. A backlog never got embedded and nothing said so.
+#
+# Nice=19 and idle IO below are the honest version of the same intent: the
+# kernel deprioritises this work at every scheduling decision, so it yields
+# continuously instead of refusing to start, and it always makes progress.
 #
 # Resumable and idempotent — being killed mid-run costs only the item in
 # flight, and the next run picks up where it stopped.
@@ -18,19 +22,33 @@ WorkingDirectory=/opt/tracepaper
 # Captions are NOT enabled: they need a vision model, which this container does
 # not have and this host should not run. Add --captions only if you have
 # pointed [llm] at an Ollama endpoint elsewhere (your Mac).
-ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml enrich --wait
+ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml enrich
 
 # Embeddings are the memory-hungry part. Without semantic extras installed
 # this pass is nearly free, and this cap is simply never approached; with them
 # it needs the headroom.
 MemoryMax=2G
 
+# The model cache must be somewhere the service user can write. HuggingFace
+# defaults it to the working directory, which is root-owned by design, so the
+# download failed with EACCES -- and was reported as "skipped", not an error.
+Environment=HF_HOME=/var/lib/tracepaper/hf-cache
+
+# PyTorch starts one worker per visible core and saturates the container,
+# which starves the web service: Nice only helps when something else is
+# runnable, and a request waiting on SQLite often is not. Cap the threads and
+# the share so the UI stays reachable while a long backfill runs.
+Environment=OMP_NUM_THREADS=2
+Environment=MKL_NUM_THREADS=2
+CPUQuota=150%
+
 # Idle-class IO and the lowest nice value there is. This job has no deadline
 # and nothing depends on it — it only makes things more findable.
 Nice=19
 IOSchedulingClass=idle
 
-# Long, because --wait may spend most of it waiting for the host to go quiet.
+# Long, because a first backfill embeds the whole index -- millions of
+# passages on a small CPU is hours, and Nice=19 makes it longer still.
 TimeoutStartSec=14400
 
 StandardOutput=journal

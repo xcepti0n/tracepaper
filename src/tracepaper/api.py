@@ -570,7 +570,34 @@ def _item_text(conn: sqlite3.Connection, item_id: int) -> str:
     return (row["text"] or "") if row else ""
 
 
-def _status(conn: sqlite3.Connection) -> dict[str, Any]:
+# The status payload is ten full table scans -- COUNT(*) over passages alone
+# walks millions of rows, and SQLite has no cheap row count. On a large index
+# that took long enough to time the request out, which made the whole UI look
+# broken while the server was healthy.
+#
+# These are dashboard figures, not a transaction: a few seconds stale is
+# invisible, and a page that renders beats a count that is exact to the row.
+_STATUS_CACHE: dict[str, Any] = {"at": 0.0, "value": None}
+STATUS_CACHE_SECONDS = 10.0
+
+
+def _status(conn: sqlite3.Connection, *, max_age: float | None = None) -> dict[str, Any]:
+    """Index counts, cached briefly so a big index cannot stall the page."""
+    import time as _time
+
+    age = STATUS_CACHE_SECONDS if max_age is None else max_age
+    now = _time.monotonic()
+    cached = _STATUS_CACHE["value"]
+    if cached is not None and (now - _STATUS_CACHE["at"]) < age:
+        return cached
+
+    value = _status_uncached(conn)
+    _STATUS_CACHE["at"] = now
+    _STATUS_CACHE["value"] = value
+    return value
+
+
+def _status_uncached(conn: sqlite3.Connection) -> dict[str, Any]:
     def count(sql: str) -> int:
         row = conn.execute(sql).fetchone()
         return int(row["n"]) if row else 0
