@@ -183,7 +183,10 @@ msg_info "Restarting…"
 systemctl reset-failed tracepaper 2>/dev/null || true
 systemctl restart tracepaper
 
-for _ in $(seq 1 30); do
+# 90 tries at 2s = 3 minutes. 60s was too tight: on a box already busy with a
+# backfill, an interpreter start plus a first request can exceed it, and a
+# health check that gives up early rolls back a release that was fine.
+for _ in $(seq 1 90); do
   if curl -sf "localhost:${PORT}/api/health" >/dev/null 2>&1; then
     msg_ok "Healthy on $(git log -1 --format=%h\ %s)"
     if [[ -n "$BACKUP" ]]; then msg_info "Pre-update backup: $BACKUP"; fi
@@ -195,7 +198,7 @@ done
 # -------------------------------------------------------------- roll back ---
 # An update that leaves the service down is worse than no update. Go back to
 # the commit that was running, reinstall it, and say so plainly.
-msg_error "service did not come up within 60s — rolling back to ${BEFORE:0:7}."
+msg_error "service did not come up within 3m — rolling back to ${BEFORE:0:7}."
 # Must be a reset, not a merge: BEFORE is an ancestor of what is checked out,
 # so --ff-only cannot reach it. Flags go before the revision — `--quiet` after
 # it is treated as a pathspec and silently ignored.

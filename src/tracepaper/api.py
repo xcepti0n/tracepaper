@@ -11,6 +11,7 @@ the human-authored layer the whole design treats as authoritative (FR-10).
 from __future__ import annotations
 
 import sqlite3
+import threading
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -58,15 +59,32 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     # deterministic text-to-vector function, so it is welcome in the query
     # path; what is not welcome is loading it mid-request, which reaches the
     # network and crashed the worker.
+    #
+    # It loads on a background thread rather than inline. Inline, this ran
+    # BEFORE the app existed, so a cold cache or a slow HF round-trip delayed
+    # binding the port -- the health check gave up at 60s and update.sh rolled
+    # a perfectly good release back. Serving keyword-only for the few seconds a
+    # model takes to load is strictly better than not serving at all.
     if embed.available():
-        if embed.preload(_config.embed_model):
-            print(f"semantic search ready ({_config.embed_model})")
-        else:
-            print(f"WARNING: could not load {_config.embed_model}; "
-                  f"search will be keyword-only")
+        def _load_model() -> None:
+            try:
+                if embed.preload(_config.embed_model):
+                    print(f"semantic search ready ({_config.embed_model})")
+                else:
+                    print(f"WARNING: could not load {_config.embed_model}; "
+                          f"search will be keyword-only")
+            except Exception as exc:          # never take the service down
+                print(f"WARNING: loading {_config.embed_model} failed: {exc}")
+            finally:
+                # Only after the attempt, so a search arriving mid-load falls
+                # back to keyword instead of racing the cache.
+                embed.set_lazy_load(False)
+
+        threading.Thread(target=_load_model, name="embed-preload",
+                         daemon=True).start()
     else:
         print("sentence-transformers not installed; search will be keyword-only")
-    embed.set_lazy_load(False)
+        embed.set_lazy_load(False)
 
     app = FastAPI(title="Tracepaper", version="0.1.0",
                   description="Deterministic search over personal documents")

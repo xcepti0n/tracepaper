@@ -656,3 +656,27 @@ def test_enrich_leaves_cpu_for_the_web_service():
     unit = (DEPLOY / "tracepaper-enrich.service").read_text()
     assert "CPUQuota=" in unit
     assert "OMP_NUM_THREADS=" in unit
+
+
+def test_web_service_shares_the_model_cache():
+    """The service user cannot write /opt/tracepaper, which is where
+    HuggingFace caches by default -- startup failed with EACCES on every boot
+    and search silently fell back to keyword-only. It must point at the same
+    writable cache the enrich unit fills, or each would download its own."""
+    web = (DEPLOY / "tracepaper.service").read_text()
+    enrich = (DEPLOY / "tracepaper-enrich.service").read_text()
+    assert "HF_HOME=" in web, "the web service needs a writable model cache"
+
+    def cache_dir(unit: str) -> str:
+        return unit.split("HF_HOME=")[1].split("\n")[0].strip()
+
+    assert cache_dir(web) == cache_dir(enrich), (
+        "both units must share one cache; two paths means two downloads")
+    assert "/opt/tracepaper" not in cache_dir(web)
+
+
+def test_web_service_does_not_reach_the_network_for_the_model():
+    """A HEAD request to huggingface.co before the port binds delays startup
+    past the health check. The model is already on disk; load it from there."""
+    web = (DEPLOY / "tracepaper.service").read_text()
+    assert "HF_HUB_OFFLINE=1" in web

@@ -74,5 +74,19 @@ SystemCallArchitectures=native
 # deliberately does not (see deploy/README.md).
 MemoryMax=768M
 
+# The model cache must be writable by the service user. HuggingFace defaults it
+# to the working directory, which is root-owned by design -- so startup failed
+# with EACCES on every boot and search silently fell back to keyword-only.
+Environment=HF_HOME=/var/lib/tracepaper/hf-cache
+
+# Never reach the network to resolve the model at startup. HF_HUB_OFFLINE makes
+# a cached model load from disk and an absent one fail fast, instead of a HEAD
+# request that delays binding the port past the health check's patience.
+Environment=HF_HUB_OFFLINE=1
+
+# One thread: the query path embeds a single short string per search, so extra
+# workers only take CPU from whatever else is running.
+Environment=OMP_NUM_THREADS=1
+
 [Install]
 WantedBy=multi-user.target

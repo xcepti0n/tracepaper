@@ -750,3 +750,33 @@ def test_systemd_result_strings_are_translated(client):
     page = client.get("/?tab=settings").text
     assert "'oom-kill': 'ran out of memory'" in page
     assert "'signal': 'stopped before it finished'" in page
+
+
+def test_startup_does_not_block_on_loading_the_model():
+    """preload() ran before the app was created, so a cold cache or a slow HF
+    round-trip delayed binding the port -- the health check gave up at 60s and
+    update.sh rolled back a good release. Serving keyword-only for the seconds
+    a model takes to load beats not serving at all."""
+    from tracepaper import api
+
+    source = Path(api.__file__).read_text()
+    body = source[source.index("def create_app"):]
+    body = body[:body.index("\n    app = FastAPI")]
+    assert "threading.Thread" in body, (
+        "the model must load off the startup path")
+    assert "embed.preload" in body
+
+
+def test_a_failed_model_load_does_not_take_the_service_down(monkeypatch, cfg):
+    """A model that cannot load must degrade to keyword search, not crash the
+    app -- that is the whole NFR-9 guarantee."""
+    from fastapi.testclient import TestClient
+
+    from tracepaper import api, embed
+
+    monkeypatch.setattr(embed, "available", lambda: True)
+    monkeypatch.setattr(embed, "preload",
+                        lambda model_id: (_ for _ in ()).throw(OSError("boom")))
+
+    client = TestClient(api.create_app(cfg))
+    assert client.get("/api/health").json()["ok"] is True
