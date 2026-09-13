@@ -40,10 +40,13 @@ that closed it. Anyone (you, me) can add here; keep entries short and say what
 ## Done
 
 - [x] **No second page of results.** Paging over passages repeated documents
-      and returned short pages; it now pages over documents. (this commit)
+      and returned short pages; it now pages over documents. (`31b6dc9`)
+- [x] **The Next link never appeared on a semantic search.** The total counted
+      FTS matches, missing every document found by meaning alone, so it always
+      equalled the page size. (`097b109`)
 - [x] **Code files in ordinary results.** A Search mode picker, code excluded
-      by default. (this commit)
-- [x] **Photo descriptions were written but never searched.** (this commit)
+      by default. 72 code files were matching "3d printer" alone. (`31b6dc9`)
+- [x] **Photo descriptions were written but never searched.** (`31b6dc9`)
 
 - [x] **Same document repeated across results.** A long manual filled the page
       with its own pages. Grouped by document, best passage representing it.
