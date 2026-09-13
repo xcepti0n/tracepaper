@@ -12,6 +12,7 @@ extraction, and an easy way to correct a mistake.
 from __future__ import annotations
 
 import html
+from pathlib import Path
 from urllib.parse import urlencode
 import sqlite3
 
@@ -81,6 +82,12 @@ button.ghost { background:transparent; color:var(--accent);
 .rule-add { display:flex; gap:8px; margin-top:10px; }
 .rule-add input[type=text] { flex:1; }
 button.small { padding:4px 10px; font-size:12px; }
+/* A ranked result that is an image: picture on the left, details beside it. */
+.hit.with-thumb { display:flex; gap:14px; align-items:flex-start; }
+.hit .hit-body { flex:1; min-width:0; }
+.hit-thumb { flex:none; display:block; }
+.hit-thumb img { width:96px; height:96px; object-fit:cover; border-radius:6px;
+  border:1px solid var(--line); background:var(--bg); display:block; }
 .vote { white-space:nowrap; }
 .thumb { background:transparent; border:1px solid var(--line); color:var(--muted);
   border-radius:5px; padding:2px 8px; font-size:11px; cursor:pointer;
@@ -184,7 +191,7 @@ async function fixValue(itemId, key, current) {
     body: JSON.stringify({item_id: itemId, key: key, value: value}),
   });
   if (response.ok) {
-    toast('Saved — this now outranks every extractor');
+    toast('Saved. This now outranks every extractor');
     setTimeout(() => location.reload(), 900);
   } else {
     toast('Could not save: ' + response.status);
@@ -299,7 +306,7 @@ async function waitForRestart() {
     } catch (error) { /* still restarting */ }
     await new Promise(resolve => setTimeout(resolve, 2000));
   }
-  box.innerHTML = '<span class="bad">still restarting — check ' +
+  box.innerHTML = '<span class="bad">still restarting. Check ' +
                   '<code>journalctl -u tracepaper-update -f</code></span>';
 }
 
@@ -454,7 +461,7 @@ async function saveSettings(event) {
   document.querySelectorAll('.problems').forEach(el => el.remove());
   if (result.ok) {
     toast(result.restart_required
-      ? 'Saved — restart the service to use the new index'
+      ? 'Saved. Restart the service to use the new index'
       : 'Saved');
     setTimeout(() => location.reload(), 1200);
   } else {
@@ -521,7 +528,7 @@ function addRule() {
       // A rule matching nothing is nearly always a mistyped path, so say so
       // now rather than leaving it to be discovered by its absence.
       if (!data.items) {
-        status.textContent = 'Saved, but no indexed file is under that path — '
+        status.textContent = 'Saved, but no indexed file is under that path. '
           + 'check the spelling.';
         return;
       }
@@ -660,7 +667,7 @@ def render_page(conn: sqlite3.Connection, *, query: str = "", tab: str = "search
 <title>Tracepaper</title><style>{STYLE}</style></head>
 <body>
 <header><div class="wrap">
-  <h1>Tracepaper <small>deterministic search — no model in the query path</small></h1>
+  <h1>Tracepaper <small>deterministic search, no model in the query path</small></h1>
   <nav>{nav}</nav>
 </div></header>
 <main><div class="wrap">{body}</div></main>
@@ -886,7 +893,20 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
                 more = (f'<details class="more"><summary>{label}</summary>'
                         f'<ul>{rows}</ul></details>')
 
-            out.append(f"""<div class="hit">
+            # An image that ranked here (scanned documents do, via OCR) gets
+            # its picture, not just its filename. The thumbnail IS the useful
+            # part of an image result, and a scan of a passport with no
+            # extracted text was rendering as a bare line of grey path.
+            thumb = ""
+            if _is_image(hit.uri):
+                thumb = (f'<a class="hit-thumb" href="{title_link}" '
+                         f'target="_blank" rel="noopener">'
+                         f'<img src="/thumb/{hit.item_id}?size=160" alt="" '
+                         f'loading="lazy"></a>')
+
+            out.append(f"""<div class="hit{' with-thumb' if thumb else ''}">
+  {thumb}
+  <div class="hit-body">
   <h3><a href="{title_link}{_page_anchor(hit.page)}" target="_blank" rel="noopener">{_esc(hit.title)}</a>{page}</h3>
   <div class="path">{_esc(hit.uri or f"note:{hit.item_id}")}</div>
   <div class="snip">{_esc(hit.snippet)}</div>
@@ -899,6 +919,7 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
         <button type="button" class="thumb" data-signal="down"
                 title="Not what I wanted for these words">&#9660; worse</button>
       </span></div>
+  </div>
 </div>""")
 
         out.append(_pager(query, result, limit, semantic, mode, offset))
@@ -979,6 +1000,14 @@ def _pager(query: str, result, limit: int, semantic: bool,
             f'{"".join(parts)}</div>')
 
 
+def _is_image(uri: str | None) -> bool:
+    """Whether a result is a picture, and so deserves a thumbnail."""
+    if not uri:
+        return False
+    from .extract.text import IMAGE_SUFFIXES
+    return Path(uri).suffix.lower() in IMAGE_SUFFIXES
+
+
 def _page_anchor(page: int | None) -> str:
     """Open a PDF at the matching page.
 
@@ -1023,7 +1052,7 @@ def _browse_tab(conn: sqlite3.Connection, query: str) -> str:
             f'<tr><td><a href="/?tab=browse&q={_esc(k)}"><code>{_esc(k)}</code>'
             f"</a></td><td>{n}</td></tr>" for k, n in keys)
         out.append('<h2>Fields</h2>')
-        out.append('<p class="hint">Discovered from your documents — nothing '
+        out.append('<p class="hint">Discovered from your documents. Nothing '
                    'here was declared in advance.</p>')
         out.append(f"<table><tr><th>Field</th><th>Documents</th></tr>"
                    f"{rows}</table>")
@@ -1075,7 +1104,7 @@ returns the same order, forever.</p>
           {S.RRF_WEIGHT_BM25}/({S.RRF_K}+3) = {S.RRF_WEIGHT_BM25 / (S.RRF_K + 3):.6f}
           means rank 3.</td></tr>
   <tr><td><code>rrf_vector</code></td>
-      <td>Where it ranked on <b>meaning</b> — cosine similarity between the
+      <td>Where it ranked on <b>meaning</b>. Cosine similarity between the
           query's embedding and the passage's. Weight {S.RRF_WEIGHT_VECTOR},
           deliberately below keyword's.</td></tr>
   <tr><td><code>title_match</code></td>
@@ -1102,7 +1131,7 @@ comparable by construction.</p>
 <p><b>Keyword outranks meaning.</b> {S.RRF_WEIGHT_BM25} against
 {S.RRF_WEIGHT_VECTOR}. A document containing your exact words should never lose
 to one that merely seems related. Vectors are there to find
-<em>irrigation solenoid</em> when you typed <em>sprinkler valve</em> — to add
+<em>irrigation solenoid</em> when you typed <em>sprinkler valve</em>, to add
 recall, not to overrule evidence.</p>
 
 <p><b>A similarity floor of {S.MIN_VECTOR_SIMILARITY}.</b> Brute-force vector
@@ -1273,10 +1302,10 @@ def _rules_panel(conn: sqlite3.Connection) -> str:
 <p class="hint">Teach search about a folder. Rules apply to everything inside
 it and stay after a rescan.</p>
 <ul class="tips">
-  <li><b>Code</b> — keep it out of normal results. Still there under
+  <li><b>Code</b>: keep it out of normal results. Still there under
       <b>Code</b> in the search box.</li>
-  <li><b>Hide</b> — never show it in search at all.</li>
-  <li><b>Boost</b> — rank files here higher when they match.</li>
+  <li><b>Hide</b>: never show it in search at all.</li>
+  <li><b>Boost</b>: rank files here higher when they match.</li>
 </ul>
 {table}
 <div class="field rule-add">
@@ -1398,7 +1427,7 @@ words too.</p>
 <h3>Found by name only</h3>
 <p class="hint">These are machine files. They are technically text, but the
 text means nothing to a person. One <code>.gcode</code> file made 104,227
-passages on its own — more than every real document next to it. So Tracepaper
+passages on its own, more than every real document next to it. So Tracepaper
 reads the name and skips what is inside.</p>
 <p class="excludes">{machine}</p>
 
@@ -1472,7 +1501,7 @@ place.</p>'''
         # A button that appears and then fails is worse than one that never
         # appears, so say what to run instead.
         action = ('<p class="hint">This server cannot apply updates itself '
-                  '— <code>tracepaper-update.service</code> is not installed, '
+                  '<code>tracepaper-update.service</code> is not installed, '
                   'or polkit does not permit this user to start it. Run '
                   '<code>systemctl start tracepaper-update</code> in the '
                   'container.</p>'
@@ -1553,7 +1582,7 @@ def _status_tab(conn: sqlite3.Connection) -> str:
     # Pending enrichment is stated plainly rather than left to be discovered.
     if info["pending"]:
         out.append(f'<p class="hint"><span class="pill warn">pending</span> '
-                   f'{info["pending"]} item(s) awaiting full extraction — '
+                   f'{info["pending"]} item(s) awaiting full extraction. '
                    f'already searchable by whatever text was indexed.</p>')
 
     embeddings = info["embeddings"]
@@ -1568,18 +1597,18 @@ def _status_tab(conn: sqlite3.Connection) -> str:
             action = ('run <code>tracepaper embed</code>, or start '
                       '<em>Enrich</em> under Jobs')
         else:
-            action = ('install semantic search first — this build has no '
+            action = ('install semantic search first. This build has no '
                       'embedding model, so <code>tracepaper embed</code> would '
                       'exit with an error')
         out.append(f'<p class="hint">{embedded} of {embeddings["passages"]} '
-                   f'passages embedded — {action}.</p>')
+                   f'passages embedded. {action}</p>')
 
     scan = info["last_scan"]
     if scan:
         out.append(f"""<table><tr><th>Last scan</th><th></th></tr>
   <tr><td>root</td><td><code>{_esc(scan["root"])}</code></td></tr>
   <tr><td>status</td><td>{_esc(scan["status"])}</td></tr>
-  <tr><td>finished</td><td>{_esc(scan["finished_at"] or "—")}</td></tr>
+  <tr><td>finished</td><td>{_esc(scan["finished_at"] or "-")}</td></tr>
   <tr><td>seen / added / changed / moved / removed</td>
       <td>{scan["seen"]} / {scan["added"]} / {scan["changed"]}
           / {scan["moved"]} / {scan["removed"]}</td></tr>

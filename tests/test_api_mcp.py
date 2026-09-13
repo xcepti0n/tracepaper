@@ -1105,3 +1105,55 @@ def test_prune_preview_is_a_get_and_changes_nothing(client, populated):
     assert client.get("/api/prune").status_code == 200
     after = populated.execute("SELECT COUNT(*) AS n FROM items").fetchone()["n"]
     assert after == before
+
+
+@pytest.mark.parametrize("tab", ["search", "browse", "status", "settings", "how"])
+def test_no_em_dashes_anywhere_in_the_ui(client, tab):
+    """A house style rule, enforced on the rendered page.
+
+    Checking the source would miss text built at runtime and would also flag
+    comments, which nobody reads. This checks what is actually served.
+    """
+    page = client.get(f"/?tab={tab}").text
+    assert "—" not in page, (
+        f"em dash in the {tab} tab: "
+        f"{page[max(0, page.find(chr(0x2014)) - 70):page.find(chr(0x2014)) + 70]!r}")
+
+
+def test_no_em_dashes_in_rendered_search_results(client):
+    """Results carry snippets and messages built per query, so check those too."""
+    for query in ("wages", "nothing will match this zzz"):
+        page = client.get("/", params={"q": query, "semantic": "false"}).text
+        assert "—" not in page, f"em dash in results for {query!r}"
+
+
+def test_an_image_result_shows_its_thumbnail(cfg, conn, nas):
+    """A scanned image ranks via OCR, so it appears among the documents.
+
+    It was rendering as a bare filename and an empty snippet: the picture,
+    which is the only useful part of an image result, was missing.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from tracepaper.api import create_app
+
+    # A photo with searchable text, the way an OCR'd scan arrives.
+    conn.execute(
+        "INSERT INTO items (id, kind, uri, title, extraction_status) "
+        "VALUES (1, 'photo', ?, 'digital-passport.jpg', 'complete')",
+        (str(nas / "digital-passport.jpg"),))
+    conn.execute("INSERT INTO passages (id, item_id, version, ordinal, text) "
+                 "VALUES (1, 1, 1, 0, 'passport number and expiry')")
+    conn.execute("INSERT INTO passages_fts_src (id, text, title) "
+                 "VALUES (1, 'passport number and expiry', 'digital-passport.jpg')")
+    conn.execute("INSERT INTO passages_fts (rowid, text, title) "
+                 "VALUES (1, 'passport number and expiry', 'digital-passport.jpg')")
+    conn.commit()
+
+    page = TestClient(create_app(cfg)).get(
+        "/", params={"q": "passport", "semantic": "false"}).text
+
+    assert "digital-passport.jpg" in page, "the image should rank"
+    assert "/thumb/1" in page, "an image result must show its picture"
+    assert 'class="hit with-thumb"' in page

@@ -118,7 +118,7 @@ def check_local() -> UpdateStatus:
 
     if not (directory / ".git").exists():
         status.reason = (
-            f"{directory} is not a git checkout — this install was copied in "
+            f"{directory} is not a git checkout. This install was copied in "
             "rather than cloned, so there is no remote to update from.")
         return status
 
@@ -147,7 +147,7 @@ def check() -> UpdateStatus:
 
     if not (directory / ".git").exists():
         status.reason = (
-            f"{directory} is not a git checkout — this install was copied in "
+            f"{directory} is not a git checkout. This install was copied in "
             "rather than cloned, so there is no remote to update from.")
         return status
 

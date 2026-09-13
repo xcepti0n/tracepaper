@@ -137,7 +137,7 @@ def check_source(path: str | Path) -> PathCheck:
     if not target.exists():
         check.problems.append(
             "Does not exist. If this is an NFS share, it is probably not "
-            "mounted — check `mount | grep nfs` and your /etc/fstab entry.")
+            "mounted. Check `mount | grep nfs` and your /etc/fstab entry.")
         return check
 
     check.exists = True
@@ -198,7 +198,7 @@ def check_index(path: str | Path) -> PathCheck:
         check.problems.append(
             f"This is a network filesystem ({check.filesystem}). SQLite "
             "corrupts over NFS/SMB because their file locking is unreliable "
-            "across clients — and it fails silently, weeks later. Put the "
+            "across clients, and it fails silently, weeks later. Put the "
             "index on local disk and back it up to the NAS instead; it "
             "rebuilds from your documents anyway.")
         return check
@@ -280,7 +280,7 @@ def check_backup(path: str | Path) -> PathCheck:
 
     if not check.is_network:
         check.warnings.append(
-            "This is local disk. Backups are safer on the NAS — that is the "
+            "This is local disk. Backups are safer on the NAS. That is the "
             "copy that survives losing this machine.")
 
     check.ok = True

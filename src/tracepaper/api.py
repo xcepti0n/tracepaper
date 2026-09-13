@@ -372,7 +372,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if not path.is_file():
             raise HTTPException(
                 status_code=404,
-                detail=f"{path} is indexed but not readable now — is the share "
+                detail=f"{path} is indexed but not readable now. Is the share "
                        "mounted?")
         return path
 
