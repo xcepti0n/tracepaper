@@ -960,3 +960,32 @@ def test_no_document_title_links_to_the_json_api(client):
                                  page, re.S):
             assert match.group(1).strip() == "why", (
                 f"a title still opens JSON on the {tab} tab: {match.group(0)!r}")
+
+
+def test_how_it_works_links_to_the_papers(client):
+    """A citation without a link is a dead end. These are the primary sources,
+    open-access where one exists -- the ACM copies are paywalled, so they are
+    deliberately not what is linked."""
+    page = client.get("/?tab=how").text
+
+    for url in ("cormack.uwaterloo.ca/cormacksigir09-rrf.pdf",
+                "trec.nist.gov/pubs/trec3/papers/city.ps.gz",
+                "arxiv.org/abs/1908.10084",
+                "sqlite.org/fts5.html"):
+        assert url in page, f"missing link: {url}"
+
+    assert "dl.acm.org" not in page, "prefer the open-access copy"
+    # External links must not hand the opener a window reference.
+    import re
+    for match in re.finditer(r'<a href="https?://[^>]*>', page):
+        assert 'rel="noopener"' in match.group(0), match.group(0)
+
+
+def test_ranking_doc_and_ui_cite_the_same_sources():
+    """Two places describing one formula drift apart unless something checks."""
+    from pathlib import Path
+
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "04-ranking.md").read_text()
+    for url in ("cormacksigir09-rrf.pdf", "city.ps.gz", "1908.10084",
+                "all-MiniLM-L6-v2"):
+        assert url in doc, f"docs/04-ranking.md is missing {url}"

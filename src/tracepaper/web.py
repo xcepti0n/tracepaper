@@ -782,21 +782,47 @@ real semantic match, the least-unrelated passage lands at vector rank 1 and
 fusion promotes it. Below {S.MIN_VECTOR_SIMILARITY} it is discarded as noise.</p>
 
 <h3>Where the method comes from</h3>
-<p class="hint">Both halves are published IR work, not invented here.</p>
+<p class="hint">Both retrieval halves are published IR work, not invented here.
+Links go to the primary sources, open-access where one exists.</p>
 <table>
   <tr><th>Piece</th><th>Source</th></tr>
-  <tr><td>Reciprocal Rank Fusion, and <code>k={S.RRF_K}</code></td>
-      <td>Cormack, Clarke &amp; Büttcher, <i>Reciprocal Rank Fusion Outperforms
-          Condorcet and Individual Rank Learning Methods</i>, SIGIR 2009.
-          k={S.RRF_K} is the constant from that paper, used unchanged.</td></tr>
+  <tr><td>Reciprocal Rank Fusion,<br>and <code>k={S.RRF_K}</code></td>
+      <td>Cormack, Clarke &amp; Büttcher,
+          <a href="https://cormack.uwaterloo.ca/cormacksigir09-rrf.pdf"
+             target="_blank" rel="noopener"><i>Reciprocal Rank Fusion
+          Outperforms Condorcet and Individual Rank Learning Methods</i></a>,
+          SIGIR 2009, pp. 758–759
+          (<a href="https://dblp.org/rec/conf/sigir/CormackCB09.html"
+              target="_blank" rel="noopener">dblp</a>).
+          Two pages, and the whole method is one formula.
+          <br><span class="hint">The paper says k={S.RRF_K} "was fixed during a
+          pilot investigation and not altered during subsequent validation",
+          and that it "was near-optimal, but that the choice was not
+          critical". Used unchanged here.</span></td></tr>
   <tr><td>BM25</td>
       <td>Robertson, Walker, Jones, Hancock-Beaulieu &amp; Gatford,
-          <i>Okapi at TREC-3</i>, 1994 — from the probabilistic relevance
-          framework of Robertson and Spärck Jones. Provided by SQLite FTS5.</td></tr>
+          <a href="https://trec.nist.gov/pubs/trec3/papers/city.ps.gz"
+             target="_blank" rel="noopener"><i>Okapi at TREC-3</i></a>, 1994.
+          The readable modern treatment is Robertson &amp; Zaragoza,
+          <a href="https://www.staff.city.ac.uk/~sbrp622/papers/foundations_bm25_review.pdf"
+             target="_blank" rel="noopener"><i>The Probabilistic Relevance
+          Framework: BM25 and Beyond</i></a> (2009), which is the place to
+          start. Implemented by
+          <a href="https://www.sqlite.org/fts5.html" target="_blank"
+             rel="noopener">SQLite FTS5</a>, not by this project.
+          <br><span class="hint">Background:
+          <a href="https://en.wikipedia.org/wiki/Okapi_BM25" target="_blank"
+             rel="noopener">Okapi BM25</a>.</span></td></tr>
   <tr><td>Embeddings</td>
-      <td><code>all-MiniLM-L6-v2</code> (sentence-transformers), 384 dimensions,
-          run locally. An embedding is a deterministic function from text to a
-          vector — the same query embeds identically every time.</td></tr>
+      <td><a href="https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2"
+             target="_blank" rel="noopener"><code>all-MiniLM-L6-v2</code></a>,
+          384 dimensions, run locally. The method is Reimers &amp; Gurevych,
+          <a href="https://arxiv.org/abs/1908.10084" target="_blank"
+             rel="noopener"><i>Sentence-BERT: Sentence Embeddings using Siamese
+          BERT-Networks</i></a> (EMNLP 2019).
+          <br><span class="hint">An embedding is a deterministic function from
+          text to a vector — the same query embeds identically every time,
+          which is why it is allowed in the query path.</span></td></tr>
 </table>
 
 <p class="hint">The weights ({S.RRF_WEIGHT_BM25}/{S.RRF_WEIGHT_VECTOR}), the two

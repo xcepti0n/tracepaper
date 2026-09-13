@@ -55,9 +55,14 @@ floor it is discarded as noise.
 
 | Piece | Source |
 |---|---|
-| Reciprocal Rank Fusion, `k=60` | Cormack, Clarke & Büttcher, *Reciprocal Rank Fusion Outperforms Condorcet and Individual Rank Learning Methods*, SIGIR 2009. k=60 is the paper's constant, used unchanged. |
-| BM25 | Robertson, Walker, Jones, Hancock-Beaulieu & Gatford, *Okapi at TREC-3*, 1994; probabilistic relevance framework of Robertson & Spärck Jones. Provided by SQLite FTS5. |
-| Embeddings | `sentence-transformers/all-MiniLM-L6-v2`, 384 dimensions, run locally. |
+| Reciprocal Rank Fusion, `k=60` | Cormack, Clarke & Büttcher, [*Reciprocal Rank Fusion Outperforms Condorcet and Individual Rank Learning Methods*](https://cormack.uwaterloo.ca/cormacksigir09-rrf.pdf), SIGIR 2009, pp. 758–759 ([dblp](https://dblp.org/rec/conf/sigir/CormackCB09.html)) |
+| BM25 | Robertson, Walker, Jones, Hancock-Beaulieu & Gatford, [*Okapi at TREC-3*](https://trec.nist.gov/pubs/trec3/papers/city.ps.gz), 1994; implemented by [SQLite FTS5](https://www.sqlite.org/fts5.html) |
+| Embeddings | Reimers & Gurevych, [*Sentence-BERT*](https://arxiv.org/abs/1908.10084), EMNLP 2019; model [`all-MiniLM-L6-v2`](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2), 384 dimensions, run locally |
+
+On `k=60` specifically, since it is the one magic number in the formula: the
+paper states it "was fixed during a pilot investigation and not altered during
+subsequent validation", and that it "was near-optimal, but that the choice was
+not critical". It is used here unchanged.
 
 The two weights, the two boosts and the similarity floor are this project's own
 choices. They are fixed constants, auditable in one file, never adjusted per
@@ -81,3 +86,36 @@ query. An embedding model is permitted in the query path because it is a
 deterministic function from text to a vector. An inference model is confined to
 ingest, where its output is stored with its provenance and can be corrected --
 and a human correction outranks every extractor, permanently.
+
+
+## Further reading
+
+Ordered by how useful each is if you want to go deeper, rather than by date.
+
+**Start here.** Robertson & Zaragoza,
+[*The Probabilistic Relevance Framework: BM25 and Beyond*](https://www.staff.city.ac.uk/~sbrp622/papers/foundations_bm25_review.pdf)
+(2009). Book-length but readable, by BM25's own author; explains *why* the
+formula has the shape it does rather than only stating it.
+
+**The fusion paper.** Cormack, Clarke & Büttcher,
+[RRF](https://cormack.uwaterloo.ca/cormacksigir09-rrf.pdf) (SIGIR 2009). Two
+pages. Worth reading in full precisely because the whole method is one formula —
+it is a good demonstration that a simple rank combination beats more elaborate
+learned fusion.
+
+**Embeddings.** Reimers & Gurevych,
+[*Sentence-BERT*](https://arxiv.org/abs/1908.10084) (EMNLP 2019) — why a model
+fine-tuned for sentence similarity beats averaging raw BERT token vectors, which
+is what `all-MiniLM-L6-v2` descends from.
+
+**Hybrid retrieval in context.** Lin, Nogueira & Yates,
+[*Pretrained Transformers for Text Ranking: BERT and Beyond*](https://arxiv.org/pdf/2010.06467)
+(2020). Survey-length; the chapters on combining sparse and dense retrieval
+cover the tradeoff this project settles with RRF.
+
+**The implementation.** [SQLite FTS5](https://www.sqlite.org/fts5.html),
+especially the `bm25()` auxiliary function — the weights passed to it are
+`BM25_WEIGHT_TEXT` and `BM25_WEIGHT_TITLE` in `query/search.py`.
+
+Every link above was checked to resolve. `dl.acm.org` copies of the same papers
+exist but sit behind a paywall, so the open-access versions are linked instead.
