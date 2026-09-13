@@ -136,6 +136,11 @@ BATCH_ROWS = 2048
 # read in a stable order.
 VECTOR_SCAN_BUDGET_SECONDS = 3.0
 
+# A backfill shares the database with the indexer, which holds write
+# transactions while it extracts. Waiting is right; dying is not.
+LOCK_RETRIES = 8
+MAX_LOCK_DELAY_SECONDS = 30.0
+
 
 def _scores_numpy(blobs: list[bytes], query_vector: list[float]):
     """Cosine similarity for a batch of stored vectors, as one matrix product.
@@ -230,22 +235,62 @@ def embed_pending(conn: sqlite3.Connection, *, model_id: str = DEFAULT_MODEL,
         except Exception as exc:
             log.exception("embedding batch failed: %s", exc)
             result.skipped += len(batch)
+            # Advance. `continue` here re-read the same rows forever, so one
+            # bad batch became an infinite loop instead of a skipped batch.
+            batch = cursor.fetchmany(batch_size)
             continue
 
-        for row, vector in zip(batch, vectors):
-            blob = pack(vector)
-            conn.execute(
-                "INSERT INTO embeddings (passage_id, vector, model_id, dim) "
-                "VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(passage_id, model_id) DO UPDATE SET "
-                "vector = excluded.vector, dim = excluded.dim",
-                (row["id"], blob, model_id, len(vector)),
-            )
-            result.embedded += 1
+        if not _write_batch(conn, batch, vectors, model_id, result):
+            # The lock did not clear within the retry budget. Stop cleanly
+            # rather than abandoning the run with a traceback: everything
+            # already committed stays, and the next run resumes from there.
+            log.warning("stopping: the database stayed locked. "
+                        "%d embedded so far; re-run to continue.",
+                        result.embedded)
+            break
 
         batch = cursor.fetchmany(batch_size)
 
     return result
+
+
+def _write_batch(conn: sqlite3.Connection, batch, vectors, model_id: str,
+                 result: EmbedResult) -> bool:
+    """Commit one batch of vectors, waiting out a writer. False if it could not.
+
+    A backfill runs for hours beside the indexer, which holds write
+    transactions while it extracts. busy_timeout alone was not enough: a single
+    contended moment raised "database is locked" and killed a run that had
+    already embedded 820k passages -- two days of work discarded because of one
+    unlucky instant.
+
+    Retries are spaced and bounded, and every batch already committed survives
+    regardless, since each is its own transaction.
+    """
+    delay = 1.0
+    for attempt in range(LOCK_RETRIES):
+        try:
+            with conn:
+                for row, vector in zip(batch, vectors):
+                    conn.execute(
+                        "INSERT INTO embeddings (passage_id, vector, model_id, dim) "
+                        "VALUES (?, ?, ?, ?) "
+                        "ON CONFLICT(passage_id, model_id) DO UPDATE SET "
+                        "vector = excluded.vector, dim = excluded.dim",
+                        (row["id"], pack(vector), model_id, len(vector)),
+                    )
+            result.embedded += len(batch)
+            return True
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                raise
+            if attempt == LOCK_RETRIES - 1:
+                return False
+            log.info("database busy, retrying in %.0fs (%d/%d)",
+                     delay, attempt + 1, LOCK_RETRIES)
+            time.sleep(delay)
+            delay = min(delay * 2, MAX_LOCK_DELAY_SECONDS)
+    return False
 
 
 def search(conn: sqlite3.Connection, query: str, *, limit: int = 20,

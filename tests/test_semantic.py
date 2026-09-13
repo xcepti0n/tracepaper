@@ -460,3 +460,114 @@ def test_the_deadline_is_checked_before_the_fetch_not_after(conn, cfg, nas):
     fetch = loop.index("cursor.fetchmany")
     assert check < fetch, (
         "the budget must be tested before paying for another batch")
+
+
+def test_a_locked_database_is_waited_out_not_fatal(conn, monkeypatch):
+    """A backfill runs for hours beside the indexer, which holds write
+    transactions while it extracts. busy_timeout alone was not enough: one
+    contended instant raised "database is locked" and killed a run that had
+    already embedded 820k passages. Two days of work thrown away by an
+    exception that should have been a wait."""
+    import sqlite3 as sq
+
+    class FlakyConn:
+        """Wraps a real connection and fails the first two inserts."""
+
+        def __init__(self, real):
+            self._real = real
+            self.attempts = 0
+
+        def execute(self, sql, *args, **kwargs):
+            if sql.lstrip().upper().startswith("INSERT INTO EMBEDDINGS"):
+                self.attempts += 1
+                if self.attempts <= 2:
+                    raise sq.OperationalError("database is locked")
+            return self._real.execute(sql, *args, **kwargs)
+
+        def __enter__(self):
+            return self._real.__enter__()
+
+        def __exit__(self, *exc):
+            return self._real.__exit__(*exc)
+
+    # A real passage, so the insert can actually succeed on the third try.
+    conn.execute("INSERT INTO items (kind, uri, extraction_status) "
+                 "VALUES ('document', '/lock', 'complete')")
+    item_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("INSERT INTO passages (item_id, version, ordinal, text) "
+                 "VALUES (?, 1, 0, 'text')", (item_id,))
+    passage_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+
+    monkeypatch.setattr(embed.time, "sleep", lambda seconds: None)
+
+    flaky = FlakyConn(conn)
+    result = embed.EmbedResult(model_id="m")
+    ok = embed._write_batch(flaky, [{"id": passage_id}], [[0.1, 0.2]], "m",
+                            result)
+
+    assert ok is True, "a transient lock must be retried, not fatal"
+    assert flaky.attempts == 3, f"expected two retries then success: {flaky.attempts}"
+    assert result.embedded == 1
+
+
+def test_a_lock_that_never_clears_returns_false_instead_of_raising(conn, monkeypatch):
+    """The caller needs a signal it can act on, not a traceback."""
+    import sqlite3 as sq
+
+    class AlwaysLocked:
+        def execute(self, sql, *args, **kwargs):
+            raise sq.OperationalError("database is locked")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(embed.time, "sleep", lambda seconds: None)
+    result = embed.EmbedResult(model_id="m")
+    assert embed._write_batch(AlwaysLocked(), [{"id": 1}], [[0.1]], "m",
+                              result) is False
+    assert result.embedded == 0
+
+
+def test_a_non_lock_error_is_not_swallowed(conn, monkeypatch):
+    """Retrying a genuine bug would hide it. Only lock contention waits."""
+    import sqlite3 as sq
+
+    class Broken:
+        def execute(self, sql, *args, **kwargs):
+            raise sq.OperationalError("no such table: embeddings")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    with pytest.raises(sq.OperationalError, match="no such table"):
+        embed._write_batch(Broken(), [{"id": 1}], [[0.1]], "m",
+                           embed.EmbedResult(model_id="m"))
+
+
+def test_a_permanent_lock_stops_cleanly_and_keeps_what_was_written():
+    """When the lock never clears, the run must end without a traceback --
+    everything already committed stays, and a re-run resumes from there."""
+    source = Path(embed.__file__).read_text()
+    body = source[source.index("def embed_pending"):]
+    body = body[:body.index("\ndef _write_batch")]
+    assert "break" in body, "a permanent lock must end the run, not crash it"
+    assert "LOCK_RETRIES" in source
+
+
+def test_a_failed_batch_advances_the_cursor():
+    """`continue` without re-fetching re-read the same rows forever, turning
+    one bad batch into an infinite loop."""
+    source = Path(embed.__file__).read_text()
+    body = source[source.index("def embed_pending"):]
+    body = body[:body.index("\ndef _write_batch")]
+    failure = body[body.index("embedding batch failed"):]
+    failure = failure[:failure.index("\n        if not _write_batch")]
+    assert "cursor.fetchmany" in failure, (
+        "the failure path must advance, or it loops on the same batch")
