@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -1120,11 +1121,28 @@ def test_no_em_dashes_anywhere_in_the_ui(client, tab):
         f"{page[max(0, page.find(chr(0x2014)) - 70):page.find(chr(0x2014)) + 70]!r}")
 
 
+def _without_quoted_text(page: str) -> str:
+    """The page minus anything quoted from the user's own files.
+
+    Snippets appear as a div in a result and as a span inside the grouped
+    pages expander, so both shapes have to go.
+    """
+    page = re.sub(r'<div class="snip">.*?</div>', "", page, flags=re.S)
+    return re.sub(r'<span class="snip">.*?</span>', "", page, flags=re.S)
+
+
 def test_no_em_dashes_in_rendered_search_results(client):
-    """Results carry snippets and messages built per query, so check those too."""
+    """Results carry headings and messages built per query, so check those too.
+
+    Snippets are excluded deliberately. They are quoted from the user's own
+    files, and OCR of a passport scan really does produce em dashes. Rewriting
+    what a document says, to satisfy a house style rule about what Tracepaper
+    says, would be the worse bug.
+    """
     for query in ("wages", "nothing will match this zzz"):
         page = client.get("/", params={"q": query, "semantic": "false"}).text
-        assert "—" not in page, f"em dash in results for {query!r}"
+        assert "—" not in _without_quoted_text(page), \
+            f"em dash in results for {query!r}"
 
 
 def test_an_image_result_shows_its_thumbnail(cfg, conn, nas):
