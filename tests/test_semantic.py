@@ -445,3 +445,18 @@ def test_a_truncated_scan_still_returns_ordered_results(conn, cfg, nas, monkeypa
     hits = embed.search(conn, "sprinkler valve", limit=5, budget_seconds=0.05)
     scores = [s for _, s in hits]
     assert scores == sorted(scores, reverse=True), "must stay ranked"
+
+
+@requires_model
+def test_the_deadline_is_checked_before_the_fetch_not_after(conn, cfg, nas):
+    """The fetch is the expensive part. Testing the deadline after it always
+    pays for one more batch of BLOB reads, which is why a 3s budget still took
+    6s on a disk busy with the backfill."""
+    source = Path(embed.__file__).read_text()
+    body = source[source.index("def search("):]
+    body = body[:body.index("\ndef ") if "\ndef " in body else len(body)]
+    loop = body[body.index("while True:"):]
+    check = loop.index("time.monotonic() > deadline")
+    fetch = loop.index("cursor.fetchmany")
+    assert check < fetch, (
+        "the budget must be tested before paying for another batch")

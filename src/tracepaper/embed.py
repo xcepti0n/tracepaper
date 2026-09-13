@@ -123,7 +123,9 @@ def unpack(blob: bytes) -> list[float]:
 # identical rankings. Rows stream in batches so peak memory stays bounded by
 # BATCH_ROWS rather than by the size of the corpus (a 1M-passage index would
 # otherwise want ~1.5 GB resident, well past the service's MemoryMax).
-BATCH_ROWS = 8192
+# Smaller than it was: the deadline can only be honoured to the granularity of
+# one batch, and 8192 BLOB reads off a contended disk is seconds on its own.
+BATCH_ROWS = 2048
 
 # An exact scan reads every stored vector. That is ~1s per million on a quiet
 # disk, but the vectors share a file with whatever is writing them, and during
@@ -292,12 +294,16 @@ def search(conn: sqlite3.Connection, query: str, *, limit: int = 20,
     scanned = 0
     cursor = conn.execute(sql, params)
     while True:
-        rows = cursor.fetchmany(BATCH_ROWS)
-        if not rows:
-            break
+        # Check BEFORE fetching, not after: the fetch is the expensive part, so
+        # testing the deadline afterwards always pays for one more batch of
+        # BLOB reads -- which is how a 3s budget still took 6s on a disk busy
+        # with the backfill.
         if deadline is not None and time.monotonic() > deadline:
             log.warning("vector scan hit its %.1fs budget after %d vectors; "
                         "ranking on what was scored", budget, scanned)
+            break
+        rows = cursor.fetchmany(BATCH_ROWS)
+        if not rows:
             break
         scanned += len(rows)
         ids = [int(row["passage_id"]) for row in rows]
