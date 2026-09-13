@@ -896,3 +896,43 @@ def test_excludes_have_no_duplicates():
 
     dupes = [name for name, count in Counter(DEFAULT_EXCLUDES).items() if count > 1]
     assert not dupes, f"duplicated excludes: {dupes}"
+
+
+def test_how_it_works_page_matches_the_real_constants(client):
+    """A docs page that quietly disagrees with the ranking it describes is
+    worse than no docs page.
+
+    These are LITERALS on purpose. Asserting against the same constants the
+    page interpolates is worthless -- both move together, so the test can
+    never fail; I checked, by changing RRF_K and watching it still pass.
+    Pinning the published values means changing the ranking forces a
+    deliberate look at what the docs promise.
+    """
+    from tracepaper.query import search as S
+
+    assert S.RRF_K == 60, "k=60 is the constant from the SIGIR 2009 paper"
+    assert S.RRF_WEIGHT_BM25 == 1.0
+    assert S.RRF_WEIGHT_VECTOR == 0.8, "vectors must not outrank exact matches"
+    assert S.MIN_VECTOR_SIMILARITY == 0.25
+
+    page = client.get("/?tab=how").text
+    assert "How a search is scored" in page
+    assert "60 + keyword_rank" in page
+    assert "0.8" in page and "0.25" in page
+    # The worked example must be arithmetic on the real constants, not a
+    # number typed into the prose.
+    assert "0.015873" in page, "1.0/(60+3) must appear as computed"
+
+
+def test_how_it_works_cites_its_sources(client):
+    """The formula is published IR work; saying so is the difference between
+    a citation and a number someone made up."""
+    page = client.get("/?tab=how").text
+    assert "SIGIR 2009" in page
+    assert "Cormack" in page
+    assert "Okapi at TREC-3" in page
+
+
+def test_how_it_works_is_reachable_from_the_nav(client):
+    page = client.get("/").text
+    assert "tab=how" in page, "the docs page must be linked, not hidden"

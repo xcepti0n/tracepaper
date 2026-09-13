@@ -453,13 +453,15 @@ def render_page(conn: sqlite3.Connection, *, query: str = "", tab: str = "search
     are grouped in the result rather than split across separate searches.
     """
     tabs = [("search", "Search"), ("browse", "Browse"), ("status", "Status"),
-            ("settings", "Settings")]
+            ("settings", "Settings"), ("how", "How it works")]
     nav = "".join(
         f'<a href="/?tab={name}" class="{"on" if name == tab else ""}">{label}</a>'
         for name, label in tabs
     )
 
-    if tab == "settings":
+    if tab == "how":
+        body = _how_tab()
+    elif tab == "settings":
         body = _settings_tab(conn)
     elif tab == "status":
         body = _status_tab(conn)
@@ -690,6 +692,103 @@ def _browse_tab(conn: sqlite3.Connection, query: str) -> str:
         out.append('<div class="empty">Nothing indexed yet. Run '
                    '<code>tracepaper scan --index</code>.</div>')
     return "".join(out)
+
+
+
+def _how_tab() -> str:
+    """Explain the scoring, with the numbers read from the code.
+
+    Every constant below is interpolated from query.search rather than typed
+    out, so this page cannot drift from the ranking it describes -- a docs page
+    that quietly disagrees with the code is worse than none.
+    """
+    from .query import search as S
+
+    return f"""<h2>How a search is scored</h2>
+<p class="hint">Every number in a result line comes from the formula below.
+Nothing here is learned or tuned at runtime: the same query over the same index
+returns the same order, forever.</p>
+
+<h3>The formula</h3>
+<pre>score = {S.RRF_WEIGHT_BM25} / ({S.RRF_K} + keyword_rank)
+      + {S.RRF_WEIGHT_VECTOR} / ({S.RRF_K} + vector_rank)
+      + title_match / 100
+      + recency / 100</pre>
+
+<h3>What each signal means</h3>
+<table>
+  <tr><th>Signal</th><th>Meaning</th></tr>
+  <tr><td><code>rrf_bm25</code></td>
+      <td>Where the passage ranked on <b>keyword</b> relevance (BM25). Weight
+          {S.RRF_WEIGHT_BM25}. Read it backwards to recover the rank:
+          {S.RRF_WEIGHT_BM25}/({S.RRF_K}+3) = {S.RRF_WEIGHT_BM25 / (S.RRF_K + 3):.6f}
+          means rank 3.</td></tr>
+  <tr><td><code>rrf_vector</code></td>
+      <td>Where it ranked on <b>meaning</b> — cosine similarity between the
+          query's embedding and the passage's. Weight {S.RRF_WEIGHT_VECTOR},
+          deliberately below keyword's.</td></tr>
+  <tr><td><code>title_match</code></td>
+      <td>Query words appear in the filename. Up to {S.BOOST_TITLE_MATCH},
+          divided by 100.</td></tr>
+  <tr><td><code>recency</code></td>
+      <td>Recently modified files edge ahead of identical older ones. Up to
+          {S.BOOST_RECENCY_MAX}, divided by 100.</td></tr>
+  <tr><td><code>_raw_rrf</code></td>
+      <td>The sum before display rescaling. The audit number.</td></tr>
+</table>
+
+<h3>Why <code>score</code> is 1.0</h3>
+<p class="hint">RRF produces values around 0.01–0.03, which round to 0.00 on
+screen. The top hit is rescaled to 1.0 and the rest shown relative to it. The
+order is untouched, and <code>_raw_rrf</code> keeps the true value.</p>
+
+<h3>Three deliberate choices</h3>
+<p><b>Ranks, not scores.</b> BM25 is unbounded; cosine similarity runs −1 to 1.
+Combining them directly needs a normalisation that shifts as the corpus grows,
+so the same query could reorder as unrelated documents arrive. Ranks are
+comparable by construction.</p>
+
+<p><b>Keyword outranks meaning.</b> {S.RRF_WEIGHT_BM25} against
+{S.RRF_WEIGHT_VECTOR}. A document containing your exact words should never lose
+to one that merely seems related. Vectors are there to find
+<em>irrigation solenoid</em> when you typed <em>sprinkler valve</em> — to add
+recall, not to overrule evidence.</p>
+
+<p><b>A similarity floor of {S.MIN_VECTOR_SIMILARITY}.</b> Brute-force vector
+search always returns <em>something</em>. Without a floor, on a query with no
+real semantic match, the least-unrelated passage lands at vector rank 1 and
+fusion promotes it. Below {S.MIN_VECTOR_SIMILARITY} it is discarded as noise.</p>
+
+<h3>Where the method comes from</h3>
+<p class="hint">Both halves are published IR work, not invented here.</p>
+<table>
+  <tr><th>Piece</th><th>Source</th></tr>
+  <tr><td>Reciprocal Rank Fusion, and <code>k={S.RRF_K}</code></td>
+      <td>Cormack, Clarke &amp; Büttcher, <i>Reciprocal Rank Fusion Outperforms
+          Condorcet and Individual Rank Learning Methods</i>, SIGIR 2009.
+          k={S.RRF_K} is the constant from that paper, used unchanged.</td></tr>
+  <tr><td>BM25</td>
+      <td>Robertson, Walker, Jones, Hancock-Beaulieu &amp; Gatford,
+          <i>Okapi at TREC-3</i>, 1994 — from the probabilistic relevance
+          framework of Robertson and Spärck Jones. Provided by SQLite FTS5.</td></tr>
+  <tr><td>Embeddings</td>
+      <td><code>all-MiniLM-L6-v2</code> (sentence-transformers), 384 dimensions,
+          run locally. An embedding is a deterministic function from text to a
+          vector — the same query embeds identically every time.</td></tr>
+</table>
+
+<p class="hint">The weights ({S.RRF_WEIGHT_BM25}/{S.RRF_WEIGHT_VECTOR}), the two
+boosts and the similarity floor are this project's own choices, and they are
+fixed constants in <code>query/search.py</code> — auditable, and never adjusted
+per query.</p>
+
+<h3>What an LLM does and does not do</h3>
+<p class="hint">No language model takes part in ranking or in reading your
+documents to answer. Search is SQL, BM25 and arithmetic over stored vectors.
+An embedding model is allowed in the query path because it is deterministic;
+an inference model is confined to ingest, where its output is stored with its
+provenance and can be corrected. A correction you make outranks every
+extractor, permanently.</p>"""
 
 
 def _settings_tab(conn: sqlite3.Connection) -> str:
