@@ -7,6 +7,7 @@ not re-extract, and a vanished share must not empty the index.
 from __future__ import annotations
 
 import os
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
@@ -429,3 +430,47 @@ def test_prune_reports_progress_while_deleting(conn, cfg, capsys):
     out = capsys.readouterr().out
     assert "deleting 3 item(s)" in out, "it must say what it is about to do"
     assert "3/3" in out, "it must report progress, not only a final line"
+
+
+def test_every_cascading_foreign_key_to_items_is_indexed(conn):
+    """SQLite does not index a foreign key for you, and ON DELETE CASCADE must
+    find the children of every deleted row. Unindexed, each delete full-scans
+    the child table: 159x slower on a small database, and it turned `prune`
+    deleting 230k items into hours of scanning rather than seconds.
+
+    This asserts the property rather than a list, so a table added later with a
+    cascading item_id cannot quietly reintroduce it.
+    """
+    conn.row_factory = sqlite3.Row
+    tables = [r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name NOT LIKE 'sqlite_%'")]
+
+    missing = []
+    for table in tables:
+        cascading = {
+            r["from"] for r in conn.execute(f"PRAGMA foreign_key_list({table})")
+            if r["table"] == "items" and r["on_delete"] == "CASCADE"
+        }
+        if not cascading:
+            continue
+
+        # Only the FIRST column of an index can satisfy a cascade lookup, and
+        # a PARTIAL index cannot: the cascade must find children in any state,
+        # while a partial index only covers rows matching its WHERE clause.
+        # jobs had exactly this trap -- idx_jobs_pending leads with item_id but
+        # is limited to queued/claimed, so every cascade still full-scanned it.
+        leading = set()
+        for index in conn.execute(f"PRAGMA index_list({table})"):
+            if index["partial"]:
+                continue
+            columns = [r["name"] for r in
+                       conn.execute(f"PRAGMA index_info({index['name']})")]
+            if columns:
+                leading.add(columns[0])
+
+        missing.extend(f"{table}.{column}"
+                       for column in sorted(cascading) if column not in leading)
+
+    assert not missing, (
+        f"cascading foreign keys to items with no leading index: {missing}")

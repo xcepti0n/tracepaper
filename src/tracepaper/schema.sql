@@ -297,6 +297,16 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_ready ON jobs(state, priority, id);
 
+-- SQLite does NOT index a foreign key for you, and ON DELETE CASCADE has to
+-- find the children of every deleted row. Without these, deleting one item
+-- full-scans each child table -- measured at 159x slower on a small database,
+-- and far worse on a real one. `prune` deleting 230k items became hours of
+-- scanning instead of seconds.
+CREATE INDEX IF NOT EXISTS idx_jobs_item           ON jobs(item_id);
+CREATE INDEX IF NOT EXISTS idx_versions_item       ON item_versions(item_id);
+CREATE INDEX IF NOT EXISTS idx_tags_item           ON tags(item_id);
+CREATE INDEX IF NOT EXISTS idx_event_evidence_item ON event_evidence(item_id);
+
 -- At most one outstanding job per (item, type). Completed and failed rows are
 -- history and may repeat, so the constraint covers only pending work -- a
 -- blanket UNIQUE would make a second indexing pass over a changed file fail.
