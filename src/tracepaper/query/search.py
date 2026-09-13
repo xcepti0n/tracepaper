@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import modes
+from .. import rules
 
 # Fixed ranking constants. Every tunable lives here so ranking stays auditable
 # and reproducible -- never inline magic numbers (FR-13).
@@ -165,6 +166,8 @@ class SearchEngine:
             return SearchResponse(query=query, hits=[], total=0, fts_query=fts_query)
 
         if not vector_ranks:
+            self._apply_human_signals(keyword_hits, query)
+            keyword_hits.sort(key=lambda h: (-h.score, h.passage_id))
             hits = _group_by_document(keyword_hits, limit, offset)
             total = self._count(fts_query, kind, code) if fts_query else 0
             # One long document can own the whole window, leaving a page with
@@ -175,6 +178,8 @@ class SearchEngine:
                 if wider > deep:
                     keyword_hits = self._keyword_search(
                         fts_query, wider, 0, kind, query, code)
+                    self._apply_human_signals(keyword_hits, query)
+                    keyword_hits.sort(key=lambda h: (-h.score, h.passage_id))
                     hits = _group_by_document(keyword_hits, limit, offset)
             return SearchResponse(query=query, hits=hits, total=total,
                                   fts_query=fts_query)
@@ -198,6 +203,8 @@ class SearchEngine:
                 fused = self._fuse_all(keyword_hits, vector_ranks, query,
                                        kind, code)
 
+        self._apply_human_signals(fused, query)
+        fused.sort(key=lambda h: (-h.score, h.passage_id))
         hits = fused[offset:offset + limit]
         # Everything grouped is known to match; the FTS count is a floor that
         # misses vector-only documents, so take whichever is larger.
@@ -231,7 +238,7 @@ class SearchEngine:
         if kind:
             sql += " AND i.kind = ?"
             params.append(kind)
-        sql += _code_clause(code)
+        sql += _code_clause(code, self.conn)
 
         # Deterministic ordering: score first, then passage_id as a total
         # tie-break so equal scores never reorder between runs (NFR-2).
@@ -350,6 +357,39 @@ class SearchEngine:
         # A very large limit, because the slice happens in the caller.
         return _group_by_document(fused, len(fused), 0)
 
+    def _apply_human_signals(self, hits: list[RankedHit], query: str) -> None:
+        """Fold in your folder boosts and what you taught this query.
+
+        Applied to hits that ALREADY matched, so neither signal can pull an
+        irrelevant document into the results -- they only reorder what the
+        query found. Both land in `signals`, so a moved result still explains
+        itself.
+        """
+        if not hits:
+            return
+        item_ids = list({hit.item_id for hit in hits})
+        boosts = rules.boosted_items(self.conn, item_ids)
+        feedback = rules.feedback_for(self.conn, query)
+        if not boosts and not feedback:
+            return
+
+        # Scale to whatever range this pass scored in: RRF sits near 0.02,
+        # raw BM25 in the tens. A fixed increment would be invisible in one
+        # and overwhelming in the other.
+        scale = max((hit.score for hit in hits), default=1.0) or 1.0
+
+        for hit in hits:
+            weight = boosts.get(hit.item_id)
+            if weight:
+                amount = rules.BOOST_WEIGHT * weight * scale
+                hit.signals["your_boost"] = amount
+                hit.score += amount
+            adjustment = feedback.get(hit.item_id)
+            if adjustment:
+                amount = rules.FEEDBACK_WEIGHT * adjustment * scale
+                hit.signals["your_feedback"] = amount
+                hit.score += amount
+
     def _load_hits(self, passage_ids: list[int], query: str,
                    kind: str | None,
                    code: str = "exclude") -> list[RankedHit]:
@@ -364,7 +404,7 @@ class SearchEngine:
         if kind:
             sql += " AND i.kind = ?"
             params.append(kind)
-        sql += _code_clause(code)
+        sql += _code_clause(code, self.conn)
 
         terms = {t.lower() for t in _TOKEN.findall(query)}
         return [
@@ -392,7 +432,7 @@ class SearchEngine:
         if kind:
             sql += " AND i.kind = ?"
             params.append(kind)
-        sql += _code_clause(code)
+        sql += _code_clause(code, self.conn)
         try:
             row = self.conn.execute(sql, params).fetchone()
             return int(row["n"]) if row else 0
@@ -479,18 +519,26 @@ def _rescale(hits: list[RankedHit]) -> None:
         hit.score = hit.score / top
 
 
-def _code_clause(code: str) -> str:
+def _code_clause(code: str, conn: sqlite3.Connection | None = None) -> str:
     """The WHERE fragment selecting code, documents, or both.
 
     Applied in SQL rather than in Python so it takes effect before LIMIT --
     filtering afterwards returns a nearly empty page whenever the top-ranked
     passages were the ones being filtered out.
+
+    Your own folder rules are part of this, and they win. A folder you marked
+    as code is code even if nothing about its filenames says so, and a folder
+    you marked as hidden never appears in any mode.
     """
+    marked_code = rules.sql_clause(conn, "code") if conn is not None else "0"
+    hidden = f" AND NOT {rules.sql_clause(conn, 'hide')}" if conn is not None else ""
+
     if code == "include":
-        return ""
+        return hidden
     if code == "only":
-        return f" AND {modes.sql_only_code('i')}"
-    return f" AND {modes.sql_filter('i')}"
+        return f" AND ({modes.sql_only_code('i')} OR {marked_code}){hidden}"
+    # Exclude: drop anything the classifier calls code, plus anything you did.
+    return f" AND {modes.sql_filter('i')} AND NOT {marked_code}{hidden}"
 
 
 def _group_by_document(hits: list[RankedHit], limit: int,

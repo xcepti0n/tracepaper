@@ -27,6 +27,7 @@ from .query.evidence import EvidenceQuery
 from .query.fields import FieldQuery
 from .query.search import SearchEngine
 from .scan.scanner import ScanAborted, Scanner
+from . import rules
 from .web import render_page
 
 _config: Config = Config()
@@ -104,6 +105,133 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             conn.close()
 
     # -------------------------------------------------------------- API
+
+    def _guard(request: Request, what: str) -> None:
+        """Refuse a write that did not come from our own page.
+
+        Two cheap checks -- a header no cross-origin form can set, and the
+        browser's own same-site hint. Neither is authentication, and neither
+        helps against anyone who can already reach the port. They close the
+        case where another site makes your browser POST here.
+        """
+        if request.headers.get("x-tracepaper-request") != "1":
+            raise HTTPException(
+                status_code=403,
+                detail=f"Missing X-Tracepaper-Request header. Change {what} "
+                       f"from the web UI.")
+        if request.headers.get("sec-fetch-site", "same-origin") not in (
+                "same-origin", "none"):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cross-site {what} requests are refused.")
+
+    # ---------------------------------------------------------------- prune
+
+    @app.get("/api/prune")
+    def api_prune_preview() -> dict[str, Any]:
+        """What a cleanup would remove, and why. Reads only."""
+        from . import prune as prune_module
+
+        conn = open_connection()
+        try:
+            return prune_module.preview(conn, get_config())
+        finally:
+            conn.close()
+
+    @app.post("/api/prune")
+    def api_prune_apply(request: Request) -> dict[str, Any]:
+        """Remove indexed items that today's rules would not index.
+
+        Deletes index rows only. Your files are untouched, and a rescan
+        rebuilds anything removed by mistake.
+        """
+        _guard(request, "the index cleanup")
+        from . import prune as prune_module
+
+        conn = open_connection()
+        try:
+            removed = prune_module.apply(conn, get_config())
+            return {"ok": True, "removed": removed}
+        finally:
+            conn.close()
+
+    # ---------------------------------------------------- rules & feedback
+
+    @app.get("/api/rules")
+    def api_rules() -> dict[str, Any]:
+        """Your folder rules, with how many items each currently covers."""
+        conn = open_connection()
+        try:
+            return {"rules": rules.list_rules(conn),
+                    "feedback": rules.list_feedback(conn, limit=50)}
+        finally:
+            conn.close()
+
+    @app.post("/api/rules")
+    def api_add_rule(request: Request, body: dict) -> dict[str, Any]:
+        _guard(request, "folder rules")
+        prefix = str(body.get("prefix", "")).strip()
+        rule = str(body.get("rule", "")).strip()
+        if not prefix:
+            raise HTTPException(status_code=400, detail="A folder path is required.")
+        if rule not in rules.RULES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Rule must be one of: {', '.join(rules.RULES)}.")
+        conn = open_connection()
+        try:
+            created = rules.add_rule(conn, prefix, rule,
+                                     weight=float(body.get("weight", 1.0)),
+                                     note=body.get("note"))
+            # Report the effect, since a rule that matches nothing is almost
+            # always a mistyped path and is worth saying so immediately.
+            covered = conn.execute(
+                "SELECT COUNT(*) AS n FROM items WHERE deleted_at IS NULL "
+                "AND uri LIKE ? || '%'", (created["prefix"],)).fetchone()["n"]
+            return {"ok": True, "rule": created, "items": int(covered)}
+        finally:
+            conn.close()
+
+    @app.delete("/api/rules")
+    def api_remove_rule(request: Request, prefix: str) -> dict[str, Any]:
+        _guard(request, "folder rules")
+        conn = open_connection()
+        try:
+            return {"ok": rules.remove_rule(conn, prefix)}
+        finally:
+            conn.close()
+
+    @app.post("/api/feedback")
+    def api_feedback(request: Request, body: dict) -> dict[str, Any]:
+        """Teach ranking that a document is (or is not) right for a query."""
+        _guard(request, "search feedback")
+        query = str(body.get("query", "")).strip()
+        signal = str(body.get("signal", "")).strip()
+        try:
+            item_id = int(body.get("item_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="item_id is required.")
+        if not query:
+            raise HTTPException(status_code=400, detail="query is required.")
+        conn = open_connection()
+        try:
+            rules.record_feedback(conn, query, item_id, signal)
+            return {"ok": True, "normalized": rules.normalize_query(query)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        finally:
+            conn.close()
+
+    @app.delete("/api/feedback")
+    def api_clear_feedback(request: Request, query: str,
+                           item_id: int | None = None) -> dict[str, Any]:
+        _guard(request, "search feedback")
+        conn = open_connection()
+        try:
+            return {"ok": True,
+                    "removed": rules.clear_feedback(conn, query, item_id)}
+        finally:
+            conn.close()
 
     @app.get("/api/search")
     def api_search(q: str = Query(..., min_length=1), limit: int = 20,

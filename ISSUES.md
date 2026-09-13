@@ -11,17 +11,6 @@ that closed it. Anyone (you, me) can add here; keep entries short and say what
       Mac. Without it, photos are findable only by tag and filename.
       *Done when:* captions exist for the bulk of the photo library.
 
-- [ ] **Build output is still in the index.** `dist/`, `build/` and
-      `*.dist-info` are now excluded from future scans and hidden from search,
-      but ~22+ items indexed before that are still stored.
-      *Done when:* `tracepaper prune --apply` has removed them.
-
-- [ ] **Vendored code is still in the index.** `.venv`, `site-packages` and
-      `node_modules` were excluded from *future* scans, but files indexed
-      before that are still there. Search now hides them behind the Code
-      checkbox, so this is size and speed, not correctness.
-      *Done when:* a prune pass removes them and the item count drops.
-
 - [ ] **No highlighting inside an opened document.** A result opens the file at
       the right page (`#page=N`), but the matching words are not marked. Needs
       a real viewer (PDF.js) rather than a download.
@@ -43,6 +32,14 @@ that closed it. Anyone (you, me) can add here; keep entries short and say what
       *Done when:* those NFS rules are removed and a scan still works.
 
 ## Done
+
+- [x] **Settings was read-only documentation.** Folder rules and index
+      cleanup are now controls on the page, not commands to copy. (this commit)
+- [x] **No way to teach ranking.** Thumbs on each result, keyed on the query
+      so one document cannot creep onto unrelated searches. (this commit)
+- [x] **Pruning needed a terminal.** Preview and apply are buttons. (this commit)
+- [x] **Rules typed through a symlink silently did nothing.** Paths are
+      resolved before storing. (this commit)
 
 - [x] **Build output appeared in ordinary results.** A `LICENSE` inside
       `dist/.../typing_extensions-4.14.0.dist-info/` has no extension, so

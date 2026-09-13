@@ -45,9 +45,20 @@ nav a { padding:7px 13px; text-decoration:none; color:var(--muted);
         border-radius:6px 6px 0 0; font-size:14px; }
 nav a.on { color:var(--fg); background:var(--accent-soft); font-weight:600; }
 main { padding:22px 0 60px; }
-form.search { display:flex; gap:8px; margin-bottom:6px; }
+form.search { margin:0 0 6px; }
 input[type=text] { flex:1; padding:10px 13px; border:1px solid var(--line);
        border-radius:7px; background:var(--card); color:var(--fg); font-size:15px; }
+/* The search box is the one control on this page that matters, so it is
+   sized like it: a tall pill, the way every search engine draws one. */
+.search .row.main { gap:0; border:1px solid var(--line); border-radius:26px;
+  background:var(--card); padding:4px 4px 4px 20px; transition:box-shadow .12s;
+  box-shadow:0 1px 3px rgba(0,0,0,.05); }
+.search .row.main:focus-within { box-shadow:0 1px 10px rgba(0,0,0,.12);
+  border-color:var(--muted); }
+.search .row.main input[type=text] { border:0; background:transparent;
+  padding:13px 6px; font-size:17px; box-shadow:none; outline:none; }
+.search .row.main button { border-radius:22px; padding:11px 24px;
+  font-size:15px; }
 button { padding:10px 17px; border:0; border-radius:7px; background:var(--accent);
          color:#fff; font-size:14px; cursor:pointer; font-weight:500; }
 button.ghost { background:transparent; color:var(--accent);
@@ -67,6 +78,16 @@ button.ghost { background:transparent; color:var(--accent);
 .search select { padding:9px 10px; border:1px solid var(--line); border-radius:7px;
   background:var(--card); color:var(--fg); font-size:14px; }
 .mode-help { color:var(--muted); font-size:12.5px; }
+.rule-add { display:flex; gap:8px; margin-top:10px; }
+.rule-add input[type=text] { flex:1; }
+button.small { padding:4px 10px; font-size:12px; }
+.vote { white-space:nowrap; }
+.thumb { background:transparent; border:1px solid var(--line); color:var(--muted);
+  border-radius:5px; padding:2px 8px; font-size:11px; cursor:pointer;
+  margin-left:4px; font-weight:400; }
+.thumb:hover { color:var(--fg); border-color:var(--muted); }
+.thumb.done { background:var(--accent-soft); color:var(--fg);
+  border-color:var(--accent); }
 .pager { display:flex; align-items:center; gap:14px; margin:18px 0 4px; }
 .pager .range { color:var(--muted); font-size:12.5px; }
 .pager a.page { padding:7px 13px; border:1px solid var(--line); border-radius:7px;
@@ -471,6 +492,137 @@ function toast(message) {
     console.error('startup task failed', error);
   }
 });
+// ---- Folder rules and index cleanup (Settings) ----
+
+function postJson(url, body, method) {
+  return fetch(url, {
+    method: method || 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Tracepaper-Request': '1'},
+    body: body ? JSON.stringify(body) : undefined,
+  }).then(function (response) {
+    return response.json().then(function (data) {
+      if (!response.ok) { throw new Error(data.detail || ('HTTP ' + response.status)); }
+      return data;
+    });
+  });
+}
+
+function addRule() {
+  const prefix = document.getElementById('rule_prefix');
+  const kind = document.getElementById('rule_kind');
+  const status = document.getElementById('rule_status');
+  if (!prefix || !prefix.value.trim()) {
+    status.textContent = 'Enter a folder path first.';
+    return;
+  }
+  status.textContent = 'Saving…';
+  postJson('/api/rules', {prefix: prefix.value.trim(), rule: kind.value})
+    .then(function (data) {
+      // A rule matching nothing is nearly always a mistyped path, so say so
+      // now rather than leaving it to be discovered by its absence.
+      if (!data.items) {
+        status.textContent = 'Saved, but no indexed file is under that path — '
+          + 'check the spelling.';
+        return;
+      }
+      status.textContent = 'Saved. ' + data.items.toLocaleString()
+        + ' file(s) affected.';
+      setTimeout(function () { location.reload(); }, 900);
+    })
+    .catch(function (error) { status.textContent = error.message; });
+}
+
+function removeRule(prefix) {
+  const status = document.getElementById('rule_status');
+  status.textContent = 'Removing…';
+  postJson('/api/rules?prefix=' + encodeURIComponent(prefix), null, 'DELETE')
+    .then(function () { location.reload(); })
+    .catch(function (error) { status.textContent = error.message; });
+}
+
+function refreshPrune(options) {
+  const status = document.getElementById('prune_status');
+  const apply = document.getElementById('prune_apply');
+  if (!status) { return; }
+  if (!(options && options.quiet)) { status.textContent = 'Checking…'; }
+
+  fetch('/api/prune').then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (!data.items) {
+        status.textContent = 'Nothing to clean up.';
+        if (apply) { apply.hidden = true; }
+        return;
+      }
+      const reasons = (data.reasons || []).slice(0, 6).map(function (entry) {
+        return escapeHtml(entry.reason) + ' (' + entry.items.toLocaleString() + ')';
+      }).join(' · ');
+      status.innerHTML = '<b>' + data.items.toLocaleString() + '</b> of '
+        + data.total.toLocaleString() + ' indexed files would be removed.'
+        + '<br><span class="hint">' + reasons + '</span>';
+      if (apply) {
+        apply.hidden = false;
+        apply.textContent = 'Remove ' + data.items.toLocaleString() + ' files';
+      }
+    })
+    .catch(function (error) { status.textContent = error.message; });
+}
+
+function applyPrune() {
+  const status = document.getElementById('prune_status');
+  const apply = document.getElementById('prune_apply');
+  apply.disabled = true;
+  status.textContent = 'Removing…';
+  postJson('/api/prune')
+    .then(function (data) {
+      status.textContent = 'Removed ' + data.removed.toLocaleString()
+        + ' files from the index. Your files are untouched.';
+      apply.hidden = true;
+    })
+    .catch(function (error) { status.textContent = error.message; })
+    .finally(function () { apply.disabled = false; });
+}
+
+document.addEventListener('click', function (event) {
+  if (event.target.id === 'rule_add') { addRule(); }
+  else if (event.target.id === 'prune_check') { refreshPrune(); }
+  else if (event.target.id === 'prune_apply') { applyPrune(); }
+  else if (event.target.dataset && event.target.dataset.rulePrefix) {
+    removeRule(event.target.dataset.rulePrefix);
+  }
+});
+
+// Ranking feedback. Delegated, like every other handler here: inline
+// onclick attributes did not survive being written from a Python literal
+// and took the whole script down with them.
+document.addEventListener('click', function (event) {
+  const button = event.target.closest('.thumb');
+  if (!button) { return; }
+  const holder = button.closest('.vote');
+  const query = new URLSearchParams(location.search).get('q');
+  if (!holder || !query) { return; }
+
+  fetch('/api/feedback', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Tracepaper-Request': '1'},
+    body: JSON.stringify({
+      query: query,
+      item_id: Number(holder.dataset.item),
+      signal: button.dataset.signal,
+    }),
+  }).then(function (response) {
+    if (!response.ok) { throw new Error('HTTP ' + response.status); }
+    // Both buttons reset, so a change of mind reads correctly.
+    holder.querySelectorAll('.thumb').forEach(function (other) {
+      other.classList.remove('done');
+    });
+    button.classList.add('done');
+    button.textContent = button.dataset.signal === 'up' ? 'noted' : 'noted';
+  }).catch(function (error) {
+    console.error('feedback failed', error);
+    button.textContent = 'failed';
+  });
+});
+
 window.__tpOnReady = {push: function (fn) { fn(); }};
 """
 
@@ -525,15 +677,17 @@ def _esc(value) -> str:
 # How many photos a mixed search previews before deferring to Photos mode.
 PHOTO_PREVIEW = 5
 
+# "Everything" was a lie: it always excluded code. The label now says what
+# the mode does, so no mode silently includes something you did not ask for.
 _MODE_HELP = {
-    "everything": "Searches your files and photos. Skips code.",
-    "documents": "Only files — PDFs, notes, scans, email.",
-    "photos": "Only photos. Matches what is in the picture.",
-    "code": "Only code and config files.",
+    "everything": "Your files and photos. No code.",
+    "documents": "Files only. No photos, no code.",
+    "photos": "Photos only. Searches what is in the picture.",
+    "code": "Code and config files only.",
 }
 
-_MODE_LABELS = (("everything", "Everything"), ("documents", "Documents"),
-                ("photos", "Photos"), ("code", "Code"))
+_MODE_LABELS = (("everything", "My documents"), ("documents", "Files only"),
+                ("photos", "Photos only"), ("code", "Code"))
 _MODE_LABELS_BY_VALUE = dict(_MODE_LABELS)
 
 
@@ -550,7 +704,7 @@ def _search_form(query: str, tab: str, placeholder: str,
         for value, label in _MODE_LABELS)
     return f"""<form class="search" method="get">
   <input type="hidden" name="tab" value="{tab}">
-  <div class="row">
+  <div class="row main">
     <input type="text" name="q" value="{_esc(query)}" placeholder="{placeholder}"
            autofocus autocomplete="off">
     <select name="mode" aria-label="What to search">{options}</select>
@@ -682,46 +836,30 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
   <h3>{_esc(entity["canonical_name"])}</h3>{also}
 </div>""")
 
-    # 4. Photos matching the tags or description named in the query.
-    if result.photos:
-        filters = ", ".join(result.photo_filters)
-        # In a mixed search, photos are a preview strip above the documents --
-        # enough to recognise the picture, not enough to bury the files. The
-        # Photos mode shows the lot.
-        shown = result.photos
-        more_link = ""
-        if mode == "everything" and len(result.photos) > PHOTO_PREVIEW:
-            shown = result.photos[:PHOTO_PREVIEW]
-            params = urlencode({"tab": "search", "q": query, "mode": "photos",
-                                **({"semantic": "true"} if semantic else {})})
-            more_link = (f' &middot; <a href="/?{params}">'
-                         f'See all {len(result.photos)}</a>')
-        out.append(f'<h2>Photos <span class="count">{len(result.photos)}</span>'
-                   f'</h2><p class="hint">Matched on {_esc(filters)}.{more_link}</p>')
-        # A grid of actual thumbnails. A list of filenames is unusable for
-        # photos -- the picture is the thing you recognise, and clicking it
-        # should open the photo, not its confidence scores.
-        out.append('<div class="photos">')
-        for photo in shown:
-            tags = " ".join(f'<span class="pill">{_esc(t)}</span>'
-                            for t in photo["tags"][:6])
-            out.append(f"""<figure class="photo">
-  <a href="/file/{photo["item_id"]}" target="_blank" rel="noopener">
-    <img src="/thumb/{photo["item_id"]}?size=320" alt="{_esc(photo["title"])}"
-         loading="lazy">
-  </a>
-  <figcaption>
-    <a href="/file/{photo["item_id"]}" target="_blank" rel="noopener"
-       >{_esc(photo["title"])}</a>
-    <div class="tags">{tags}</div>
-  </figcaption>
-</figure>""")
-        out.append('</div>')
+    # 4. Photos. In a mixed search these compete with the documents rather
+    # than always sitting on top: the strip is placed at the rank its best
+    # photo earns, so a weak tag match ("2019" matches a whole year) appears
+    # below the files instead of above them.
+    photo_block = _photo_strip(result, query, mode, semantic)
+    best_photo = max((p.get("score", 0.0) for p in result.photos), default=0.0)
+    photos_placed = False
+    if photo_block and mode != "everything":
+        out.append(photo_block)
+        photos_placed = True
 
     # 5. Matching documents -- the floor that always has something to say.
     if result.hits:
+        # Documents are rescaled so the best is 1.0, and photo scores are on
+        # the same 0-1 scale, so the two are directly comparable.
+        if photo_block and not photos_placed and best_photo >= result.hits[0].score:
+            out.append(photo_block)
+            photos_placed = True
         out.append(f'<h2>Documents <span class="count">{result.total_hits}</span></h2>')
         for hit in result.hits:
+            if (photo_block and not photos_placed
+                    and best_photo >= hit.score):
+                out.append(photo_block)
+                photos_placed = True
             page = f' <span class="pill">p.{hit.page}</span>' if hit.page else ""
             signals = " ".join(f"{k}={v:+.4f}"
                                for k, v in sorted(hit.signals.items())
@@ -754,11 +892,59 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
   <div class="snip">{_esc(hit.snippet)}</div>
   {more}
   <div class="sig">score={hit.score:.4f} · {_esc(signals)}
-    · <a href="/api/items/{hit.item_id}">why</a></div>
+    · <a href="/api/items/{hit.item_id}">why</a>
+    · <span class="vote" data-item="{hit.item_id}">
+        <button type="button" class="thumb" data-signal="up"
+                title="This is what I wanted for these words">&#9650; better</button>
+        <button type="button" class="thumb" data-signal="down"
+                title="Not what I wanted for these words">&#9660; worse</button>
+      </span></div>
 </div>""")
 
         out.append(_pager(query, result, limit, semantic, mode, offset))
 
+    # Photos that outranked nothing still belong on the page, at the bottom.
+    if photo_block and not photos_placed:
+        out.append(photo_block)
+
+    return "".join(out)
+
+
+def _photo_strip(result, query: str, mode: str, semantic: bool) -> str:
+    """The photo grid, as one block that can be placed by rank."""
+    if not result.photos:
+        return ""
+
+    filters = ", ".join(result.photo_filters)
+    shown = result.photos
+    more_link = ""
+    if mode != "photos" and len(result.photos) > PHOTO_PREVIEW:
+        shown = result.photos[:PHOTO_PREVIEW]
+        params = urlencode({"tab": "search", "q": query, "mode": "photos",
+                            **({"semantic": "true"} if semantic else {})})
+        more_link = (f' &middot; <a href="/?{params}">'
+                     f'See all {len(result.photos)}</a>')
+
+    out = [f'<h2>Photos <span class="count">{len(result.photos)}</span></h2>'
+           f'<p class="hint">Matched on {_esc(filters)}.{more_link}</p>',
+           '<div class="photos">']
+    # Thumbnails, not filenames: the picture is what you recognise, and
+    # clicking it opens the photo rather than its confidence scores.
+    for photo in shown:
+        tags = " ".join(f'<span class="pill">{_esc(t)}</span>'
+                        for t in photo["tags"][:6])
+        out.append(f"""<figure class="photo">
+  <a href="/file/{photo["item_id"]}" target="_blank" rel="noopener">
+    <img src="/thumb/{photo["item_id"]}?size=320" alt="{_esc(photo["title"])}"
+         loading="lazy">
+  </a>
+  <figcaption>
+    <a href="/file/{photo["item_id"]}" target="_blank" rel="noopener"
+       >{_esc(photo["title"])}</a>
+    <div class="tags">{tags}</div>
+  </figcaption>
+</figure>""")
+    out.append('</div>')
     return "".join(out)
 
 
@@ -1051,10 +1237,80 @@ def _settings_tab(conn: sqlite3.Connection) -> str:
   </div>
 </form>""")
 
+    out.append(_rules_panel(conn))
+    out.append(_cleanup_panel())
     out.append(_coverage_panel(conn))
     out.append(_jobs_panel())
     out.append(_updates_panel())
     return "".join(out)
+
+
+def _rules_panel(conn: sqlite3.Connection) -> str:
+    """Folder rules: the part of search you can actually change.
+
+    Everything else on this page describes what Tracepaper decided. This is
+    where you overrule it, and the rules stick -- they are keyed on the path,
+    so a rescan does not clear them.
+    """
+    from . import rules as rules_module
+
+    existing = rules_module.list_rules(conn)
+    if existing:
+        rows = "".join(
+            f'<tr><td><code>{_esc(r["prefix"])}</code></td>'
+            f'<td><span class="pill">{_esc(r["rule"])}</span></td>'
+            f'<td>{int(r["items"]):,}</td>'
+            f'<td><button type="button" class="ghost small" data-rule-prefix='
+            f'"{_esc(r["prefix"])}">Remove</button></td></tr>'
+            for r in existing)
+        table = (f'<table><tr><th>Folder</th><th>Rule</th><th>Files</th>'
+                 f'<th></th></tr>{rows}</table>')
+    else:
+        table = ('<p class="hint">No rules yet. Add one below to change what '
+                 'search does with a folder.</p>')
+
+    return f"""<h2>Folder rules</h2>
+<p class="hint">Teach search about a folder. Rules apply to everything inside
+it and stay after a rescan.</p>
+<ul class="tips">
+  <li><b>Code</b> — keep it out of normal results. Still there under
+      <b>Code</b> in the search box.</li>
+  <li><b>Hide</b> — never show it in search at all.</li>
+  <li><b>Boost</b> — rank files here higher when they match.</li>
+</ul>
+{table}
+<div class="field rule-add">
+  <input type="text" id="rule_prefix" placeholder="/mnt/nas/documents/Projects">
+  <select id="rule_kind">
+    <option value="code">Code</option>
+    <option value="hide">Hide</option>
+    <option value="boost">Boost</option>
+  </select>
+  <button type="button" id="rule_add">Add rule</button>
+</div>
+<div id="rule_status" class="status"></div>"""
+
+
+def _cleanup_panel() -> str:
+    """Remove indexed files that today's rules would not index.
+
+    Exists because the alternative was telling you to run
+    `tracepaper prune --apply` in a terminal, and a setting you have to leave
+    the page to apply is not really a setting.
+    """
+    return """<h2>Clean up the index</h2>
+<p class="hint">Rules only apply to the <b>next</b> scan. Files indexed before
+you set a rule stay until you remove them here.</p>
+<p class="hint">This deletes index entries only. <b>Your files are never
+touched</b>, and a scan rebuilds anything removed by mistake.</p>
+<div class="actions">
+  <button type="button" id="prune_check" class="ghost">See what would go</button>
+  <button type="button" id="prune_apply" hidden>Remove them</button>
+</div>
+<div id="prune_status" class="status"></div>
+<script>(window.__tpOnReady = window.__tpOnReady || []).push(function () {
+  refreshPrune({quiet: true});
+});</script>"""
 
 
 
@@ -1165,9 +1421,8 @@ these folders with a version number in the name, so they cannot be listed
 one by one.</p>
 <p class="excludes">{patterns}</p>
 <p class="hint">This list applies to the <b>next</b> scan. Files already
-indexed stay until you remove them. To remove them, run
-<code>tracepaper prune</code>. It only reports; add <code>--apply</code> to
-actually delete.</p>
+indexed stay until you remove them, which you can do under
+<b>Clean up the index</b> above.</p>
 {indexed_table}"""
 
 

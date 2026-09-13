@@ -280,6 +280,48 @@ CREATE INDEX IF NOT EXISTS idx_faces_cluster ON faces(cluster_id);
 
 -- ------------------------------------------------------------------ jobs
 
+-- Rules you set by hand about a folder or a file. The human layer for
+-- search, alongside `corrections` for extracted values: a rule you write
+-- outranks anything the classifier decided, and it survives rescans because
+-- it is keyed on the path rather than on an item id.
+--
+--   code  -- treat everything beneath as code; keep it out of normal results
+--   hide  -- never show this in search at all
+--   boost -- rank matches beneath this path higher
+--
+-- `prefix` is matched against the start of items.uri, so one rule covers a
+-- whole tree. Deliberately not a glob: a prefix is predictable, is a plain
+-- string comparison in SQL, and is what "this folder" actually means.
+CREATE TABLE IF NOT EXISTS path_rules (
+    id         INTEGER PRIMARY KEY,
+    prefix     TEXT NOT NULL UNIQUE,
+    rule       TEXT NOT NULL CHECK (rule IN ('code', 'hide', 'boost')),
+    weight     REAL NOT NULL DEFAULT 1.0,   -- boost only
+    note       TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_path_rules_rule ON path_rules(rule);
+
+-- What you told search by using it: which document you actually opened for a
+-- given query. Ranking feedback is keyed on the QUERY, not on the document
+-- alone -- "this file is always best" is not a thing a search engine should
+-- learn, but "for these words, this file is what he wanted" is.
+--
+-- Stored as counts rather than a model. It is inspectable, it is revertible
+-- one row at a time, and it keeps the query path free of inference.
+CREATE TABLE IF NOT EXISTS query_feedback (
+    id          INTEGER PRIMARY KEY,
+    query_norm  TEXT NOT NULL,        -- lowercased, stopwords dropped, sorted
+    item_id     INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    signal      TEXT NOT NULL CHECK (signal IN ('up', 'down', 'open')),
+    count       INTEGER NOT NULL DEFAULT 1,
+    updated_at  TEXT NOT NULL,
+    UNIQUE (query_norm, item_id, signal)
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_query ON query_feedback(query_norm);
+-- The FK above cascades on delete, which full-scans without this.
+CREATE INDEX IF NOT EXISTS idx_feedback_item ON query_feedback(item_id);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id         INTEGER PRIMARY KEY,
     item_id    INTEGER REFERENCES items(id) ON DELETE CASCADE,

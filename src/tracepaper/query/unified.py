@@ -57,6 +57,23 @@ _PHOTO_WORDS = frozenset({
 _CODE_ISH = re.compile(r"""[{}\[\]<>]|::|=>|^\s*(?:def|class|import|return)\b""")
 
 
+# How confident a photo match is, on the same 0-1 scale the ranked documents
+# are rescaled to. A caption match is the strongest signal -- it means the
+# words appear in a sentence describing the picture. Two tags agreeing (a
+# place and a year) is next. One tag is weak: "2019" matches a whole year of
+# photographs.
+_PHOTO_CAPTION_SCORE = 0.9
+_PHOTO_TAG_SCORES = (0.0, 0.45, 0.75, 0.85)
+
+
+def _photo_score(tag_matches: int, has_caption: bool) -> float:
+    """A comparable relevance score for a photo hit."""
+    tag_score = _PHOTO_TAG_SCORES[min(tag_matches, len(_PHOTO_TAG_SCORES) - 1)]
+    if has_caption:
+        return max(_PHOTO_CAPTION_SCORE, tag_score)
+    return tag_score
+
+
 def _is_answerable(value: FieldValue) -> bool:
     """True when a stored value is fit to show as *the* answer.
 
@@ -384,12 +401,16 @@ class UnifiedSearch:
 
         sql = " UNION ".join(arms) + " ORDER BY created_at DESC, id LIMIT 60"
         rows = self.conn.execute(sql, params).fetchall()
+        caption_set = set(caption_ids)
         result.photo_filters = [f"{ns}={value}" for ns, value in matched]
         if caption_ids:
             result.photo_filters.append("description")
         result.photos = [
             {"item_id": int(r["id"]), "title": r["title"], "uri": r["uri"],
              "date": r["created_at"],
+             # How well this photo answers the query, so it can compete with
+             # the documents rather than always sitting above them.
+             "score": _photo_score(len(matched), int(r["id"]) in caption_set),
              "tags": [f'{t["namespace"]}={t["value"]}' for t in self.conn.execute(
                  "SELECT namespace, value FROM tags WHERE item_id = ? "
                  "ORDER BY namespace LIMIT 8", (r["id"],))]}

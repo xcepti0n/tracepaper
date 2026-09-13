@@ -876,8 +876,8 @@ def test_settings_shows_what_is_indexed_and_what_is_skipped(client):
     assert "Never indexed" in page
     assert ".obsidian" in page, "the exclude list must be visible"
     assert ".pdf" in page and ".heic" in page
-    assert "tracepaper prune" in page, (
-        "excluding something later must explain how to drop what is indexed")
+    assert "Clean up the index" in page, (
+        "excluding something later must offer a way to drop what is indexed")
 
 
 def test_obsidian_internals_are_excluded():
@@ -1034,3 +1034,74 @@ def test_search_page_links_each_passage_to_its_page(cfg, conn, nas):
 
     assert "<details class=\"more\"" in html, "grouped pages should be shown"
     assert "matching passages</summary>" in html
+
+
+def test_settings_offers_the_controls_instead_of_terminal_commands(client):
+    """Settings was half documentation. The things it describes are now doable."""
+    page = client.get("/?tab=settings").text
+
+    assert "Folder rules" in page, "rules must be settable from the page"
+    assert "Clean up the index" in page, "prune must not need a terminal"
+    assert 'id="rule_add"' in page
+    assert 'id="prune_apply"' in page
+    # The old instruction to go and run a command is gone.
+    assert "tracepaper prune</code> (add" not in page
+
+
+def test_search_results_carry_ranking_feedback_controls(client):
+    page = client.get("/", params={"q": "wages", "semantic": "false"}).text
+    assert 'class="thumb"' in page
+    assert 'data-signal="up"' in page and 'data-signal="down"' in page
+
+
+def test_no_mode_is_called_everything(client):
+    """"Everything" never included code, so the label was a lie."""
+    page = client.get("/?tab=search").text
+    assert ">Everything<" not in page
+    assert ">My documents<" in page
+
+
+def test_feedback_endpoint_records_and_clears(client, populated):
+    item_id = populated.execute("SELECT id FROM items LIMIT 1").fetchone()["id"]
+    headers = {"X-Tracepaper-Request": "1"}
+
+    posted = client.post("/api/feedback", headers=headers, json={
+        "query": "the Wages", "item_id": item_id, "signal": "up"})
+    assert posted.status_code == 200
+    # Stored against the normalised query, so rephrasing still benefits.
+    assert posted.json()["normalized"] == "wages"
+
+    cleared = client.request("DELETE", "/api/feedback", headers=headers,
+                             params={"query": "wages"})
+    assert cleared.json()["removed"] == 1
+
+
+def test_writes_refuse_a_cross_site_request(client, populated):
+    """The same guard the update and job endpoints use."""
+    item_id = populated.execute("SELECT id FROM items LIMIT 1").fetchone()["id"]
+
+    without_header = client.post("/api/feedback", json={
+        "query": "wages", "item_id": item_id, "signal": "up"})
+    assert without_header.status_code == 403
+
+    cross_site = client.post(
+        "/api/rules",
+        headers={"X-Tracepaper-Request": "1", "Sec-Fetch-Site": "cross-site"},
+        json={"prefix": "/nas", "rule": "code"})
+    assert cross_site.status_code == 403
+
+
+def test_adding_a_rule_reports_how_many_files_it_covers(client):
+    """A rule matching nothing is a typo, and must say so immediately."""
+    response = client.post("/api/rules",
+                           headers={"X-Tracepaper-Request": "1"},
+                           json={"prefix": "/no/such/place", "rule": "code"})
+    assert response.status_code == 200
+    assert response.json()["items"] == 0
+
+
+def test_prune_preview_is_a_get_and_changes_nothing(client, populated):
+    before = populated.execute("SELECT COUNT(*) AS n FROM items").fetchone()["n"]
+    assert client.get("/api/prune").status_code == 200
+    after = populated.execute("SELECT COUNT(*) AS n FROM items").fetchone()["n"]
+    assert after == before

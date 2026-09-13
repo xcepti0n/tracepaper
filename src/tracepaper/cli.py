@@ -22,6 +22,7 @@ from pathlib import Path
 
 from . import backup, corrections, embed, entities, enrich, events, notes, vocabulary
 from .config import Config
+from .prune import prunable, prune_reasons
 from .db import connect
 from .index.indexer import Indexer
 from .query.evidence import EvidenceQuery
@@ -299,16 +300,11 @@ def _cmd_prune(args, cfg, conn) -> int:
     rescan rebuilds anything excluded by mistake -- but it is still a delete,
     so it asks.
     """
-    excludes = set(cfg.excludes)
     rows = conn.execute(
         "SELECT id, uri FROM items WHERE uri IS NOT NULL AND deleted_at IS NULL"
     ).fetchall()
-
-    doomed = []
-    for row in rows:
-        parts = set(Path(row["uri"]).parts)
-        if parts & excludes:
-            doomed.append((int(row["id"]), row["uri"]))
+    doomed = [(int(r["id"]), r["uri"]) for r in prunable(conn, cfg, rows)]
+    excludes = set(cfg.excludes)
 
     if args.formats:
         _prune_machine_formats(args, conn, rows)
@@ -319,7 +315,7 @@ def _cmd_prune(args, cfg, conn) -> int:
 
     by_pattern: dict[str, int] = {}
     for _, uri in doomed:
-        for pattern in sorted(set(Path(uri).parts) & excludes):
+        for pattern in sorted(prune_reasons(conn, cfg, uri)):
             by_pattern[pattern] = by_pattern.get(pattern, 0) + 1
 
     print(f"{len(doomed)} item(s) are under an excluded path:")
