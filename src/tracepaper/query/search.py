@@ -15,6 +15,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import modes
+
 # Fixed ranking constants. Every tunable lives here so ranking stays auditable
 # and reproducible -- never inline magic numbers (FR-13).
 BM25_WEIGHT_TEXT = 1.0
@@ -26,9 +28,18 @@ SNIPPET_CHARS = 240
 # A document is one result, however many of its passages match. Ranking still
 # happens per passage -- that is what BM25 and the vectors score -- so the
 # passage pass has to look deeper than `limit` before collapsing, or a single
-# long manual fills the page and hides everything else. 8x covers the common
-# case (a guide matching on every page) without scanning the whole index.
+# long manual fills the page and hides everything else.
+#
+# 8x covers the common case. It is not a guarantee: a 400-page manual can own
+# every passage in the window on its own, and then one deeper pass runs (see
+# GROUP_RETRY_FACTOR) rather than returning a two-row page.
 GROUP_OVERFETCH = 8
+
+# The retry when the first window collapsed into too few documents. One
+# retry, not a loop: the second pass is wide enough that a still-short page
+# means the corpus really has that few matching documents.
+GROUP_RETRY_FACTOR = 12
+MAX_GROUP_SCAN = 5000        # never scan the whole index to fill one page
 MAX_PASSAGES_PER_DOC = 5     # how many extra pages to keep for the expander
 
 # Reciprocal Rank Fusion. k=60 is the standard constant; fixed, never learned,
@@ -122,40 +133,74 @@ class SearchEngine:
         self.conn = conn
 
     def search(self, query: str, *, limit: int = 20, offset: int = 0,
-               kind: str | None = None, semantic: bool = True) -> SearchResponse:
+               kind: str | None = None, semantic: bool = True,
+               code: str = "exclude") -> SearchResponse:
         """Keyword and (when available) vector search, fused by RRF.
 
         Semantic search is additive: with no embeddings or no model installed,
         this degrades to pure BM25 and still works (NFR-9).
+
+        `code` is one of "exclude" (the default), "include" or "only".
+        Source and config files are a large part of a developer's NAS and
+        almost never the answer to a question about their documents, so they
+        are filtered out unless asked for. They stay in the index either way.
         """
         fts_query = to_fts_query(query)
         # Rank passages deeply, then collapse to documents: `limit` counts
         # documents, so the passage pass must over-fetch to have anything left
         # after a long document's pages are folded into one result.
-        deep = limit * GROUP_OVERFETCH
-        keyword_hits = self._keyword_search(fts_query, deep, offset, kind, query) \
-            if fts_query else []
+        # Rank from the top every time and slice documents at the end.
+        # Passing `offset` down to the passage query would page over passages,
+        # which is a different unit than the one the results are in.
+        deep = (limit + offset) * GROUP_OVERFETCH
+        keyword_hits = self._keyword_search(fts_query, deep, 0, kind, query,
+                                            code) if fts_query else []
 
         vector_ranks: dict[int, int] = {}
         if semantic:
-            vector_ranks = self._vector_ranks(query, deep, offset, kind)
+            vector_ranks = self._vector_ranks(query, deep, 0, kind,
+                                              code)
 
         if not keyword_hits and not vector_ranks:
             return SearchResponse(query=query, hits=[], total=0, fts_query=fts_query)
 
         if not vector_ranks:
-            hits = _group_by_document(keyword_hits, limit)
-            total = self._count(fts_query, kind) if fts_query else 0
+            hits = _group_by_document(keyword_hits, limit, offset)
+            total = self._count(fts_query, kind, code) if fts_query else 0
+            # One long document can own the whole window, leaving a page with
+            # two rows on it while other documents wait just past the edge.
+            if len(hits) < limit and offset + len(hits) < total:
+                wider = min((limit + offset) * GROUP_OVERFETCH
+                            * GROUP_RETRY_FACTOR, MAX_GROUP_SCAN)
+                if wider > deep:
+                    keyword_hits = self._keyword_search(
+                        fts_query, wider, 0, kind, query, code)
+                    hits = _group_by_document(keyword_hits, limit, offset)
             return SearchResponse(query=query, hits=hits, total=total,
                                   fts_query=fts_query)
 
-        hits = self._fuse(keyword_hits, vector_ranks, query, limit, kind)
-        total = max(self._count(fts_query, kind) if fts_query else 0, len(hits))
+        hits = self._fuse(keyword_hits, vector_ranks, query, limit, kind,
+                          code, offset)
+        total = max(self._count(fts_query, kind, code) if fts_query else 0,
+                    offset + len(hits))
+        # Same short-page problem as the keyword path, same single retry.
+        if len(hits) < limit and offset + len(hits) < total:
+            wider = min((limit + offset) * GROUP_OVERFETCH * GROUP_RETRY_FACTOR,
+                        MAX_GROUP_SCAN)
+            if wider > deep:
+                keyword_hits = self._keyword_search(
+                    fts_query, wider, 0, kind, query, code) \
+                    if fts_query else []
+                vector_ranks = self._vector_ranks(query, wider, 0, kind,
+                                                  code)
+                hits = self._fuse(keyword_hits, vector_ranks, query, limit,
+                                  kind, code, offset)
         return SearchResponse(query=query, hits=hits, total=total,
                               fts_query=fts_query)
 
     def _keyword_search(self, fts_query: str, limit: int, offset: int,
-                        kind: str | None, raw_query: str) -> list[RankedHit]:
+                        kind: str | None, raw_query: str,
+                        code: str = "exclude") -> list[RankedHit]:
 
         sql = """
             SELECT
@@ -177,6 +222,7 @@ class SearchEngine:
         if kind:
             sql += " AND i.kind = ?"
             params.append(kind)
+        sql += _code_clause(code)
 
         # Deterministic ordering: score first, then passage_id as a total
         # tie-break so equal scores never reorder between runs (NFR-2).
@@ -223,7 +269,8 @@ class SearchEngine:
         return hits
 
     def _vector_ranks(self, query: str, limit: int, offset: int,
-                      kind: str | None) -> dict[int, int]:
+                      kind: str | None,
+                      code: str = "exclude") -> dict[int, int]:
         """Passage id to its rank in vector search (1-based)."""
         from .. import embed
 
@@ -231,14 +278,16 @@ class SearchEngine:
             return {}
         try:
             scored = embed.search(self.conn, query, limit=(limit + offset) * 3,
-                                  kind=kind)
+                                  kind=kind, code=code)
         except Exception:
             return {}
         return {pid: rank for rank, (pid, score) in enumerate(scored, start=1)
                 if score >= MIN_VECTOR_SIMILARITY}
 
     def _fuse(self, keyword_hits: list[RankedHit], vector_ranks: dict[int, int],
-              query: str, limit: int, kind: str | None) -> list[RankedHit]:
+              query: str, limit: int, kind: str | None,
+              code: str = "exclude",
+              offset: int = 0) -> list[RankedHit]:
         """Reciprocal Rank Fusion over the two signals.
 
         RRF combines ranks rather than scores, so BM25 and cosine similarity --
@@ -251,7 +300,7 @@ class SearchEngine:
 
         # Vector-only hits still need their row loaded to be displayable.
         missing = [pid for pid in vector_ranks if pid not in by_id]
-        for hit in self._load_hits(missing, query, kind):
+        for hit in self._load_hits(missing, query, kind, code):
             by_id[hit.passage_id] = hit
 
         fused: list[RankedHit] = []
@@ -286,7 +335,7 @@ class SearchEngine:
             ))
 
         fused.sort(key=lambda h: (-h.score, h.passage_id))
-        fused = _group_by_document(fused, limit)
+        fused = _group_by_document(fused, limit, offset)
 
         # RRF produces scores around 0.01-0.03, which are unreadable and round
         # to 0.00 in any display. Rescale so the best hit is 1.0 and the rest
@@ -300,7 +349,8 @@ class SearchEngine:
         return fused
 
     def _load_hits(self, passage_ids: list[int], query: str,
-                   kind: str | None) -> list[RankedHit]:
+                   kind: str | None,
+                   code: str = "exclude") -> list[RankedHit]:
         """Build hits for passages found only by vector search."""
         if not passage_ids:
             return []
@@ -312,6 +362,7 @@ class SearchEngine:
         if kind:
             sql += " AND i.kind = ?"
             params.append(kind)
+        sql += _code_clause(code)
 
         terms = {t.lower() for t in _TOKEN.findall(query)}
         return [
@@ -324,7 +375,8 @@ class SearchEngine:
             for row in self.conn.execute(sql, params).fetchall()
         ]
 
-    def _count(self, fts_query: str, kind: str | None) -> int:
+    def _count(self, fts_query: str, kind: str | None,
+               code: str = "exclude") -> int:
         """How many DOCUMENTS match -- the unit the results are now in.
 
         Counting passages here meant "8 results" printed above a single row,
@@ -338,6 +390,7 @@ class SearchEngine:
         if kind:
             sql += " AND i.kind = ?"
             params.append(kind)
+        sql += _code_clause(code)
         try:
             row = self.conn.execute(sql, params).fetchone()
             return int(row["n"]) if row else 0
@@ -408,7 +461,22 @@ class SearchEngine:
         return ("…" if start > 0 else "") + snippet + ("…" if end < len(text) else "")
 
 
-def _group_by_document(hits: list[RankedHit], limit: int) -> list[RankedHit]:
+def _code_clause(code: str) -> str:
+    """The WHERE fragment selecting code, documents, or both.
+
+    Applied in SQL rather than in Python so it takes effect before LIMIT --
+    filtering afterwards returns a nearly empty page whenever the top-ranked
+    passages were the ones being filtered out.
+    """
+    if code == "include":
+        return ""
+    if code == "only":
+        return f" AND {modes.sql_only_code('i')}"
+    return f" AND {modes.sql_filter('i')}"
+
+
+def _group_by_document(hits: list[RankedHit], limit: int,
+                       offset: int = 0) -> list[RankedHit]:
     """Collapse passage hits into one result per document.
 
     A 40-page printer manual that mentions the query on every page was
@@ -437,7 +505,10 @@ def _group_by_document(hits: list[RankedHit], limit: int) -> list[RankedHit]:
             leader.more.append(PassageMatch(
                 passage_id=hit.passage_id, page=hit.page,
                 snippet=hit.snippet, score=hit.score))
-    return list(by_item.values())[:limit]
+    # Slice DOCUMENTS, not passages. Paging on the passage offset put page 2
+    # in the middle of a long manual's run, so it repeated documents page 1
+    # had already shown and returned short pages.
+    return list(by_item.values())[offset:offset + limit]
 
 
 def _flatten(text: str) -> str:

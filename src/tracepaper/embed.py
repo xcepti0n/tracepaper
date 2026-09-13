@@ -295,7 +295,8 @@ def _write_batch(conn: sqlite3.Connection, batch, vectors, model_id: str,
 
 def search(conn: sqlite3.Connection, query: str, *, limit: int = 20,
            model_id: str = DEFAULT_MODEL, kind: str | None = None,
-           budget_seconds: float | None = None) -> list[tuple[int, float]]:
+           budget_seconds: float | None = None,
+           code: str = "exclude") -> list[tuple[int, float]]:
     """Vector search. Returns (passage_id, similarity) ordered deterministically.
 
     Brute force over stored vectors, scored as batched matrix products. That is
@@ -323,6 +324,13 @@ def search(conn: sqlite3.Connection, query: str, *, limit: int = 20,
     if kind:
         sql += " AND i.kind = ?"
         params.append(kind)
+    if code != "include":
+        # Filtering here is not only about relevance: it is fewer vectors to
+        # score, so the scan finishes sooner and is less likely to hit the
+        # time budget below.
+        from .query import modes
+        sql += (f" AND {modes.sql_only_code('i')}" if code == "only"
+                else f" AND {modes.sql_filter('i')}")
 
     # Only `limit` rows can survive, so keep a heap of exactly that many rather
     # than materialising a tuple per passage -- at a million passages the full

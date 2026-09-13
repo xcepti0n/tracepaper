@@ -151,10 +151,16 @@ class Enricher:
                 "ON CONFLICT DO NOTHING", (item_id,))
 
     def _caption_photos(self, result: EnrichResult, limit: int | None) -> None:
-        """Caption only photos whose labels came out thin.
+        """Write a one-line description of each photo, for searching by it.
 
-        A VLM pass is orders of magnitude slower than Vision, so it is spent
-        where Vision had least to say.
+        Tags are single words, so they cannot answer "dog on the beach" -- and
+        most photos are named `IMG_4821.jpg`, which answers nothing. A caption
+        is the only text many photos will ever have.
+
+        Still ordered thin-labels-first, because those gain the most, but it
+        no longer *stops* there: a well-tagged photo still benefits from a
+        sentence. The image is downscaled before sending (see vision.caption),
+        which is most of what made this slow.
         """
         from .extract import vision
 
@@ -166,9 +172,11 @@ class Enricher:
             "WHERE i.kind = 'photo' AND i.deleted_at IS NULL AND i.uri IS NOT NULL "
             "AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.item_id = i.id "
             "                AND t.namespace = 'caption') "
-            "AND (SELECT COUNT(*) FROM tags t2 WHERE t2.item_id = i.id "
-            "     AND t2.namespace = 'object' AND t2.value != '_none') < 3 "
-            "ORDER BY i.id" + (f" LIMIT {int(limit)}" if limit else " LIMIT 200")
+            # Thinly-labelled photos first -- they gain the most -- but every
+            # photo is eventually captioned, not just those.
+            "ORDER BY (SELECT COUNT(*) FROM tags t2 WHERE t2.item_id = i.id "
+            "          AND t2.namespace = 'object' AND t2.value != '_none'), i.id"
+            + (f" LIMIT {int(limit)}" if limit else " LIMIT 200")
         ).fetchall()
 
         for row in rows:

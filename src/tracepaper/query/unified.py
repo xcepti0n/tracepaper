@@ -47,6 +47,13 @@ _INTERROGATIVE = re.compile(
 # Values that are syntax rather than facts. The generic `label: value`
 # extractor cannot tell a form field from a line of JSON, so source files
 # vendored into the corpus produce fields whose values are code fragments.
+# Words naming the medium rather than its content. "photos of the dog" is a
+# request for photos of a dog, not for photos tagged "photo".
+_PHOTO_WORDS = frozenset({
+    "photo", "photos", "picture", "pictures", "pic", "pics",
+    "image", "images", "snap", "snaps", "shot", "shots",
+})
+
 _CODE_ISH = re.compile(r"""[{}\[\]<>]|::|=>|^\s*(?:def|class|import|return)\b""")
 
 
@@ -78,6 +85,8 @@ class UnifiedResult:
     matched_keys: list[str] = field(default_factory=list)
     photos: list[dict] = field(default_factory=list)
     photo_filters: list[str] = field(default_factory=list)
+    mode: str = "everything"
+    offset: int = 0
 
     @property
     def is_empty(self) -> bool:
@@ -91,22 +100,37 @@ class UnifiedSearch:
         self.fields = FieldQuery(conn)
         self.search = SearchEngine(conn)
 
-    def query(self, text: str, *, limit: int = 20,
-              semantic: bool = True) -> UnifiedResult:
-        result = UnifiedResult(query=text)
+    def query(self, text: str, *, limit: int = 20, semantic: bool = True,
+              mode: str = "everything", offset: int = 0) -> UnifiedResult:
+        """Search every layer, filtered to what `mode` asks for.
+
+        The layers above the document list (a stored value, an event, an
+        entity) answer questions, not file types -- so a narrowed mode hides
+        them rather than showing answers the mode said it did not want.
+        """
+        result = UnifiedResult(query=text, mode=mode, offset=offset)
         if not text.strip():
             return result
 
         tokens = [t.lower() for t in _TOKEN.findall(text)]
         meaningful = [t for t in tokens if t not in _STOPWORDS]
 
-        constraints = self._constraints(text)
-        self._answer(text, meaningful, constraints, result)
-        self._events(text, meaningful, result)
-        self._entities(meaningful, result)
-        self._photos(meaningful, result)
+        if mode in ("everything", "documents"):
+            constraints = self._constraints(text)
+            self._answer(text, meaningful, constraints, result)
+            self._events(text, meaningful, result)
+            self._entities(meaningful, result)
+        if mode in ("everything", "photos"):
+            self._photos(meaningful, result)
 
-        response = self.search.search(text, limit=limit, semantic=semantic)
+        if mode == "photos":
+            # Photos are shown as a grid, not as passages.
+            return result
+
+        kind = "document" if mode == "documents" else None
+        response = self.search.search(
+            text, limit=limit, offset=offset, semantic=semantic, kind=kind,
+            code="only" if mode == "code" else "exclude")
         result.hits = response.hits
         result.total_hits = response.total
         return result
@@ -279,6 +303,27 @@ class UnifiedSearch:
             result.entities.append(entity)
 
 
+    def _caption_matches(self, tokens: list[str]) -> list[int]:
+        """Photos whose written description contains every meaningful word.
+
+        Captions come from the vision model at ingest and are plain sentences,
+        so this is a substring test -- deterministic, no model in the query
+        path. Every word must appear, so "dog beach" does not return every
+        photo of a dog.
+        """
+        words = [t for t in tokens if t not in _PHOTO_WORDS and len(t) > 2]
+        if not words:
+            return []
+
+        sql = ["SELECT item_id FROM tags WHERE namespace = 'caption'"]
+        params: list[object] = []
+        for word in words[:6]:
+            sql.append("AND lower(value) LIKE ?")
+            params.append(f"%{word}%")
+        sql.append("LIMIT 60")
+        return [int(r["item_id"])
+                for r in self.conn.execute(" ".join(sql), params).fetchall()]
+
     def _photos(self, tokens: list[str], result: UnifiedResult) -> None:
         """Photos matching tags in the query -- "photos from Goa in 2019".
 
@@ -291,33 +336,57 @@ class UnifiedSearch:
         # Tag values the query actually mentions, as (namespace, value).
         matched: list[tuple[str, str]] = []
         for token in tokens:
-            if token in ("photo", "photos", "picture", "pictures", "image",
-                         "images"):
+            if token in _PHOTO_WORDS:
                 continue
             rows = self.conn.execute(
                 "SELECT DISTINCT namespace, value FROM tags "
-                "WHERE (lower(value) = ? OR lower(value) = ? "
-                "       OR (namespace IN ('year','month') AND value = ?)) "
+                "WHERE namespace != 'caption' "
+                "AND (lower(value) = ? OR lower(value) = ? "
+                "     OR (namespace IN ('year','month') AND value = ?)) "
                 "AND value != '_none' LIMIT 4",
                 (token, token.rstrip("s"), token),
             ).fetchall()
             for row in rows:
                 matched.append((row["namespace"], row["value"]))
 
-        if not matched:
+        caption_ids = self._caption_matches(tokens)
+
+        if not matched and not caption_ids:
             return
 
-        sql = ["SELECT DISTINCT i.id, i.title, i.uri, i.created_at",
-               "FROM items i WHERE i.deleted_at IS NULL AND i.kind = 'photo'"]
+        # Two routes to a photo, and either alone is enough.
+        #
+        # Tags narrow *together*: "goa 2019" means both, not either, so a year
+        # and a place filter down to the trip rather than returning every
+        # photo from that year. Captions are the other half -- tag values are
+        # single words, so a photo described as "a dog running on a sandy
+        # beach" is unreachable by tag for "sandy". The caption knows.
+        #
+        # So: AND within the tag arm, UNION between the arms.
+        arms: list[str] = []
         params: list[object] = []
-        for namespace, value in matched:
-            sql.append("AND EXISTS (SELECT 1 FROM tags t WHERE t.item_id = i.id "
-                       "AND t.namespace = ? AND t.value = ?)")
-            params.extend([namespace, value])
-        sql.append("ORDER BY i.created_at DESC, i.id LIMIT 60")
+        base = ("SELECT DISTINCT i.id, i.title, i.uri, i.created_at FROM items i "
+                "WHERE i.deleted_at IS NULL AND i.kind = 'photo'")
 
-        rows = self.conn.execute(" ".join(sql), params).fetchall()
+        if matched:
+            arm = [base]
+            for namespace, value in matched:
+                arm.append("AND EXISTS (SELECT 1 FROM tags t "
+                           "WHERE t.item_id = i.id AND t.namespace = ? "
+                           "AND t.value = ?)")
+                params.extend([namespace, value])
+            arms.append(" ".join(arm))
+
+        if caption_ids:
+            placeholders = ",".join("?" * len(caption_ids))
+            arms.append(f"{base} AND i.id IN ({placeholders})")
+            params.extend(caption_ids)
+
+        sql = " UNION ".join(arms) + " ORDER BY created_at DESC, id LIMIT 60"
+        rows = self.conn.execute(sql, params).fetchall()
         result.photo_filters = [f"{ns}={value}" for ns, value in matched]
+        if caption_ids:
+            result.photo_filters.append("description")
         result.photos = [
             {"item_id": int(r["id"]), "title": r["title"], "uri": r["uri"],
              "date": r["created_at"],

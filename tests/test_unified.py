@@ -220,3 +220,91 @@ def test_a_code_fragment_is_never_shown_as_an_answer(noisy_corpus):
                                                semantic=False)
     if result.answer is not None:
         assert "{" not in result.answer.value_text
+
+
+# --- Search modes --------------------------------------------------------
+
+@pytest.fixture
+def mixed_corpus(conn, cfg, nas):
+    """Documents and code answering to the same word."""
+    (nas / "printer_guide.txt").write_text(
+        "Setting up the 3d printer. " + "Bed levelling steps. " * 30)
+    (nas / "settings.json").write_text('{"printer": {"type": "integer"}}\n' * 20)
+    (nas / "driver.py").write_text("# the printer driver\ndef printer(): pass\n" * 20)
+    Scanner(conn, cfg).scan(nas)
+    Indexer(conn, cfg).run_pending()
+    return conn
+
+
+def test_code_is_hidden_by_default(mixed_corpus):
+    result = UnifiedSearch(mixed_corpus).query("printer", semantic=False)
+
+    paths = [h.uri or "" for h in result.hits]
+    assert paths, "the guide should still be found"
+    assert not any(p.endswith((".py", ".json")) for p in paths), \
+        f"code should not be in ordinary results: {paths}"
+
+
+def test_code_mode_returns_only_code(mixed_corpus):
+    result = UnifiedSearch(mixed_corpus).query("printer", semantic=False,
+                                               mode="code")
+
+    paths = [h.uri or "" for h in result.hits]
+    assert paths, "code mode should find the code"
+    assert all(p.endswith((".py", ".json")) for p in paths), paths
+
+
+def test_the_total_reflects_the_mode(mixed_corpus):
+    """The count must not promise results the filter excludes."""
+    search = UnifiedSearch(mixed_corpus)
+    everything = search.query("printer", semantic=False).total_hits
+    code = search.query("printer", semantic=False, mode="code").total_hits
+
+    assert everything == 1, "only the guide is not code"
+    assert code == 2
+
+
+# --- Paging --------------------------------------------------------------
+
+@pytest.fixture
+def many_docs(conn, cfg, nas):
+    # One long manual plus twelve short files: the manual owns most passages,
+    # which is what broke paging when it worked on passages rather than docs.
+    (nas / "manual.txt").write_text("\n\n".join(
+        f"Section {n}. The printer. " + "Printer details here. " * 40
+        for n in range(1, 40)))
+    for i in range(1, 13):
+        (nas / f"doc{i:02d}.txt").write_text(
+            f"Document {i} about the printer. " + "The printer again. " * 40)
+    Scanner(conn, cfg).scan(nas)
+    Indexer(conn, cfg).run_pending()
+    return conn
+
+
+def test_the_second_page_shows_different_documents(many_docs):
+    search = UnifiedSearch(many_docs)
+    first = search.query("printer", limit=5, offset=0, semantic=False)
+    second = search.query("printer", limit=5, offset=5, semantic=False)
+
+    a = [h.item_id for h in first.hits]
+    b = [h.item_id for h in second.hits]
+    assert not set(a) & set(b), f"page 2 repeats page 1: {a} vs {b}"
+
+
+def test_a_page_is_full_even_when_one_document_dominates(many_docs):
+    """The manual owns ~39 of 51 passages; the page must still fill."""
+    result = UnifiedSearch(many_docs).query("printer", limit=5, semantic=False)
+    assert len(result.hits) == 5, \
+        f"short page: {[h.item_id for h in result.hits]}"
+
+
+def test_paging_reaches_every_document(many_docs):
+    search = UnifiedSearch(many_docs)
+    total = search.query("printer", limit=5, semantic=False).total_hits
+
+    seen: set[int] = set()
+    for offset in range(0, total, 5):
+        page = search.query("printer", limit=5, offset=offset, semantic=False)
+        seen.update(h.item_id for h in page.hits)
+
+    assert len(seen) == total == 13, f"reached {len(seen)} of {total}"

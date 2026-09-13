@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+
 from pathlib import Path
 
 import pytest
@@ -316,3 +318,79 @@ def test_an_unrenderable_file_does_not_500_the_page(cfg, nas):
     response = client.get(f"/thumb/{item_id}")
     assert response.status_code == 422
     assert "preview" in response.json()["detail"]
+
+
+def test_a_photo_is_found_by_its_written_description(conn, cfg, nas):
+    """Captions are the only text most photos will ever have.
+
+    Tags are single words, so "sandy" is unreachable by tag even when the
+    photo is plainly of a sandy beach. The caption knows, and until now it
+    was written to the index and never read back.
+    """
+    from tracepaper.db import transaction
+    from tracepaper.query.unified import UnifiedSearch
+
+    with transaction(conn) as c:
+        c.execute("INSERT INTO items (id, kind, uri, title, extraction_status) "
+                  "VALUES (1, 'photo', ?, 'IMG_4821.jpg', 'complete')",
+                  (str(nas / "IMG_4821.jpg"),))
+        c.execute("INSERT INTO tags (item_id, namespace, value, source, "
+                  "confidence) VALUES (1, 'caption', "
+                  "'a dog running on a sandy beach', 'vlm', 0.5)")
+
+    result = UnifiedSearch(conn).query("sandy beach", semantic=False)
+
+    assert result.photos, "the caption should have been searched"
+    assert result.photos[0]["item_id"] == 1
+    assert "description" in result.photo_filters
+
+
+def test_every_caption_word_must_match(conn, cfg, nas):
+    """"dog beach" must not return every photo that merely has a dog."""
+    from tracepaper.db import transaction
+    from tracepaper.query.unified import UnifiedSearch
+
+    with transaction(conn) as c:
+        for item_id, caption in (
+                (1, "a dog running on a sandy beach"),
+                (2, "a dog asleep on the sofa")):
+            c.execute("INSERT INTO items (id, kind, uri, title, "
+                      "extraction_status) VALUES (?, 'photo', ?, ?, 'complete')",
+                      (item_id, str(nas / f"{item_id}.jpg"), f"{item_id}.jpg"))
+            c.execute("INSERT INTO tags (item_id, namespace, value, source, "
+                      "confidence) VALUES (?, 'caption', ?, 'vlm', 0.5)",
+                      (item_id, caption))
+
+    found = UnifiedSearch(conn).query("dog beach", semantic=False).photos
+
+    assert [p["item_id"] for p in found] == [1]
+
+
+def test_the_medium_word_is_not_searched_for(conn, cfg, nas):
+    """"photos of a dog" asks for photos of a dog, not photos of "photo"."""
+    from tracepaper.db import transaction
+    from tracepaper.query.unified import UnifiedSearch
+
+    with transaction(conn) as c:
+        c.execute("INSERT INTO items (id, kind, uri, title, extraction_status) "
+                  "VALUES (1, 'photo', ?, '1.jpg', 'complete')",
+                  (str(nas / "1.jpg"),))
+        c.execute("INSERT INTO tags (item_id, namespace, value, source, "
+                  "confidence) VALUES (1, 'caption', 'a dog', 'vlm', 0.5)")
+
+    assert UnifiedSearch(conn).query("photos of a dog", semantic=False).photos
+
+
+def test_captions_downscale_large_images(tmp_path):
+    """A 12MP upload per photo is why captioning was too slow to enable."""
+    Image = pytest.importorskip("PIL.Image")
+    from tracepaper.extract.vision import CAPTION_MAX_PIXELS, _downscaled
+
+    big = tmp_path / "big.jpg"
+    Image.new("RGB", (4000, 3000), "blue").save(big)
+
+    shrunk = _downscaled(big)
+
+    assert len(shrunk) < big.stat().st_size
+    with Image.open(io.BytesIO(shrunk)) as img:
+        assert max(img.size) <= CAPTION_MAX_PIXELS

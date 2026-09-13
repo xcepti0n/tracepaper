@@ -20,6 +20,7 @@ stays exactly as it is.
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import subprocess
@@ -163,6 +164,34 @@ def _useful_labels(raw: list) -> list[tuple[str, float]]:
     return kept[:MAX_LABELS]
 
 
+# Vision models see a few hundred pixels square; a 12MP phone photo is ~50x
+# more data than the model can use. Sending the original costs upload time,
+# base64 bloat and encode time for nothing.
+CAPTION_MAX_PIXELS = 1024
+
+
+def _downscaled(path: Path, max_pixels: int = CAPTION_MAX_PIXELS) -> bytes:
+    """The image, shrunk to something a vision model can actually use.
+
+    Falls back to the original bytes when Pillow is missing or the file is not
+    a readable image -- a caption from a slow upload beats no caption.
+    """
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            if max(img.size) <= max_pixels:
+                return path.read_bytes()
+            img = img.convert("RGB")
+            img.thumbnail((max_pixels, max_pixels), Image.LANCZOS)
+            buffer = io.BytesIO()
+            img.save(buffer, format="JPEG", quality=85)
+            return buffer.getvalue()
+    except Exception as exc:
+        log.debug("could not downscale %s: %s", path, exc)
+        return path.read_bytes()
+
+
 def caption(path: Path, *, endpoint: str, model: str,
             timeout: int = 180) -> str:
     """A prose caption from a vision LLM. Returns "" on any failure.
@@ -174,7 +203,7 @@ def caption(path: Path, *, endpoint: str, model: str,
     import urllib.request
 
     try:
-        encoded = base64.b64encode(path.read_bytes()).decode()
+        encoded = base64.b64encode(_downscaled(path)).decode()
         body = json.dumps({
             "model": model,
             "prompt": ("Describe this image in one short sentence. State only "

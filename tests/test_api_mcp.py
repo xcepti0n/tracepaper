@@ -873,7 +873,7 @@ def test_settings_shows_what_is_indexed_and_what_is_skipped(client):
     equally unanswerable."""
     page = client.get("/?tab=settings").text
     assert "What gets indexed" in page
-    assert "Always skipped" in page
+    assert "Never indexed" in page
     assert ".obsidian" in page, "the exclude list must be visible"
     assert ".pdf" in page and ".heic" in page
     assert "tracepaper prune" in page, (

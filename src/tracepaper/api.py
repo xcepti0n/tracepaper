@@ -93,11 +93,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request, q: str = "", tab: str = "search",
-             limit: int = 20, semantic: bool = True) -> str:
+             limit: int = 20, semantic: bool = True,
+             mode: str = "everything", offset: int = 0) -> str:
         conn = open_connection()
         try:
             return render_page(conn, query=q, tab=tab, limit=limit,
-                               semantic=semantic)
+                               semantic=semantic, mode=mode,
+                               offset=max(0, offset))
         finally:
             conn.close()
 
@@ -106,11 +108,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.get("/api/search")
     def api_search(q: str = Query(..., min_length=1), limit: int = 20,
                    offset: int = 0, kind: str | None = None,
-                   semantic: bool = True) -> dict[str, Any]:
+                   semantic: bool = True,
+                   code: str = "exclude") -> dict[str, Any]:
         conn = open_connection()
         try:
             response = SearchEngine(conn).search(
-                q, limit=limit, offset=offset, kind=kind, semantic=semantic)
+                q, limit=limit, offset=offset, kind=kind, semantic=semantic,
+                code=code)
             return {
                 "query": response.query,
                 "total": response.total,

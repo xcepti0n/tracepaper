@@ -12,6 +12,7 @@ extraction, and an easy way to correct a mistake.
 from __future__ import annotations
 
 import html
+from urllib.parse import urlencode
 import sqlite3
 
 from . import entities as entity_module
@@ -58,6 +59,19 @@ button.ghost { background:transparent; color:var(--accent);
 .hit .path { color:var(--muted); font-size:12px; font-family:ui-monospace,monospace;
              word-break:break-all; margin-bottom:7px; }
 .hit .snip { font-size:14px; }
+.tips { margin:8px 0 0; padding-left:18px; line-height:1.75; }
+.tips li { font-size:13.5px; color:var(--muted); }
+.tips li b { color:var(--fg); font-weight:600; }
+.search .row { display:flex; gap:8px; align-items:center; }
+.search .row.opts { margin-top:8px; gap:14px; }
+.search select { padding:9px 10px; border:1px solid var(--line); border-radius:7px;
+  background:var(--card); color:var(--fg); font-size:14px; }
+.mode-help { color:var(--muted); font-size:12.5px; }
+.pager { display:flex; align-items:center; gap:14px; margin:18px 0 4px; }
+.pager .range { color:var(--muted); font-size:12.5px; }
+.pager a.page { padding:7px 13px; border:1px solid var(--line); border-radius:7px;
+  text-decoration:none; font-size:13px; background:var(--card); }
+.pager a.page:hover { border-color:var(--muted); }
 .hit .more { margin:6px 0 2px; }
 .hit .more summary { cursor:pointer; color:var(--muted); font-size:12px;
   user-select:none; }
@@ -462,7 +476,8 @@ window.__tpOnReady = {push: function (fn) { fn(); }};
 
 
 def render_page(conn: sqlite3.Connection, *, query: str = "", tab: str = "search",
-                limit: int = 20, semantic: bool = True) -> str:
+                limit: int = 20, semantic: bool = True,
+                mode: str = "everything", offset: int = 0) -> str:
     """One search box over every layer, plus a browse view for exploring.
 
     The user should not have to know whether a word is an entity, a field or
@@ -485,7 +500,7 @@ def render_page(conn: sqlite3.Connection, *, query: str = "", tab: str = "search
     elif tab == "browse":
         body = _browse_tab(conn, query)
     else:
-        body = _unified_tab(conn, query, limit, semantic)
+        body = _unified_tab(conn, query, limit, semantic, mode, offset)
 
     return f"""<!doctype html>
 <html><head><meta charset="utf-8">
@@ -505,27 +520,59 @@ def _esc(value) -> str:
     return html.escape(str(value if value is not None else ""))
 
 
+# What each search mode looks for, in plain words. Shown under the box so the
+# effect of the choice is visible before you search, not after.
+# How many photos a mixed search previews before deferring to Photos mode.
+PHOTO_PREVIEW = 5
+
+_MODE_HELP = {
+    "everything": "Searches your files and photos. Skips code.",
+    "documents": "Only files — PDFs, notes, scans, email.",
+    "photos": "Only photos. Matches what is in the picture.",
+    "code": "Only code and config files.",
+}
+
+_MODE_LABELS = (("everything", "Everything"), ("documents", "Documents"),
+                ("photos", "Photos"), ("code", "Code"))
+_MODE_LABELS_BY_VALUE = dict(_MODE_LABELS)
+
+
 def _search_form(query: str, tab: str, placeholder: str,
-                 semantic: bool = True) -> str:
+                 semantic: bool = True, mode: str = "everything") -> str:
+    """The search box, its mode, and the one switch worth exposing.
+
+    "Semantic" was the old label. It named the implementation, not the effect,
+    so it now says what it does: find words that mean the same thing.
+    """
     checked = "checked" if semantic else ""
+    options = "".join(
+        f'<option value="{value}"{" selected" if value == mode else ""}>{label}</option>'
+        for value, label in _MODE_LABELS)
     return f"""<form class="search" method="get">
   <input type="hidden" name="tab" value="{tab}">
-  <input type="text" name="q" value="{_esc(query)}" placeholder="{placeholder}"
-         autofocus autocomplete="off">
-  <label class="chk"><input type="checkbox" name="semantic" value="true"
-         {checked}> semantic</label>
-  <button type="submit">Search</button>
+  <div class="row">
+    <input type="text" name="q" value="{_esc(query)}" placeholder="{placeholder}"
+           autofocus autocomplete="off">
+    <select name="mode" aria-label="What to search">{options}</select>
+    <button type="submit">Search</button>
+  </div>
+  <div class="row opts">
+    <label class="chk"><input type="checkbox" name="semantic" value="true"
+           {checked}> Match similar words</label>
+    <span class="mode-help">{_MODE_HELP.get(mode, "")}</span>
+  </div>
 </form>"""
 
 
 def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
-                 semantic: bool) -> str:
+                 semantic: bool, mode: str = "everything",
+                 offset: int = 0) -> str:
     """One query, every layer, grouped by what kind of answer it is."""
     from .query.unified import UnifiedSearch
 
     out = [_search_form(query, "search",
                         "passport expiry · salary 2023 · Alaska · sprinkler valve",
-                        semantic)]
+                        semantic, mode)]
 
     if not query:
         from . import embed
@@ -536,30 +583,45 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
         # reader actually needs to know.
         if semantic and not embed.is_loaded():
             if embed.available() and embed.local_path() is not None:
-                hint = ('Semantic search is installed but this process started '
-                        'before the model was ready — restart tracepaper to '
-                        'enable it.')
+                hint = ('Right now it only matches exact words. The model is '
+                        'ready, but Tracepaper started before it. Restart to '
+                        'turn this on.')
             elif embed.available():
-                hint = ('Semantic search is installed; the model is still '
-                        'downloading. Keyword search works meanwhile.')
+                hint = ('Right now it only matches exact words. The model is '
+                        'still downloading. Search works in the meantime.')
             else:
-                hint = ('<b>Keyword only</b> — no embedding model installed. '
-                        'Semantic search needs the <code>semantic</code> extra.')
-            out.append('<p class="hint">Ask for a value, a merchant, a date, or '
-                       'just words you remember. ' + hint + '</p>')
+                hint = ('Right now it only matches exact words. To match '
+                        'similar words, install the <code>semantic</code> '
+                        'extra.')
+            out.append('<p class="hint">' + hint + '</p>')
         else:
-            out.append('<p class="hint">Ask for a value ("passport expiry"), '
-                       'something that happened ("Alaska"), or words you half '
-                       'remember ("sprinkler valve"). One box searches '
-                       'everything.</p>')
+            out.append('<p class="hint">Type what you remember. '
+                       'Tracepaper looks in three places at once:</p>'
+                       '<ul class="tips">'
+                       '<li><b>A value you need.</b> "passport expiry" gives '
+                       'you the date, and the page it came from.</li>'
+                       '<li><b>Something that happened.</b> "Alaska" gives you '
+                       'the flight, with the booking that proves it.</li>'
+                       '<li><b>Words from a file.</b> "sprinkler valve" finds '
+                       'the file, even if it says "irrigation solenoid".</li>'
+                       '</ul>')
         return "".join(out)
 
-    result = UnifiedSearch(conn).query(query, limit=limit, semantic=semantic)
+    result = UnifiedSearch(conn).query(query, limit=limit, semantic=semantic,
+                                       mode=mode, offset=offset)
 
     if result.is_empty:
-        out.append('<div class="empty">Nothing found.<br>'
-                   '<span class="hint">Try fewer words, or Browse to see what '
-                   'was extracted.</span></div>')
+        suggestions = ['Use fewer words.']
+        if mode != "everything":
+            suggestions.append(f'You searched {_MODE_LABELS_BY_VALUE[mode]} '
+                               f'only. Try <b>Everything</b>.')
+        if not semantic:
+            suggestions.append('Tick <b>Match similar words</b>.')
+        suggestions.append('Open <b>Browse</b> to see what Tracepaper found '
+                           'in your files.')
+        tips = "".join(f"<li>{tip}</li>" for tip in suggestions)
+        out.append(f'<div class="empty"><b>No results.</b>'
+                   f'<ul class="tips">{tips}</ul></div>')
         return "".join(out)
 
     # 1. A direct answer, when the query named a field we hold.
@@ -585,8 +647,8 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
                 f'rel="noopener">{_esc(v.item_title)}</a></td>'
                 f'<td><span class="pill">{_esc(v.source)}</span></td></tr>'
                 for v in result.alternatives)
-            out.append('<p class="hint">Documents disagree — none is chosen '
-                       'for you:</p>')
+            out.append('<p class="hint">Your files do not agree. '
+                       'Tracepaper will not pick one for you.</p>')
             out.append(f"<table><tr><th>Value</th><th>Document</th>"
                        f"<th>Layer</th></tr>{rows}</table>")
 
@@ -620,16 +682,27 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
   <h3>{_esc(entity["canonical_name"])}</h3>{also}
 </div>""")
 
-    # 4. Photos matching the tags named in the query.
+    # 4. Photos matching the tags or description named in the query.
     if result.photos:
         filters = ", ".join(result.photo_filters)
+        # In a mixed search, photos are a preview strip above the documents --
+        # enough to recognise the picture, not enough to bury the files. The
+        # Photos mode shows the lot.
+        shown = result.photos
+        more_link = ""
+        if mode == "everything" and len(result.photos) > PHOTO_PREVIEW:
+            shown = result.photos[:PHOTO_PREVIEW]
+            params = urlencode({"tab": "search", "q": query, "mode": "photos",
+                                **({"semantic": "true"} if semantic else {})})
+            more_link = (f' &middot; <a href="/?{params}">'
+                         f'See all {len(result.photos)}</a>')
         out.append(f'<h2>Photos <span class="count">{len(result.photos)}</span>'
-                   f'</h2><p class="hint">matching {_esc(filters)}</p>')
+                   f'</h2><p class="hint">Matched on {_esc(filters)}.{more_link}</p>')
         # A grid of actual thumbnails. A list of filenames is unusable for
         # photos -- the picture is the thing you recognise, and clicking it
         # should open the photo, not its confidence scores.
         out.append('<div class="photos">')
-        for photo in result.photos:
+        for photo in shown:
             tags = " ".join(f'<span class="pill">{_esc(t)}</span>'
                             for t in photo["tags"][:6])
             out.append(f"""<figure class="photo">
@@ -684,7 +757,40 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
     · <a href="/api/items/{hit.item_id}">why</a></div>
 </div>""")
 
+        out.append(_pager(query, result, limit, semantic, mode, offset))
+
     return "".join(out)
+
+
+def _pager(query: str, result, limit: int, semantic: bool,
+           mode: str, offset: int) -> str:
+    """Next/previous links. Plain links, so a page can be bookmarked.
+
+    There was no way past the first page at all: a query whose answer sat at
+    rank 21 was simply unreachable.
+    """
+    def link(new_offset: int, label: str, rel: str) -> str:
+        params = urlencode({"tab": "search", "q": query, "mode": mode,
+                            "offset": new_offset,
+                            **({"semantic": "true"} if semantic else {})})
+        return f'<a class="page" rel="{rel}" href="/?{params}">{label}</a>'
+
+    shown_to = offset + len(result.hits)
+    # `total` counts documents, but a grouped page can be shorter than `limit`
+    # even when more remain, so trust the count rather than the page length.
+    has_more = shown_to < result.total_hits
+    if offset == 0 and not has_more:
+        return ""
+
+    parts = []
+    if offset > 0:
+        parts.append(link(max(0, offset - limit), "← Previous", "prev"))
+    if has_more:
+        parts.append(link(offset + limit, "Next →", "next"))
+
+    return (f'<div class="pager"><span class="range">'
+            f'{offset + 1}–{shown_to} of {result.total_hits}</span>'
+            f'{"".join(parts)}</div>')
 
 
 def _page_anchor(page: int | None) -> str:
@@ -857,23 +963,23 @@ Links go to the primary sources, open-access where one exists.</p>
           <a href="https://arxiv.org/abs/1908.10084" target="_blank"
              rel="noopener"><i>Sentence-BERT: Sentence Embeddings using Siamese
           BERT-Networks</i></a> (EMNLP 2019).
-          <br><span class="hint">An embedding is a deterministic function from
-          text to a vector — the same query embeds identically every time,
-          which is why it is allowed in the query path.</span></td></tr>
+          <br><span class="hint">An embedding turns text into numbers. The
+          same query always gives the same numbers. That is why it is allowed
+          here.</span></td></tr>
 </table>
 
-<p class="hint">The weights ({S.RRF_WEIGHT_BM25}/{S.RRF_WEIGHT_VECTOR}), the two
-boosts and the similarity floor are this project's own choices, and they are
-fixed constants in <code>query/search.py</code> — auditable, and never adjusted
-per query.</p>
+<p class="hint">The weights ({S.RRF_WEIGHT_BM25}/{S.RRF_WEIGHT_VECTOR}), the
+two boosts and the similarity floor are our own choices. They are fixed
+constants in <code>query/search.py</code>. You can read them, and they never
+change from one search to the next.</p>
 
 <h3>What an LLM does and does not do</h3>
 <p class="hint">No language model takes part in ranking or in reading your
 documents to answer. Search is SQL, BM25 and arithmetic over stored vectors.
-An embedding model is allowed in the query path because it is deterministic;
-an inference model is confined to ingest, where its output is stored with its
-provenance and can be corrected. A correction you make outranks every
-extractor, permanently.</p>"""
+An embedding model is allowed here because it always gives the same answer
+for the same input. A language model is not. Language models run only when
+files are read in, and what they produce is saved with a note saying where it
+came from. Anything you correct yourself wins over all of it, for good.</p>"""
 
 
 def _settings_tab(conn: sqlite3.Connection) -> str:
@@ -891,10 +997,11 @@ def _settings_tab(conn: sqlite3.Connection) -> str:
     found_mounts = storage.mounts()
 
     out = ['<h2>Storage</h2>']
-    out.append('<p class="hint">Mount your NFS shares with the OS '
-               '(<code>/etc/fstab</code> or a systemd mount unit) — that '
-               'survives reboots and keeps credentials out of this app. '
-               'Point Tracepaper at the mounted paths here.</p>')
+    out.append('<p class="hint">Mount your NAS shares in the operating '
+               'system, using <code>/etc/fstab</code> or a systemd mount '
+               'unit. Mounts made there survive a reboot. Your password '
+               'stays out of this app. Then point Tracepaper at the '
+               'mounted folder below.</p>')
 
     if found_mounts:
         rows = "".join(
@@ -902,21 +1009,22 @@ def _settings_tab(conn: sqlite3.Connection) -> str:
             f'<td>{_esc(m["source"])}</td><td>{_esc(m["type"])}</td>'
             f'<td>{"read-only" if m["read_only"] else "read-write"}</td></tr>'
             for m in found_mounts)
-        out.append('<h2>Network shares detected</h2>')
+        out.append('<h2>Network shares found</h2>')
         out.append(f'<table><tr><th>Mounted at</th><th>Source</th>'
                    f'<th>Type</th><th>Access</th></tr>{rows}</table>')
 
     out.append(f"""
 <form id="settings" onsubmit="saveSettings(event)">
   <h2>Documents to index <span class="pill">read-only</span></h2>
-  <p class="hint">Your Synology NFS read share. Never written to.</p>
+  <p class="hint">The folder holding your files. Tracepaper only reads it.
+    It never writes here, and never changes or deletes your files.</p>
   <div id="roots">{_root_rows(roots, checks["sources"])}</div>
   <button type="button" class="ghost" onclick="addRoot()">+ add folder</button>
 
   <h2>Index location <span class="pill warn">local disk only</span></h2>
-  <p class="hint">SQLite corrupts over NFS and SMB — their file locking is
-    unreliable across clients, and it fails silently, weeks later. Keep this on
-    local disk; it rebuilds from your documents anyway.</p>
+  <p class="hint">Keep this on local disk. On a network share the index can
+    corrupt, and you would not find out for weeks. Losing it costs nothing
+    permanent: it is rebuilt from your files.</p>
   <div class="field">
     <input type="text" id="db_path" value="{_esc(cfg.db_path)}"
            onchange="checkPath(this,'index','db_status')">
@@ -924,9 +1032,9 @@ def _settings_tab(conn: sqlite3.Connection) -> str:
   </div>
 
   <h2>Backups <span class="pill">the NAS belongs here</span></h2>
-  <p class="hint">Your Synology NFS write share. Holds the corrections, notes
-    and merges that cannot be regenerated — the copy that survives losing the
-    index machine.</p>
+  <p class="hint">A folder on your NAS that Tracepaper can write to. It
+    holds your corrections and notes. That is the one thing here you cannot
+    get back by rebuilding, so it is kept off this machine.</p>
   <div class="field">
     <input type="text" id="backup_dir"
            value="{_esc(cfg.backup_dir or "")}"
@@ -989,6 +1097,10 @@ def _coverage_panel(conn: sqlite3.Connection) -> str:
     excluded = " ".join(f"<code>{_esc(name)}</code>"
                         for name in sorted(active))
 
+    from .query import modes
+    code_suffixes = " ".join(
+        f"<code>{_esc(x)}</code>" for x in sorted(modes.CODE_SUFFIXES))
+
     # What is actually indexed, by extension -- the honest answer to "is my
     # stuff in there", and where an unwanted pattern shows up first.
     try:
@@ -1011,22 +1123,32 @@ def _coverage_panel(conn: sqlite3.Connection) -> str:
         if indexed else "")
 
     return f"""<h2>What gets indexed</h2>
-<p class="hint">Every file is findable by name and path. These formats also have
-their <em>contents</em> read; anything else is indexed by filename only.</p>
+<p class="hint">You can find <b>every</b> file by its name and folder.
+The formats below are also read <b>inside</b>, so you can search their
+words too.</p>
 <table><tr><th>Kind</th><th>Extensions</th></tr>{format_rows}</table>
-<h3>Indexed by name only</h3>
-<p class="hint">Machine output: text by encoding, meaningless by content. One
-3D-printing <code>.gcode</code> file produced 104,227 passages — more than the
-whole document corpus around it — so these are findable by filename and path,
-with their contents skipped.</p>
+
+<h3>Found by name only</h3>
+<p class="hint">These are machine files. They are technically text, but the
+text means nothing to a person. One <code>.gcode</code> file made 104,227
+passages on its own — more than every real document next to it. So Tracepaper
+reads the name and skips what is inside.</p>
 <p class="excludes">{machine}</p>
-<h3>Always skipped</h3>
-<p class="hint">Matched on the exact directory or file name, at any depth.
-Application internals and caches, not documents.</p>
+
+<h3>Hidden from search by default</h3>
+<p class="hint">Code and config files stay in the index, but they are kept out
+of results. To include them, pick <b>Code</b> next to the search box, or search
+<b>Everything</b> and tick the box. Nothing is deleted.</p>
+<p class="excludes">{code_suffixes}</p>
+
+<h3>Never indexed</h3>
+<p class="hint">These folder and file names are skipped wherever they appear.
+They hold app data and caches, not your documents.</p>
 <p class="excludes">{excluded}</p>
-<p class="hint">Changing this list affects the next scan only. To drop items
-already indexed under a newly excluded path, run
-<code>tracepaper prune</code> (add <code>--apply</code> to delete).</p>
+<p class="hint">This list applies to the <b>next</b> scan. Files already
+indexed stay until you remove them. To remove them, run
+<code>tracepaper prune</code>. It only reports; add <code>--apply</code> to
+actually delete.</p>
 {indexed_table}"""
 
 
