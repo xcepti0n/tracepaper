@@ -1223,3 +1223,82 @@ def test_no_settings_section_is_a_long_scroll(client):
         assert len(body) < 6000, (
             f"the {section} section is {len(body)} bytes; it should not need "
             f"a long scroll")
+
+
+# --- Browse: folders and files, not a field dump -------------------------
+
+@pytest.fixture
+def browsable(conn, cfg, nas):
+    """A tree with documents on one side and code on the other."""
+    (nas / "Personal").mkdir(parents=True)
+    (nas / "Code" / "src").mkdir(parents=True)
+    (nas / "Personal" / "payslip.txt").write_text(
+        "Pay Date: 2022-06-30\nGross Salary: 91500\n")
+    (nas / "Code" / "src" / "app.py").write_text("onclick: () => void;\n")
+    (nas / "Code" / "src" / "conf.json").write_text('{"winrt": "x"}\n')
+
+    from dataclasses import replace as dc_replace
+
+    from tracepaper import api as api_module
+    from tracepaper.index.indexer import Indexer
+    from tracepaper.scan.scanner import Scanner
+
+    cfg = dc_replace(cfg, roots=(nas,))
+    Scanner(conn, cfg).scan(nas)
+    Indexer(conn, cfg).run_pending()
+    api_module.set_config(cfg)
+    return cfg
+
+
+def test_browse_lists_folders(browsable, nas, conn):
+    from tracepaper.web import _browse_tab
+
+    page = _browse_tab(conn, "", str(nas))
+    assert "<h2>Folders" in page
+    assert ">Personal</a>" in page and ">Code</a>" in page
+
+
+def test_browse_hides_code_files_until_asked(browsable, nas, conn):
+    from tracepaper.web import _browse_tab
+
+    page = _browse_tab(conn, "", str(nas / "Code" / "src"))
+    assert "app.py" not in page
+    assert "code file(s) hidden" in page
+
+    shown = _browse_tab(conn, "", str(nas / "Code" / "src"), show_code=True)
+    assert "app.py" in shown and "conf.json" in shown
+
+
+def test_browse_field_list_excludes_code_derived_fields(browsable, nas, conn):
+    """The reported problem: Browse led with namespace_winrt and onclick."""
+    from tracepaper.web import _browse_tab
+
+    page = _browse_tab(conn, "", str(nas))
+
+    assert "Pay date" in page, "real document fields must still be listed"
+    assert "winrt" not in page, "a field only found in code must not be listed"
+
+
+def test_browse_field_names_are_readable_but_keep_the_raw_key(browsable, nas, conn):
+    from tracepaper.web import _browse_tab
+
+    page = _browse_tab(conn, "", str(nas))
+    assert "Gross salary" in page, "shown in words"
+    assert "gross_salary" in page, "the raw key is what you type into search"
+
+
+def test_browse_refuses_a_path_outside_the_roots(browsable, conn):
+    """The URL is user input; it must not become a filesystem walk."""
+    from tracepaper.web import _browse_tab
+
+    page = _browse_tab(conn, "", "/etc")
+    assert "not indexed" in page
+    assert "passwd" not in page
+
+
+def test_a_result_path_links_into_browse(browsable, conn):
+    from tracepaper.web import render_page
+
+    page = render_page(conn, query="pay date", tab="search", semantic=False)
+    assert 'tab=browse&amp;path=' in page, \
+        "the folder under a result should be clickable"

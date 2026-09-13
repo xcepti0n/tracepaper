@@ -33,6 +33,14 @@ that closed it. Anyone (you, me) can add here; keep entries short and say what
 
 ## Done
 
+- [x] **Browse listed field names, led by C++ header noise.** It is a folder
+      and file browser now; the field list moved below it, filtered to
+      documents, and reads in words. (this commit)
+- [x] **Result paths were dead text.** The folder is a link into Browse.
+      (this commit)
+- [x] **Settings was one 11KB scroll.** Four sections, opening on the one
+      with the update button. (`e1fe512`)
+
 - [x] **Settings was read-only documentation.** Folder rules and index
       cleanup are now controls on the page, not commands to copy. (this commit)
 - [x] **No way to teach ranking.** Thumbs on each result, keyed on the query

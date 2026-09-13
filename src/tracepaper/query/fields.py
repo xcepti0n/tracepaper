@@ -223,7 +223,8 @@ class FieldQuery:
             return False
         return all(a_context[key] == b_context[key] for key in shared)
 
-    def list_keys(self, prefix: str | None = None, limit: int = 200) -> list[tuple[str, int]]:
+    def list_keys(self, prefix: str | None = None, limit: int = 200,
+                  documents_only: bool = False) -> list[tuple[str, int]]:
         """Discovered vocabulary with usage counts (FR-4).
 
         The two joins exist only to hide fields belonging to deleted items.
@@ -241,6 +242,26 @@ class FieldQuery:
         deleted = self.conn.execute(
             "SELECT 1 FROM items WHERE deleted_at IS NOT NULL LIMIT 1"
         ).fetchone()
+
+        if documents_only:
+            # The generic `label: value` extractor cannot tell a form from a
+            # line of code, so a Windows SDK header yields fields called
+            # `winrt` and `impl`, in their hundreds. Those are not vocabulary
+            # anyone would search for. Counting only non-code files leaves the
+            # keys that came from real documents.
+            from ..query import modes
+            sql = ["SELECT rf.key, COUNT(*) AS n FROM record_fields rf",
+                   "JOIN records r ON r.id = rf.record_id",
+                   "JOIN items i ON i.id = r.item_id",
+                   "WHERE i.deleted_at IS NULL",
+                   f"AND {modes.sql_filter('i')}"]
+            if prefix:
+                sql.append("AND rf.key LIKE ?")
+                params.append(f"{prefix}%")
+            sql.append("GROUP BY rf.key ORDER BY n DESC, rf.key LIMIT ?")
+            params.append(limit)
+            return [(r["key"], int(r["n"]))
+                    for r in self.conn.execute(" ".join(sql), params).fetchall()]
 
         if deleted:
             sql = ["SELECT rf.key, COUNT(*) AS n FROM record_fields rf",

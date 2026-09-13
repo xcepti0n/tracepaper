@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import html
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 import sqlite3
 
 from . import entities as entity_module
@@ -68,11 +68,17 @@ button.ghost { background:transparent; color:var(--accent);
 .hit { background:var(--card); border:1px solid var(--line); border-radius:9px;
        padding:14px 16px; margin-bottom:10px; }
 .hit h3 { margin:0 0 3px; font-size:15px; }
+.hit .path a { color:var(--muted); text-decoration:none; }
+.hit .path a:hover { color:var(--accent); text-decoration:underline; }
 .hit .path { color:var(--muted); font-size:12px; font-family:ui-monospace,monospace;
              word-break:break-all; margin-bottom:7px; }
 .hit .snip { font-size:14px; }
 /* Sub-navigation inside a tab. Looks like the main nav but lighter, so the
    two levels stay distinguishable. */
+.crumbs { margin:0 0 16px; font-size:13.5px; color:var(--muted); }
+.crumbs a { color:var(--accent); text-decoration:none; }
+.crumbs a:hover { text-decoration:underline; }
+code.dim { color:var(--muted); font-size:11.5px; margin-left:6px; }
 .subnav { display:flex; gap:4px; flex-wrap:wrap; margin:0 0 4px;
   border-bottom:1px solid var(--line); padding-bottom:10px; }
 .subnav a { padding:6px 12px; text-decoration:none; color:var(--muted);
@@ -597,7 +603,21 @@ function applyPrune() {
     .finally(function () { apply.disabled = false; });
 }
 
+function markFolderAsCode(path) {
+  const status = document.getElementById('browse_status');
+  if (status) { status.textContent = 'Saving…'; }
+  postJson('/api/rules', {prefix: path, rule: 'code'})
+    .then(function () { location.reload(); })
+    .catch(function (error) {
+      if (status) { status.textContent = error.message; }
+    });
+}
+
 document.addEventListener('click', function (event) {
+  if (event.target.dataset && event.target.dataset.markCode) {
+    markFolderAsCode(event.target.dataset.markCode);
+    return;
+  }
   if (event.target.id === 'rule_add') { addRule(); }
   else if (event.target.id === 'prune_check') { refreshPrune(); }
   else if (event.target.id === 'prune_apply') { applyPrune(); }
@@ -645,7 +665,8 @@ window.__tpOnReady = {push: function (fn) { fn(); }};
 def render_page(conn: sqlite3.Connection, *, query: str = "", tab: str = "search",
                 limit: int = 20, semantic: bool = True,
                 mode: str = "everything", offset: int = 0,
-                section: str = "general") -> str:
+                section: str = "general", path: str = "",
+                show_code: bool = False) -> str:
     """One search box over every layer, plus a browse view for exploring.
 
     The user should not have to know whether a word is an entity, a field or
@@ -666,7 +687,7 @@ def render_page(conn: sqlite3.Connection, *, query: str = "", tab: str = "search
     elif tab == "status":
         body = _status_tab(conn)
     elif tab == "browse":
-        body = _browse_tab(conn, query)
+        body = _browse_tab(conn, query, path, show_code)
     else:
         body = _unified_tab(conn, query, limit, semantic, mode, offset)
 
@@ -917,7 +938,7 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
   {thumb}
   <div class="hit-body">
   <h3><a href="{title_link}{_page_anchor(hit.page)}" target="_blank" rel="noopener">{_esc(hit.title)}</a>{page}</h3>
-  <div class="path">{_esc(hit.uri or f"note:{hit.item_id}")}</div>
+  <div class="path">{_folder_link(hit.uri, hit.item_id)}</div>
   <div class="snip">{_esc(hit.snippet)}</div>
   {more}
   <div class="sig">score={hit.score:.4f} · {_esc(signals)}
@@ -1017,6 +1038,21 @@ def _is_image(uri: str | None) -> bool:
     return Path(uri).suffix.lower() in IMAGE_SUFFIXES
 
 
+def _folder_link(uri: str | None, item_id: int) -> str:
+    """The path under a result, with the folder part clickable.
+
+    It was dead grey text. Now the folder opens in Browse, which is how you
+    get from "this one file" to "what else is in here".
+    """
+    if not uri:
+        return _esc(f"note:{item_id}")
+    folder, _, name = uri.rpartition("/")
+    if not folder:
+        return _esc(uri)
+    return (f'<a href="/?tab=browse&amp;path={quote(folder)}">{_esc(folder)}</a>'
+            f'/{_esc(name)}')
+
+
 def _page_anchor(page: int | None) -> str:
     """Open a PDF at the matching page.
 
@@ -1039,49 +1075,171 @@ def _js(value) -> str:
     return html.escape(json.dumps(str(value)), quote=True)
 
 
-def _browse_tab(conn: sqlite3.Connection, query: str) -> str:
-    """Everything extracted, for exploring rather than searching."""
+def _browse_tab(conn: sqlite3.Connection, query: str, path: str = "",
+                show_code: bool = False) -> str:
+    """Your folders and files, the way a file manager shows them.
+
+    This used to list extracted field names. That answers a real question but
+    not the one "Browse" sets up, and on a corpus holding source code it led
+    with `namespace_winrt`. The field list is still here, below, cleaned up
+    and answering the question it is actually good for: what can I ask for.
+    """
+    from . import browse as browse_module
+    from .api import get_config
+
+    roots = [str(r) for r in get_config().roots]
+    view = browse_module.listing(conn, roots, path or None)
+
+    out: list[str] = []
+
+    if view.get("outside_roots"):
+        out.append('<div class="empty"><b>That folder is not indexed.</b>'
+                   '<p class="hint">Browse only shows folders inside the '
+                   'places Tracepaper was pointed at.</p></div>')
+        return "".join(out)
+
+    out.append(_breadcrumbs(view["path"], roots))
+
+    rule = view.get("rule")
+    if rule:
+        out.append(f'<p class="hint">This folder is marked '
+                   f'<span class="pill">{_esc(rule)}</span>. '
+                   f'Change it under Settings, Search rules.</p>')
+
+    folders = view["folders"]
+    files = view["files"]
+    if not folders and not files:
+        out.append('<div class="empty"><b>Nothing indexed here.</b>'
+                   '<p class="hint">Either this folder is empty, or a scan '
+                   'has not reached it yet.</p></div>')
+
+    if folders:
+        rows = []
+        for folder in folders:
+            marked = (f' <span class="pill">{_esc(folder["rule"])}</span>'
+                      if folder.get("rule") else "")
+            # Say when a folder is mostly code, since that is the thing worth
+            # acting on and the count alone does not show it.
+            mostly_code = ""
+            if folder["items"] and folder["code_items"] / folder["items"] > 0.6:
+                mostly_code = ('<span class="pill warn">mostly code</span>')
+            rows.append(
+                f'<tr><td><a href="/?tab=browse&amp;path='
+                f'{quote(folder["path"])}">{_esc(_short_name(folder["name"]))}</a>'
+                f'{marked}</td>'
+                f'<td>{folder["items"]:,}</td><td>{mostly_code}</td>'
+                f'<td><button type="button" class="ghost small" '
+                f'data-mark-code="{_esc(folder["path"])}">Mark as code</button>'
+                f'</td></tr>')
+        out.append('<h2>Folders</h2>')
+        out.append(f'<table><tr><th>Name</th><th>Files</th><th></th><th></th>'
+                   f'</tr>{"".join(rows)}</table>')
+
+    if files:
+        visible = files if show_code else [f for f in files if not f["is_code"]]
+        hidden = len(files) - len(visible)
+        rows = "".join(
+            f'<tr><td><a href="/file/{f["item_id"]}" target="_blank" '
+            f'rel="noopener">{_esc(f["name"])}</a></td>'
+            f'<td>{_human_size(f["size_bytes"])}</td>'
+            f'<td>{_esc(f["status"])}</td></tr>'
+            for f in visible)
+        out.append(f'<h2>Files <span class="count">{len(visible):,}</span></h2>')
+        if hidden:
+            params = urlencode({"tab": "browse", "path": view["path"] or "",
+                                "code": "1"})
+            out.append(f'<p class="hint">{hidden:,} code file(s) hidden. '
+                       f'<a href="/?{params}">Show them</a></p>')
+        if rows:
+            out.append(f'<table><tr><th>Name</th><th>Size</th><th>Indexed</th>'
+                       f'</tr>{rows}</table>')
+        if view["truncated"]:
+            out.append('<p class="hint">Showing the first few hundred. Use '
+                       'Search to find something specific.</p>')
+
+    out.append('<div id="browse_status" class="status"></div>')
+    out.append(_fields_panel(conn, query))
+    return "".join(out)
+
+
+def _breadcrumbs(path: str | None, roots: list[str]) -> str:
+    """Where you are, with every level above it clickable."""
+    home = '<a href="/?tab=browse">All folders</a>'
+    if not path:
+        return f'<nav class="crumbs">{home}</nav>'
+
+    root = next((r.rstrip("/") for r in roots
+                 if path == r.rstrip("/") or path.startswith(r.rstrip("/") + "/")),
+                None)
+    parts = [home]
+    if root:
+        parts.append(f'<a href="/?tab=browse&amp;path={quote(root)}">'
+                     f'{_esc(root)}</a>')
+        walked = root
+        for segment in path[len(root):].strip("/").split("/"):
+            if not segment:
+                continue
+            walked = f"{walked}/{segment}"
+            parts.append(f'<a href="/?tab=browse&amp;path={quote(walked)}">'
+                         f'{_esc(segment)}</a>')
+    return f'<nav class="crumbs">{" / ".join(parts)}</nav>'
+
+
+def _short_name(name: str) -> str:
+    """The last segment, so a configured root does not print in full."""
+    return name.rstrip("/").rpartition("/")[2] or name
+
+
+def _human_size(size: int | None) -> str:
+    if not size:
+        return ""
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return ""
+
+
+def _prettify_key(key: str) -> str:
+    """`interest_paid_year_to_date` as `Interest paid year to date`."""
+    return key.replace("_", " ").strip().capitalize() or key
+
+
+def _fields_panel(conn: sqlite3.Connection, query: str) -> str:
+    """What Tracepaper pulled out of your documents, as searchable words.
+
+    Its one real use is telling you what you can ask for: nobody guesses
+    `interest_paid_year_to_date`. So it is filtered to fields that came from
+    actual documents, and the raw key stays visible because that is what you
+    type into the search box.
+    """
     fq = FieldQuery(conn)
-    out = [_search_form(query, "browse", "filter fields…")]
 
     if query:
         values = fq.list_values(query)
         if values:
             rows = "".join(
-                f'<tr><td><a href="/?q={_esc(query)}+{_esc(v)}">{_esc(v)}</a></td>'
-                f"<td>{n}</td></tr>" for v, n in values)
-            out.append(f'<h2>Values of <code>{_esc(query)}</code></h2>')
-            out.append(f"<table><tr><th>Value</th><th>Documents</th></tr>"
-                       f"{rows}</table>")
-            return "".join(out)
+                f'<tr><td><a href="/?q={quote(query)}+{quote(v)}">{_esc(v)}</a>'
+                f"</td><td>{n}</td></tr>" for v, n in values)
+            return (f'<h2>Values of {_esc(_prettify_key(query))}</h2>'
+                    f'<p class="hint">Click one to search for it.</p>'
+                    f'<table><tr><th>Value</th><th>Files</th></tr>{rows}'
+                    f'</table>')
 
-    keys = fq.list_keys(query or None, limit=200)
-    if keys:
-        rows = "".join(
-            f'<tr><td><a href="/?tab=browse&q={_esc(k)}"><code>{_esc(k)}</code>'
-            f"</a></td><td>{n}</td></tr>" for k, n in keys)
-        out.append('<h2>Fields</h2>')
-        out.append('<p class="hint">Discovered from your documents. Nothing '
-                   'here was declared in advance.</p>')
-        out.append(f"<table><tr><th>Field</th><th>Documents</th></tr>"
-                   f"{rows}</table>")
+    keys = fq.list_keys(query or None, limit=60, documents_only=True)
+    if not keys:
+        return ""
 
-    rows = entity_module.list_all(conn, limit=100)
-    if rows:
-        body = "".join(
-            f'<tr><td><a href="/?q={_esc(r["canonical_name"])}">'
-            f'{_esc(r["canonical_name"])}</a></td>'
-            f'<td>{_esc(r["entity_type"])}</td><td>{r["event_count"]}</td></tr>'
-            for r in rows)
-        out.append('<h2>Entities</h2>')
-        out.append(f"<table><tr><th>Name</th><th>Type</th><th>Events</th></tr>"
-                   f"{body}</table>")
-
-    if len(out) == 1:
-        out.append('<div class="empty">Nothing indexed yet. Run '
-                   '<code>tracepaper scan --index</code>.</div>')
-    return "".join(out)
-
+    rows = "".join(
+        f'<tr><td><a href="/?tab=browse&amp;q={quote(k)}">{_esc(_prettify_key(k))}'
+        f'</a> <code class="dim">{_esc(k)}</code></td><td>{n}</td></tr>'
+        for k, n in keys)
+    return (f'<h2>Data found in your documents</h2>'
+            f'<p class="hint">Tracepaper pulled these out of your files. '
+            f'Search any of them by name, for example <code>expiry date</code>. '
+            f'Code files are not counted here.</p>'
+            f'<table><tr><th>What it is</th><th>Files</th></tr>{rows}</table>')
 
 
 def _how_tab() -> str:
