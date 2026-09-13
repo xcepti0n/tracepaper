@@ -53,6 +53,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_index.add_argument("--embed", action="store_true",
                          help="also compute embeddings for semantic search")
 
+    p_prune = sub.add_parser(
+        "prune", help="remove indexed items that the excludes now cover")
+    p_prune.add_argument("--apply", action="store_true",
+                         help="actually delete; without this, only report")
+
     p_embed = sub.add_parser("embed", help="compute passage embeddings")
     p_embed.add_argument("--model", default=embed.DEFAULT_MODEL)
     p_embed.add_argument("--limit", type=int, default=None)
@@ -193,6 +198,8 @@ def _dispatch(args, cfg: Config, conn) -> int:
         return _cmd_scan(args, cfg, conn)
     if args.command == "index":
         return _cmd_index(args, cfg, conn)
+    if args.command == "prune":
+        return _cmd_prune(args, cfg, conn)
     if args.command == "embed":
         return _cmd_embed(args, conn)
     if args.command == "search":
@@ -273,6 +280,68 @@ def _cmd_index(args, cfg: Config, conn) -> int:
 
     if args.embed and embed.available():
         print(embed.embed_pending(conn).summary())
+    return 0
+
+
+def _cmd_prune(args, cfg, conn) -> int:
+    """Delete indexed items that the current excludes would now skip.
+
+    Adding an exclude only stops the *next* scan walking that directory; rows
+    already indexed stay, and keep matching searches. A note vault's bundled
+    plugin JavaScript is the case that prompted this: minified code matches
+    half the English language and buries the notes it sits beside.
+
+    Defaults to reporting only. Deleting index rows is cheap to redo -- a
+    rescan rebuilds anything excluded by mistake -- but it is still a delete,
+    so it asks.
+    """
+    excludes = set(cfg.excludes)
+    rows = conn.execute(
+        "SELECT id, uri FROM items WHERE uri IS NOT NULL AND deleted_at IS NULL"
+    ).fetchall()
+
+    doomed = []
+    for row in rows:
+        parts = set(Path(row["uri"]).parts)
+        if parts & excludes:
+            doomed.append((int(row["id"]), row["uri"]))
+
+    if not doomed:
+        print("nothing to prune: no indexed item is under an excluded path")
+        return 0
+
+    by_pattern: dict[str, int] = {}
+    for _, uri in doomed:
+        for pattern in sorted(set(Path(uri).parts) & excludes):
+            by_pattern[pattern] = by_pattern.get(pattern, 0) + 1
+
+    print(f"{len(doomed)} item(s) are under an excluded path:")
+    for pattern, count in sorted(by_pattern.items(), key=lambda kv: -kv[1]):
+        print(f"  {count:7,}  {pattern}")
+
+    if not args.apply:
+        print("\nnothing deleted. re-run with --apply to remove them.")
+        return 0
+
+    # ON DELETE CASCADE carries passages, records, tags and embeddings with it.
+    ids = [item_id for item_id, _ in doomed]
+    uris = [uri for _, uri in doomed]
+    with conn:
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            placeholders = ",".join("?" * len(chunk))
+            conn.execute(f"DELETE FROM items WHERE id IN ({placeholders})", chunk)
+        # file_state is keyed by uri and has no foreign key, so it needs its own
+        # pass -- and it must read the uris collected BEFORE the delete above,
+        # not join back to items, which no longer has those rows. Left behind,
+        # the next scan would treat the file as already known and skip it,
+        # making the exclude look like it did nothing.
+        for start in range(0, len(uris), 500):
+            chunk = uris[start:start + 500]
+            placeholders = ",".join("?" * len(chunk))
+            conn.execute(
+                f"DELETE FROM file_state WHERE uri IN ({placeholders})", chunk)
+    print(f"deleted {len(ids)} item(s) and everything derived from them.")
     return 0
 
 

@@ -100,6 +100,8 @@ button.fix:hover { color:var(--accent); border-color:var(--accent); }
 .field.job { display:flex; gap:12px; align-items:center;
              justify-content:space-between; flex-wrap:wrap; }
 .field.job .actions { margin:0; }
+.excludes { line-height:2; }
+.excludes code { margin-right:4px; }
 .status { font-size:12.5px; margin-top:5px; min-height:17px; }
 .status .ok { color:var(--accent); font-weight:600; }
 .status .bad { color:#b3261e; font-weight:600; }
@@ -618,11 +620,17 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
             signals = " ".join(f"{k}={v:+.4f}"
                                for k, v in sorted(hit.signals.items())
                                if not k.startswith("_"))
+            # The title opens the document, not its confidence scores. The
+            # scores stay reachable, because "why did this match?" is a real
+            # question -- just not the one a title click is asking.
+            title_link = (f'/file/{hit.item_id}' if hit.uri
+                          else f'/api/items/{hit.item_id}')
             out.append(f"""<div class="hit">
-  <h3><a href="/api/items/{hit.item_id}">{_esc(hit.title)}</a>{page}</h3>
+  <h3><a href="{title_link}" target="_blank" rel="noopener">{_esc(hit.title)}</a>{page}</h3>
   <div class="path">{_esc(hit.uri or f"note:{hit.item_id}")}</div>
   <div class="snip">{_esc(hit.snippet)}</div>
-  <div class="sig">score={hit.score:.4f} · {_esc(signals)}</div>
+  <div class="sig">score={hit.score:.4f} · {_esc(signals)}
+    · <a href="/api/items/{hit.item_id}">why</a></div>
 </div>""")
 
     return "".join(out)
@@ -751,9 +759,74 @@ def _settings_tab(conn: sqlite3.Connection) -> str:
   </div>
 </form>""")
 
+    out.append(_coverage_panel(conn))
     out.append(_jobs_panel())
     out.append(_updates_panel())
     return "".join(out)
+
+
+
+def _coverage_panel(conn: sqlite3.Connection) -> str:
+    """What gets indexed, what gets skipped, and what is actually in there.
+
+    Added because a note vault's bundled plugin JavaScript turned up in search
+    results and there was no way to see why: the excludes and the understood
+    formats were both invisible, so "why is this here" and "why is that
+    missing" were equally unanswerable.
+    """
+    from .config import DEFAULT_EXCLUDES
+    from .extract import text as text_extract
+
+    groups = [
+        ("Text and markup", text_extract.TEXT_SUFFIXES),
+        ("Spreadsheets", text_extract.CSV_SUFFIXES | text_extract.XLSX_SUFFIXES),
+        ("PDF", text_extract.PDF_SUFFIXES),
+        ("Word", text_extract.DOCX_SUFFIXES),
+        ("Email", text_extract.EML_SUFFIXES),
+        ("Images", text_extract.IMAGE_SUFFIXES),
+    ]
+    format_rows = "".join(
+        f"<tr><td>{_esc(label)}</td><td><code>"
+        + "</code> <code>".join(sorted(_esc(x) for x in suffixes))
+        + "</code></td></tr>"
+        for label, suffixes in groups)
+
+    excluded = " ".join(f"<code>{_esc(name)}</code>"
+                        for name in sorted(DEFAULT_EXCLUDES))
+
+    # What is actually indexed, by extension -- the honest answer to "is my
+    # stuff in there", and where an unwanted pattern shows up first.
+    try:
+        rows = conn.execute(
+            "SELECT LOWER(CASE WHEN instr(uri, '.') > 0 "
+            "  THEN replace(uri, rtrim(uri, replace(uri, '.', '')), '') "
+            "  ELSE '(none)' END) AS ext, COUNT(*) AS n "
+            "FROM items WHERE deleted_at IS NULL AND uri IS NOT NULL "
+            "GROUP BY ext ORDER BY n DESC LIMIT 15"
+        ).fetchall()
+        indexed = "".join(
+            f"<tr><td><code>.{_esc(r['ext'])}</code></td>"
+            f"<td>{int(r['n']):,}</td></tr>" for r in rows if r["ext"])
+    except sqlite3.Error:
+        indexed = ""
+
+    indexed_table = (
+        f"<h3>Most indexed extensions</h3><table>"
+        f"<tr><th>Extension</th><th>Items</th></tr>{indexed}</table>"
+        if indexed else "")
+
+    return f"""<h2>What gets indexed</h2>
+<p class="hint">Every file is findable by name and path. These formats also have
+their <em>contents</em> read; anything else is indexed by filename only.</p>
+<table><tr><th>Kind</th><th>Extensions</th></tr>{format_rows}</table>
+<h3>Always skipped</h3>
+<p class="hint">Matched on the exact directory or file name, at any depth.
+Application internals and caches, not documents.</p>
+<p class="excludes">{excluded}</p>
+<p class="hint">Changing this list affects the next scan only. To drop items
+already indexed under a newly excluded path, run
+<code>tracepaper prune</code> (add <code>--apply</code> to delete).</p>
+{indexed_table}"""
 
 
 def _jobs_panel() -> str:

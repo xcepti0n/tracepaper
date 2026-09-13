@@ -780,3 +780,119 @@ def test_a_failed_model_load_does_not_take_the_service_down(monkeypatch, cfg):
 
     client = TestClient(api.create_app(cfg))
     assert client.get("/api/health").json()["ok"] is True
+
+
+def test_search_results_link_to_the_file_not_the_json(client):
+    """Clicking a result opened /api/items/<id> -- a JSON blob of confidence
+    scores. The title should open the document; the scores stay reachable
+    behind a "why" link, because that is a real question, just not the one a
+    title click is asking."""
+    page = client.get("/?q=invoice").text
+    if 'class="hit"' not in page:
+        pytest.skip("no hits in this fixture")
+    assert "/file/" in page
+    assert ">why</a>" in page
+
+
+def test_serving_a_file_refuses_paths_outside_the_roots(client, cfg, monkeypatch):
+    """The path comes from the index, but a stored uri is not a capability to
+    read the whole filesystem -- if the roots change, or a row is wrong, the
+    server must refuse rather than serve /etc/passwd."""
+    from tracepaper import api
+
+    conn = api.open_connection()
+    try:
+        conn.execute("INSERT INTO items (kind, uri, title, extraction_status) "
+                     "VALUES ('document', '/etc/passwd', 'passwd', 'complete')")
+        item_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get(f"/file/{item_id}")
+    assert response.status_code == 403
+    assert "outside the indexed roots" in response.json()["detail"]
+
+
+def test_serving_a_file_returns_it_when_inside_a_root(cfg, nas):
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from tracepaper import api
+
+    client = TestClient(api.create_app(replace(cfg, roots=[str(nas)])))
+    target = nas / "readable.txt"
+    target.write_text("the irrigation solenoid valve")
+
+    conn = api.open_connection()
+    try:
+        conn.execute("INSERT INTO items (kind, uri, title, mime, "
+                     "extraction_status) VALUES ('document', ?, 'readable', "
+                     "'text/plain', 'complete')", (str(target),))
+        item_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get(f"/file/{item_id}")
+    assert response.status_code == 200
+    assert "irrigation solenoid" in response.text
+
+
+def test_serving_a_missing_file_says_the_share_may_be_unmounted(cfg, nas):
+    """An indexed file that is not there now is usually a mount problem, not a
+    404 -- say so, because the two have very different fixes."""
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from tracepaper import api
+
+    client = TestClient(api.create_app(replace(cfg, roots=[str(nas)])))
+
+    conn = api.open_connection()
+    try:
+        conn.execute("INSERT INTO items (kind, uri, title, extraction_status) "
+                     "VALUES ('document', ?, 'gone', 'complete')",
+                     (str(nas / "vanished.txt"),))
+        item_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get(f"/file/{item_id}")
+    assert response.status_code == 404
+    assert "mounted" in response.json()["detail"]
+
+
+def test_settings_shows_what_is_indexed_and_what_is_skipped(client):
+    """A note vault's bundled plugin JavaScript turned up in results and there
+    was no way to see why: neither the excludes nor the understood formats were
+    visible anywhere, so "why is this here" and "why is that missing" were
+    equally unanswerable."""
+    page = client.get("/?tab=settings").text
+    assert "What gets indexed" in page
+    assert "Always skipped" in page
+    assert ".obsidian" in page, "the exclude list must be visible"
+    assert ".pdf" in page and ".heic" in page
+    assert "tracepaper prune" in page, (
+        "excluding something later must explain how to drop what is indexed")
+
+
+def test_obsidian_internals_are_excluded():
+    """Plugin JavaScript is minified code that matches half the English
+    language and buries the notes it sits beside."""
+    from tracepaper.config import DEFAULT_EXCLUDES
+
+    for name in (".obsidian", ".stfolder", ".stversions", "site-packages"):
+        assert name in DEFAULT_EXCLUDES, f"{name} should be skipped"
+
+
+def test_excludes_have_no_duplicates():
+    from collections import Counter
+
+    from tracepaper.config import DEFAULT_EXCLUDES
+
+    dupes = [name for name, count in Counter(DEFAULT_EXCLUDES).items() if count > 1]
+    assert not dupes, f"duplicated excludes: {dupes}"

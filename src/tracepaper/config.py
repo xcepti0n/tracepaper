@@ -31,6 +31,21 @@ DEFAULT_EXCLUDES: tuple[str, ...] = (
     "Caches",
     ".Trash",
     "@Recycle",
+    # Application internals that live *inside* document folders. A note vault
+    # keeps its plugins beside the notes, so the notes are worth indexing and
+    # the bundled JavaScript is not -- a single plugin's main.js is minified
+    # code that matches half the English language and outranks nothing useful.
+    ".obsidian",
+    ".trash",            # Obsidian's own, lowercase
+    ".stfolder",         # Syncthing
+    ".stversions",
+    ".dropbox.cache",
+    ".idea",
+    ".vscode",
+    "site-packages",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
 )
 
 # Soft-delete only after this many consecutive scans miss a path. An unmounted

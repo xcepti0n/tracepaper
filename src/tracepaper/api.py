@@ -205,6 +205,47 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         finally:
             conn.close()
 
+    @app.get("/file/{item_id}")
+    def serve_file(item_id: int, download: bool = False):
+        """Serve the original document.
+
+        Clicking a search result used to open /api/items/<id> -- a JSON blob of
+        confidence scores. What you want is the document.
+
+        The path comes from the index, never from the request, and is checked to
+        be inside a configured root before anything is read: the roots are the
+        only thing this server is allowed to serve, and a stored uri is not a
+        capability to read the whole filesystem.
+        """
+        from fastapi.responses import FileResponse
+
+        conn = open_connection()
+        try:
+            row = conn.execute(
+                "SELECT uri, title, mime FROM items WHERE id = ? "
+                "AND deleted_at IS NULL", (item_id,)).fetchone()
+        finally:
+            conn.close()
+
+        if row is None or not row["uri"]:
+            raise HTTPException(status_code=404, detail="no such file")
+
+        path = Path(row["uri"]).resolve()
+        roots = [Path(r).resolve() for r in get_config().roots]
+        if not any(path == root or root in path.parents for root in roots):
+            # Either the roots changed or the uri is not ours to serve.
+            raise HTTPException(status_code=403,
+                                detail="that file is outside the indexed roots")
+        if not path.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=f"{path} is indexed but not readable now — is the share "
+                       "mounted?")
+
+        return FileResponse(
+            path, media_type=row["mime"] or "application/octet-stream",
+            filename=path.name if download else None)
+
     @app.get("/api/items/{item_id}")
     def api_item(item_id: int) -> dict[str, Any]:
         conn = open_connection()

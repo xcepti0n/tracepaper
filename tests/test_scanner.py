@@ -322,3 +322,56 @@ def test_uri_stays_unique_across_repeated_scans(conn, cfg, nas):
         "SELECT COUNT(*) AS n FROM items WHERE deleted_at IS NULL"
     ).fetchone()["n"]
     assert n == 1
+
+
+def test_prune_reports_before_it_deletes(conn, cfg, capsys):
+    """Adding an exclude stops the next scan walking a directory, but rows
+    already indexed stay and keep matching searches. prune removes them --
+    and defaults to reporting, because it is still a delete."""
+    from tracepaper.cli import _cmd_prune
+
+    conn.execute("INSERT INTO items (kind, uri, extraction_status) VALUES "
+                 "('document', '/nas/Notes/.obsidian/plugins/x/main.js', 'complete')")
+    conn.execute("INSERT INTO items (kind, uri, extraction_status) VALUES "
+                 "('document', '/nas/Notes/real-note.md', 'complete')")
+    conn.commit()
+
+    class Args:
+        apply = False
+
+    assert _cmd_prune(Args(), cfg, conn) == 0
+    assert "nothing deleted" in capsys.readouterr().out
+    assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 2, (
+        "a report must not delete anything")
+
+
+def test_prune_removes_excluded_items_and_their_file_state(conn, cfg):
+    """Passages and embeddings go with the item via ON DELETE CASCADE, but
+    file_state is keyed by uri with no foreign key -- left behind, the next
+    scan treats the file as already known and skips it, making the exclude
+    look like it did nothing."""
+    from tracepaper.cli import _cmd_prune
+
+    bad = "/nas/Notes/.obsidian/plugins/mind-map/main.js"
+    good = "/nas/Notes/real-note.md"
+    for uri in (bad, good):
+        conn.execute("INSERT INTO items (kind, uri, extraction_status) "
+                     "VALUES ('document', ?, 'complete')", (uri,))
+        conn.execute("INSERT INTO file_state (uri, size_bytes, mtime, "
+                     "last_seen_scan) VALUES (?, 1, 1.0, 1)", (uri,))
+    item_id = conn.execute("SELECT id FROM items WHERE uri = ?", (bad,)).fetchone()[0]
+    conn.execute("INSERT INTO passages (item_id, version, ordinal, text) "
+                 "VALUES (?, 1, 0, 'function x()')", (item_id,))
+    conn.commit()
+
+    class Args:
+        apply = True
+
+    assert _cmd_prune(Args(), cfg, conn) == 0
+
+    remaining = [r[0] for r in conn.execute("SELECT uri FROM items")]
+    assert remaining == [good]
+    assert conn.execute("SELECT COUNT(*) FROM passages").fetchone()[0] == 0, (
+        "passages must cascade away with their item")
+    states = [r[0] for r in conn.execute("SELECT uri FROM file_state")]
+    assert states == [good], "file_state must not keep the excluded path"
