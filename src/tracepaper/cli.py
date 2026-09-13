@@ -384,11 +384,17 @@ def _prune_machine_formats(args, conn, rows) -> None:
     if not targets:
         return
 
-    counted = conn.execute(
-        f"SELECT COUNT(*) FROM passages WHERE item_id IN "
-        f"({','.join('?' * len(targets[:500]))})", targets[:500]).fetchone()[0]
-    print(f"\n{len(targets):,} machine-generated file(s) have indexed contents "
-          f"(~{counted:,} passages in the first 500 alone).")
+    # Count them all, in chunks -- SQLite caps parameters per statement, but
+    # reporting "the first 500 alone" was misleading whenever the total was
+    # under 500, which made an exact number look like a lower bound.
+    counted = 0
+    for start in range(0, len(targets), 500):
+        chunk = targets[start:start + 500]
+        counted += conn.execute(
+            f"SELECT COUNT(*) FROM passages WHERE item_id IN "
+            f"({','.join('?' * len(chunk))})", chunk).fetchone()[0]
+    print(f"\n{len(targets):,} machine-generated file(s) have indexed "
+          f"contents: {counted:,} passages.")
 
     if not args.apply:
         print("nothing changed. re-run with --apply --formats to drop them.")
