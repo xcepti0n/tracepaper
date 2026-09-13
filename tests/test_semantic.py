@@ -412,3 +412,36 @@ def test_status_count_uses_the_partial_index(conn):
         "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM passages "
         "WHERE length(trim(text)) > 0")]
     assert any("idx_passages_nonempty" in step for step in plan), plan
+
+
+@requires_model
+def test_vector_scan_gives_up_rather_than_hanging_a_search(conn, cfg, nas, monkeypatch):
+    """An exact scan reads every stored vector, which shares a file with
+    whatever is writing them. During a backfill a search went from fast to a
+    40s timeout. A search that answers on keywords alone beats one that hangs
+    (NFR-9), so the scan has a deadline."""
+    build(conn, cfg, nas, {f"n{i}.txt": f"valve {i}" for i in range(12)})
+    embed.embed_pending(conn)
+
+    # A budget of zero must still return, not raise or spin.
+    monkeypatch.setattr(embed, "BATCH_ROWS", 2)
+    hits = embed.search(conn, "sprinkler", limit=5, budget_seconds=0.000001)
+    assert isinstance(hits, list)
+
+    # And with no budget the full scan still works.
+    full = embed.search(conn, "sprinkler", limit=5, budget_seconds=0)
+    assert full, "an unlimited budget must scan everything"
+
+
+@requires_model
+def test_a_truncated_scan_still_returns_ordered_results(conn, cfg, nas, monkeypatch):
+    """Whatever was scored before the deadline must still come back ranked, so
+    a slow search degrades in recall rather than correctness."""
+    build(conn, cfg, nas, {f"n{i}.txt": f"irrigation valve number {i}"
+                           for i in range(20)})
+    embed.embed_pending(conn)
+
+    monkeypatch.setattr(embed, "BATCH_ROWS", 1)
+    hits = embed.search(conn, "sprinkler valve", limit=5, budget_seconds=0.05)
+    scores = [s for _, s in hits]
+    assert scores == sorted(scores, reverse=True), "must stay ranked"

@@ -19,6 +19,7 @@ import heapq
 import logging
 import sqlite3
 import struct
+import time
 from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
@@ -123,6 +124,15 @@ def unpack(blob: bytes) -> list[float]:
 # BATCH_ROWS rather than by the size of the corpus (a 1M-passage index would
 # otherwise want ~1.5 GB resident, well past the service's MemoryMax).
 BATCH_ROWS = 8192
+
+# An exact scan reads every stored vector. That is ~1s per million on a quiet
+# disk, but the vectors share a file with whatever is writing them, and during
+# a backfill a search went from fast to a 40s timeout. A search that hangs is
+# worse than one that answers on keywords alone (NFR-9), so the scan gets a
+# deadline: whatever was scored by then is fused, the rest is skipped, and the
+# result stays deterministic for a given set of stored vectors because rows are
+# read in a stable order.
+VECTOR_SCAN_BUDGET_SECONDS = 3.0
 
 
 def _scores_numpy(blobs: list[bytes], query_vector: list[float]):
@@ -237,8 +247,8 @@ def embed_pending(conn: sqlite3.Connection, *, model_id: str = DEFAULT_MODEL,
 
 
 def search(conn: sqlite3.Connection, query: str, *, limit: int = 20,
-           model_id: str = DEFAULT_MODEL,
-           kind: str | None = None) -> list[tuple[int, float]]:
+           model_id: str = DEFAULT_MODEL, kind: str | None = None,
+           budget_seconds: float | None = None) -> list[tuple[int, float]]:
     """Vector search. Returns (passage_id, similarity) ordered deterministically.
 
     Brute force over stored vectors, scored as batched matrix products. That is
@@ -276,11 +286,20 @@ def search(conn: sqlite3.Connection, query: str, *, limit: int = 20,
     # score, then ascending id. Negating the id keeps a low id "larger", so the
     # tie-break drops the highest id first -- exactly what the final sort keeps.
     best: list[tuple[float, int]] = []
+    budget = (VECTOR_SCAN_BUDGET_SECONDS if budget_seconds is None
+              else budget_seconds)
+    deadline = time.monotonic() + budget if budget > 0 else None
+    scanned = 0
     cursor = conn.execute(sql, params)
     while True:
         rows = cursor.fetchmany(BATCH_ROWS)
         if not rows:
             break
+        if deadline is not None and time.monotonic() > deadline:
+            log.warning("vector scan hit its %.1fs budget after %d vectors; "
+                        "ranking on what was scored", budget, scanned)
+            break
+        scanned += len(rows)
         ids = [int(row["passage_id"]) for row in rows]
         blobs = [row["vector"] for row in rows]
 
