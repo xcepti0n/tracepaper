@@ -23,6 +23,14 @@ BOOST_TITLE_MATCH = 0.5
 BOOST_RECENCY_MAX = 0.3
 SNIPPET_CHARS = 240
 
+# A document is one result, however many of its passages match. Ranking still
+# happens per passage -- that is what BM25 and the vectors score -- so the
+# passage pass has to look deeper than `limit` before collapsing, or a single
+# long manual fills the page and hides everything else. 8x covers the common
+# case (a guide matching on every page) without scanning the whole index.
+GROUP_OVERFETCH = 8
+MAX_PASSAGES_PER_DOC = 5     # how many extra pages to keep for the expander
+
 # Reciprocal Rank Fusion. k=60 is the standard constant; fixed, never learned,
 # so ranking stays reproducible (NFR-2, D-004).
 RRF_K = 60
@@ -35,6 +43,15 @@ MIN_VECTOR_SIMILARITY = 0.25
 
 
 @dataclass
+class PassageMatch:
+    """One more matching passage inside an already-listed document."""
+    passage_id: int
+    page: int | None
+    snippet: str
+    score: float
+
+
+@dataclass
 class RankedHit:
     item_id: int
     passage_id: int
@@ -44,6 +61,13 @@ class RankedHit:
     snippet: str
     score: float
     signals: dict[str, float] = field(default_factory=dict)
+    # Further passages from the SAME document, best first. A document appears
+    # once in the results; this is where its other matching pages go.
+    more: list["PassageMatch"] = field(default_factory=list)
+
+    @property
+    def passage_count(self) -> int:
+        return 1 + len(self.more)
 
     def explain(self) -> str:
         parts = [f"{name}={value:+.4f}" for name, value in sorted(self.signals.items())]
@@ -105,19 +129,24 @@ class SearchEngine:
         this degrades to pure BM25 and still works (NFR-9).
         """
         fts_query = to_fts_query(query)
-        keyword_hits = self._keyword_search(fts_query, limit, offset, kind, query) \
+        # Rank passages deeply, then collapse to documents: `limit` counts
+        # documents, so the passage pass must over-fetch to have anything left
+        # after a long document's pages are folded into one result.
+        deep = limit * GROUP_OVERFETCH
+        keyword_hits = self._keyword_search(fts_query, deep, offset, kind, query) \
             if fts_query else []
 
         vector_ranks: dict[int, int] = {}
         if semantic:
-            vector_ranks = self._vector_ranks(query, limit, offset, kind)
+            vector_ranks = self._vector_ranks(query, deep, offset, kind)
 
         if not keyword_hits and not vector_ranks:
             return SearchResponse(query=query, hits=[], total=0, fts_query=fts_query)
 
         if not vector_ranks:
+            hits = _group_by_document(keyword_hits, limit)
             total = self._count(fts_query, kind) if fts_query else 0
-            return SearchResponse(query=query, hits=keyword_hits, total=total,
+            return SearchResponse(query=query, hits=hits, total=total,
                                   fts_query=fts_query)
 
         hits = self._fuse(keyword_hits, vector_ranks, query, limit, kind)
@@ -257,7 +286,7 @@ class SearchEngine:
             ))
 
         fused.sort(key=lambda h: (-h.score, h.passage_id))
-        fused = fused[:limit]
+        fused = _group_by_document(fused, limit)
 
         # RRF produces scores around 0.01-0.03, which are unreadable and round
         # to 0.00 in any display. Rescale so the best hit is 1.0 and the rest
@@ -296,7 +325,12 @@ class SearchEngine:
         ]
 
     def _count(self, fts_query: str, kind: str | None) -> int:
-        sql = ("SELECT COUNT(*) AS n FROM passages_fts "
+        """How many DOCUMENTS match -- the unit the results are now in.
+
+        Counting passages here meant "8 results" printed above a single row,
+        because one guide matched on eight pages.
+        """
+        sql = ("SELECT COUNT(DISTINCT p.item_id) AS n FROM passages_fts "
                "JOIN passages p ON p.id = passages_fts.rowid "
                "JOIN items i ON i.id = p.item_id "
                "WHERE passages_fts MATCH ? AND i.deleted_at IS NULL")
@@ -372,6 +406,38 @@ class SearchEngine:
         end = min(len(text), start + SNIPPET_CHARS)
         snippet = _flatten(text[start:end])
         return ("…" if start > 0 else "") + snippet + ("…" if end < len(text) else "")
+
+
+def _group_by_document(hits: list[RankedHit], limit: int) -> list[RankedHit]:
+    """Collapse passage hits into one result per document.
+
+    A 40-page printer manual that mentions the query on every page was
+    returning 20 results that were all the same PDF, pushing every other
+    document off the page. The document is what the user is looking for; the
+    pages are how they navigate inside it once they open it.
+
+    The document takes the score and position of its BEST passage, so ranking
+    is unchanged -- this only removes the repeats beneath it. Input order is
+    assumed to be the final ranking already, which makes the first passage
+    seen for a document its best one.
+
+    Deterministic throughout (NFR-2): dicts preserve insertion order, so equal
+    scores keep the passage_id tie-break the caller already applied.
+    """
+    by_item: dict[int, RankedHit] = {}
+    for hit in hits:
+        leader = by_item.get(hit.item_id)
+        if leader is None:
+            # `more` is per-result state; a fresh list avoids aliasing the
+            # one a caller may have handed in.
+            hit.more = []
+            by_item[hit.item_id] = hit
+            continue
+        if len(leader.more) < MAX_PASSAGES_PER_DOC:
+            leader.more.append(PassageMatch(
+                passage_id=hit.passage_id, page=hit.page,
+                snippet=hit.snippet, score=hit.score))
+    return list(by_item.values())[:limit]
 
 
 def _flatten(text: str) -> str:

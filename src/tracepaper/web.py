@@ -58,6 +58,15 @@ button.ghost { background:transparent; color:var(--accent);
 .hit .path { color:var(--muted); font-size:12px; font-family:ui-monospace,monospace;
              word-break:break-all; margin-bottom:7px; }
 .hit .snip { font-size:14px; }
+.hit .more { margin:6px 0 2px; }
+.hit .more summary { cursor:pointer; color:var(--muted); font-size:12px;
+  user-select:none; }
+.hit .more summary:hover { color:var(--fg); }
+.hit .more ul { margin:6px 0 0; padding:0 0 0 14px; list-style:none;
+  border-left:2px solid var(--line); }
+.hit .more li { margin:0 0 5px; font-size:13px; }
+.hit .more li a { font-family:ui-monospace,monospace; font-size:11.5px;
+  margin-right:6px; white-space:nowrap; }
 .sig { color:var(--muted); font-size:11.5px; font-family:ui-monospace,monospace;
        margin-top:8px; }
 .answer { background:var(--accent-soft); border:1px solid var(--accent);
@@ -649,15 +658,43 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
             # question -- just not the one a title click is asking.
             title_link = (f'/file/{hit.item_id}' if hit.uri
                           else f'/api/items/{hit.item_id}')
+
+            # A document appears once. Its other matching pages go here, so a
+            # 40-page manual is one result you can open at the right page
+            # instead of forty results that are all the same file.
+            more = ""
+            if hit.more:
+                rows = "".join(
+                    f'<li><a href="{title_link}{_page_anchor(m.page)}" '
+                    f'target="_blank" rel="noopener">'
+                    f'{f"p.{m.page}" if m.page else "another passage"}</a> '
+                    f'<span class="snip">{_esc(m.snippet)}</span></li>'
+                    for m in hit.more)
+                label = (f"{hit.passage_count} matching passages"
+                         if hit.passage_count > 2 else "2 matching passages")
+                more = (f'<details class="more"><summary>{label}</summary>'
+                        f'<ul>{rows}</ul></details>')
+
             out.append(f"""<div class="hit">
-  <h3><a href="{title_link}" target="_blank" rel="noopener">{_esc(hit.title)}</a>{page}</h3>
+  <h3><a href="{title_link}{_page_anchor(hit.page)}" target="_blank" rel="noopener">{_esc(hit.title)}</a>{page}</h3>
   <div class="path">{_esc(hit.uri or f"note:{hit.item_id}")}</div>
   <div class="snip">{_esc(hit.snippet)}</div>
+  {more}
   <div class="sig">score={hit.score:.4f} · {_esc(signals)}
     · <a href="/api/items/{hit.item_id}">why</a></div>
 </div>""")
 
     return "".join(out)
+
+
+def _page_anchor(page: int | None) -> str:
+    """Open a PDF at the matching page.
+
+    `#page=N` is the PDF Open Parameters fragment, understood by Chrome's and
+    Firefox's built-in viewers. It is a fragment, so a viewer that does not
+    support it ignores it and opens page 1 -- never an error.
+    """
+    return f"#page={page}" if page else ""
 
 
 def _fix_button(item_id: int, key: str, current) -> str:

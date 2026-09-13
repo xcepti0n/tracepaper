@@ -37,6 +37,33 @@ _STOPWORDS = {
 _TOKEN = re.compile(r"[\w][\w'-]*", re.UNICODE)
 _YEAR = re.compile(r"\b(19\d{2}|20\d{2})\b")
 
+# A query asking for a value, rather than naming a topic. Kept literal and
+# deterministic -- this decides whether the answer banner appears at all.
+_INTERROGATIVE = re.compile(
+    r"\b(what|whats|what's|when|where|who|which|how much|how many|"
+    r"my|expiry|expires|due|total|amount|balance|number)\b"
+)
+
+# Values that are syntax rather than facts. The generic `label: value`
+# extractor cannot tell a form field from a line of JSON, so source files
+# vendored into the corpus produce fields whose values are code fragments.
+_CODE_ISH = re.compile(r"""[{}\[\]<>]|::|=>|^\s*(?:def|class|import|return)\b""")
+
+
+def _is_answerable(value: FieldValue) -> bool:
+    """True when a stored value is fit to show as *the* answer.
+
+    A typed value -- a date or a number -- has already proved itself by
+    parsing. Free text has not, so it must at least not look like code.
+    """
+    if value.value_date is not None or value.value_num is not None:
+        return True
+    text = (value.value_text or "").strip()
+    if not text or len(text) > 120:
+        return False
+    return not _CODE_ISH.search(text)
+
+
 
 @dataclass
 class UnifiedResult:
@@ -106,18 +133,56 @@ class UnifiedSearch:
 
     def _answer(self, text: str, tokens: list[str],
                 constraints: dict[str, object], result: UnifiedResult) -> None:
-        """Tier 1: a stored value, when the query names a field we know."""
+        """Tier 1: a stored value, when the query names a field we know.
+
+        The direct answer is the loudest thing on the page, so it has to earn
+        the slot. "3d printer" is a topic, not a question about a value, and
+        answering it with `{"type": "integer"},` -- scraped out of a JSON blob
+        in a vendored Python file, whose key happened to normalise to
+        `printer` -- is worse than showing nothing.
+
+        Two gates, both deterministic. The query must *ask* for a value, and
+        the value must look like one.
+        """
+        if not self._asks_for_a_value(text, tokens, constraints):
+            return
+
         for key in self._matching_keys(tokens):
             answer = self.fields.get(key, where=constraints, limit=6)
-            if not answer.values:
+            values = [v for v in answer.values if _is_answerable(v)]
+            if not values:
                 continue
-            result.answer = answer.best
+            result.answer = values[0]
             result.answer_key = answer.key
             result.matched_keys.append(answer.key)
-            if not answer.is_unambiguous:
+            if any(v.value != values[0].value for v in values[1:]):
                 # Disagreement is surfaced, never resolved silently.
-                result.alternatives = answer.values[1:]
+                result.alternatives = values[1:]
             return
+
+    def _asks_for_a_value(self, text: str, tokens: list[str],
+                          constraints: dict[str, object]) -> bool:
+        """True when the query reads as a question about a stored value.
+
+        Bare topic words ("3d printer", "tax returns") are browsing: the
+        ranked documents below are the right answer and the value banner is
+        noise. A question word, a year constraint, or naming a field outright
+        ("passport expiry") all signal the opposite.
+        """
+        lowered = text.lower()
+        if _INTERROGATIVE.search(lowered):
+            return True
+        if constraints:                      # "salary 2023" names a year
+            return True
+        # The query is (close to) a field name itself, rather than merely
+        # overlapping one: "passport expiry" qualifies, "printer" does not,
+        # because a single generic token overlaps far too much.
+        if len(tokens) >= 2:
+            joined = "_".join(tokens)
+            for key, _ in self.fields.list_keys(limit=500):
+                if key == joined or set(key.split("_")) == set(tokens):
+                    return True
+        return False
 
     def _matching_keys(self, tokens: list[str]) -> list[str]:
         """Field names the query plausibly refers to, best match first.

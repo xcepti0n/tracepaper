@@ -571,3 +571,32 @@ def test_a_failed_batch_advances_the_cursor():
     failure = failure[:failure.index("\n        if not _write_batch")]
     assert "cursor.fetchmany" in failure, (
         "the failure path must advance, or it loops on the same batch")
+
+
+@requires_model
+def test_grouping_survives_fusion(conn, cfg, nas):
+    """The reported bug was on the semantic path, so pin it there too.
+
+    RRF fuses per passage, which is correct -- but the results it hands back
+    are per document. A manual that matches on fifteen pages must still be
+    one row, with the best-scoring passage as its representative.
+    """
+    build(conn, cfg, nas, {
+        "printer_manual.txt": "\n\n".join(
+            f"Section {n}. Setting up the 3d printer. "
+            + "Bed levelling for the 3d printer is covered here. " * 30
+            for n in range(1, 16)),
+        "diary.txt": "I bought a 3d printer in March and it arrived late.",
+    })
+    embed.embed_pending(conn)
+
+    hits = SearchEngine(conn).search("3d printer", semantic=True).hits
+
+    item_ids = [h.item_id for h in hits]
+    assert len(item_ids) == len(set(item_ids)), \
+        f"fusion reintroduced duplicate documents: {item_ids}"
+
+    manual = next(h for h in hits if h.title == "printer_manual.txt")
+    assert manual.more, "the manual's other pages should be folded in"
+    # The representative passage is the best one, not an arbitrary one.
+    assert all(manual.score >= m.score for m in manual.more)

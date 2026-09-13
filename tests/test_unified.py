@@ -134,3 +134,89 @@ def test_key_matching_requires_every_word(corpus, cfg, nas):
     result = UnifiedSearch(corpus).query("salary 2023", semantic=False)
 
     assert result.answer.value == 91500.0
+
+
+# --- One document, one result -------------------------------------------
+
+# Long enough to split into many passages (~1200 chars each), which is the
+# whole point: a real manual mentions the query on page after page.
+MANUAL = "\n\n".join(
+    f"Section {n}. Setting up the 3d printer. "
+    + "Bed levelling for the 3d printer is covered in detail here. " * 30
+    for n in range(1, 16)
+)
+MENTION = "I bought a 3d printer in March and it arrived late.\n"
+
+
+@pytest.fixture
+def printer_corpus(conn, cfg, nas):
+    (nas / "elegoo_printer_guide.txt").write_text(MANUAL)
+    for name in ("diary.txt", "receipts.txt", "wishlist.txt"):
+        (nas / name).write_text(MENTION)
+    Scanner(conn, cfg).scan(nas)
+    Indexer(conn, cfg).run_pending()
+    return conn
+
+
+def test_one_document_appears_once_however_many_passages_match(printer_corpus):
+    """A long manual matching on every page is one result, not fifteen.
+
+    Before grouping, the guide's passages filled every slot and the three
+    other documents were pushed off the page entirely.
+    """
+    result = UnifiedSearch(printer_corpus).query("3d printer", semantic=False)
+
+    item_ids = [hit.item_id for hit in result.hits]
+    assert len(item_ids) == len(set(item_ids)), (
+        f"the same document is listed more than once: {item_ids}")
+    assert len(result.hits) == 4, "every matching document should be reachable"
+
+
+def test_the_guide_still_wins_and_keeps_its_other_pages(printer_corpus):
+    result = UnifiedSearch(printer_corpus).query("3d printer", semantic=False)
+
+    best = result.hits[0]
+    assert "elegoo" in (best.uri or "").lower(), "the guide should rank first"
+    # Its remaining matches are folded underneath rather than discarded.
+    assert best.more, "the other matching passages should still be reachable"
+    assert best.passage_count > 1
+    assert all(m.passage_id != best.passage_id for m in best.more)
+
+
+def test_the_total_counts_documents_not_passages(printer_corpus):
+    """"15 results" above a single row was the passage count leaking out."""
+    result = UnifiedSearch(printer_corpus).query("3d printer", semantic=False)
+    assert result.total_hits == 4
+
+
+# --- The direct answer has to earn its slot ------------------------------
+
+JSON_BLOB = """Printer: {"type": "integer"},
+Serial: {"type": "string"},
+"""
+
+
+@pytest.fixture
+def noisy_corpus(conn, cfg, nas):
+    """A vendored source file whose `label: value` lines look like fields."""
+    (nas / "chat_template_utils.txt").write_text(JSON_BLOB)
+    (nas / "printer_notes.txt").write_text(MENTION)
+    Scanner(conn, cfg).scan(nas)
+    Indexer(conn, cfg).run_pending()
+    return conn
+
+
+def test_a_topic_query_gets_no_direct_answer(noisy_corpus):
+    """"3d printer" is browsing, not a question about a stored value."""
+    result = UnifiedSearch(noisy_corpus).query("3d printer", semantic=False)
+    assert result.answer is None, (
+        f"a topic query must not produce a value banner, got "
+        f"{result.answer.value_text!r}")
+
+
+def test_a_code_fragment_is_never_shown_as_an_answer(noisy_corpus):
+    """Even when asked outright, `{"type": "integer"},` is not an answer."""
+    result = UnifiedSearch(noisy_corpus).query("what is my printer",
+                                               semantic=False)
+    if result.answer is not None:
+        assert "{" not in result.answer.value_text

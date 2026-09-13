@@ -120,6 +120,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                         "title": hit.title, "uri": hit.uri, "page": hit.page,
                         "snippet": hit.snippet, "score": round(hit.score, 6),
                         "signals": {k: round(v, 6) for k, v in hit.signals.items()},
+                        # A document is one hit; its other matching passages
+                        # hang off it rather than repeating the document.
+                        "passage_count": hit.passage_count,
+                        "more": [
+                            {"passage_id": m.passage_id, "page": m.page,
+                             "snippet": m.snippet, "score": round(m.score, 6)}
+                            for m in hit.more
+                        ],
                     }
                     for hit in response.hits
                 ],

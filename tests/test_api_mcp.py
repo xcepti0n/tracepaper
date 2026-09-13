@@ -989,3 +989,48 @@ def test_ranking_doc_and_ui_cite_the_same_sources():
     for url in ("cormacksigir09-rrf.pdf", "city.ps.gz", "1908.10084",
                 "all-MiniLM-L6-v2"):
         assert url in doc, f"docs/04-ranking.md is missing {url}"
+
+
+def test_search_api_groups_passages_under_their_document(cfg, conn, nas):
+    """One document is one hit, with its other pages attached."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from tracepaper.api import create_app
+
+    (nas / "manual.txt").write_text("\n\n".join(
+        f"Section {n}. Setting up the 3d printer. " +
+        f"Bed levelling for the 3d printer is described here. " * 30
+        for n in range(1, 12)))
+    Scanner(conn, cfg).scan(nas)
+    Indexer(conn, cfg).run_pending()
+
+    data = TestClient(create_app(cfg)).get(
+        "/api/search", params={"q": "3d printer", "semantic": False}).json()
+
+    assert len(data["hits"]) == 1, "the manual is one document, not eleven"
+    hit = data["hits"][0]
+    assert hit["passage_count"] > 1
+    assert hit["more"], "its other matching pages must still be reachable"
+    assert all("page" in m and "snippet" in m for m in hit["more"])
+
+
+def test_search_page_links_each_passage_to_its_page(cfg, conn, nas):
+    """The expander's links open the PDF at the matching page."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from tracepaper.api import create_app
+
+    (nas / "guide.txt").write_text("\n\n".join(
+        f"Part {n}. Calibrating the 3d printer nozzle. " +
+        f"Nozzle height on this 3d printer matters. " * 30
+        for n in range(1, 12)))
+    Scanner(conn, cfg).scan(nas)
+    Indexer(conn, cfg).run_pending()
+
+    html = TestClient(create_app(cfg)).get(
+        "/", params={"q": "3d printer", "semantic": "false"}).text
+
+    assert "<details class=\"more\"" in html, "grouped pages should be shown"
+    assert "matching passages</summary>" in html
