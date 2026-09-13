@@ -600,3 +600,48 @@ def test_grouping_survives_fusion(conn, cfg, nas):
     assert manual.more, "the manual's other pages should be folded in"
     # The representative passage is the best one, not an arbitrary one.
     assert all(manual.score >= m.score for m in manual.more)
+
+
+@requires_model
+def test_the_total_counts_documents_found_only_by_meaning(conn, cfg, nas):
+    """The Next link went missing on exactly the searches that needed it.
+
+    FTS ANDs its terms, so "3d printer" matched 3 documents literally while
+    fusion returned 20 -- the rest came from vectors. `total` was the FTS
+    count floored at the page size, so it always equalled what was shown, and
+    the pager concluded there was nothing after page 1.
+    """
+    files = {"manual.txt": "Setting up the 3d printer. " + "Bed levelling. " * 20}
+    # Documents about printing that never say "3d" -- reachable by meaning only.
+    for n in range(12):
+        files[f"note{n:02d}.txt"] = (
+            f"Note {n}. Filament extruder nozzle calibration for the machine. "
+            + "Layer height and bed adhesion notes. " * 10)
+    build(conn, cfg, nas, files)
+    embed.embed_pending(conn)
+
+    response = SearchEngine(conn).search("3d printer", limit=5, semantic=True)
+
+    assert len(response.hits) == 5
+    assert response.total > len(response.hits), (
+        f"total {response.total} must exceed the page size, or there is no "
+        f"way to reach the rest")
+
+
+@requires_model
+def test_paging_is_stable_across_the_fused_path(conn, cfg, nas):
+    """Page 2 must not repeat page 1 once vectors are in the mix."""
+    files = {f"doc{n:02d}.txt": (f"Document {n} about the 3d printer. "
+                                 + "Printer maintenance notes. " * 15)
+             for n in range(12)}
+    build(conn, cfg, nas, files)
+    embed.embed_pending(conn)
+    engine = SearchEngine(conn)
+
+    first = engine.search("3d printer", limit=4, offset=0, semantic=True)
+    second = engine.search("3d printer", limit=4, offset=4, semantic=True)
+
+    a = [h.item_id for h in first.hits]
+    b = [h.item_id for h in second.hits]
+    assert len(a) == 4 and len(b) == 4
+    assert not set(a) & set(b), f"page 2 repeats page 1: {a} vs {b}"

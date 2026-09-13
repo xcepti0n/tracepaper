@@ -179,22 +179,31 @@ class SearchEngine:
             return SearchResponse(query=query, hits=hits, total=total,
                                   fts_query=fts_query)
 
-        hits = self._fuse(keyword_hits, vector_ranks, query, limit, kind,
-                          code, offset)
-        total = max(self._count(fts_query, kind, code) if fts_query else 0,
-                    offset + len(hits))
-        # Same short-page problem as the keyword path, same single retry.
-        if len(hits) < limit and offset + len(hits) < total:
-            wider = min((limit + offset) * GROUP_OVERFETCH * GROUP_RETRY_FACTOR,
+        # Fetch wide enough to know whether a further page exists, then page
+        # the grouped documents. `_count` alone cannot answer that here: it
+        # counts FTS matches, and FTS ANDs its terms, so "3d printer" counted
+        # 3 documents while fusion returned 20 -- the other 17 came from
+        # vectors. `total` then equalled the page size and the Next link
+        # never appeared.
+        wanted = limit + offset + 1          # +1: is there anything after us?
+        fused = self._fuse_all(keyword_hits, vector_ranks, query, kind, code)
+        if len(fused) < wanted:
+            wider = min(wanted * GROUP_OVERFETCH * GROUP_RETRY_FACTOR,
                         MAX_GROUP_SCAN)
             if wider > deep:
                 keyword_hits = self._keyword_search(
                     fts_query, wider, 0, kind, query, code) \
                     if fts_query else []
-                vector_ranks = self._vector_ranks(query, wider, 0, kind,
-                                                  code)
-                hits = self._fuse(keyword_hits, vector_ranks, query, limit,
-                                  kind, code, offset)
+                vector_ranks = self._vector_ranks(query, wider, 0, kind, code)
+                fused = self._fuse_all(keyword_hits, vector_ranks, query,
+                                       kind, code)
+
+        hits = fused[offset:offset + limit]
+        # Everything grouped is known to match; the FTS count is a floor that
+        # misses vector-only documents, so take whichever is larger.
+        total = max(self._count(fts_query, kind, code) if fts_query else 0,
+                    len(fused))
+        _rescale(hits)
         return SearchResponse(query=query, hits=hits, total=total,
                               fts_query=fts_query)
 
@@ -284,15 +293,18 @@ class SearchEngine:
         return {pid: rank for rank, (pid, score) in enumerate(scored, start=1)
                 if score >= MIN_VECTOR_SIMILARITY}
 
-    def _fuse(self, keyword_hits: list[RankedHit], vector_ranks: dict[int, int],
-              query: str, limit: int, kind: str | None,
-              code: str = "exclude",
-              offset: int = 0) -> list[RankedHit]:
-        """Reciprocal Rank Fusion over the two signals.
+    def _fuse_all(self, keyword_hits: list[RankedHit],
+                  vector_ranks: dict[int, int], query: str, kind: str | None,
+                  code: str = "exclude") -> list[RankedHit]:
+        """Reciprocal Rank Fusion over the two signals, grouped, unsliced.
 
         RRF combines ranks rather than scores, so BM25 and cosine similarity --
         which are not on comparable scales -- can be merged without tuning
         either one.
+
+        Returns every grouped document it found. The caller slices the page
+        out of that, because how many documents exist is the only way to know
+        whether there is a page after this one.
         """
         keyword_ranks = {hit.passage_id: rank
                          for rank, hit in enumerate(keyword_hits, start=1)}
@@ -335,18 +347,8 @@ class SearchEngine:
             ))
 
         fused.sort(key=lambda h: (-h.score, h.passage_id))
-        fused = _group_by_document(fused, limit, offset)
-
-        # RRF produces scores around 0.01-0.03, which are unreadable and round
-        # to 0.00 in any display. Rescale so the best hit is 1.0 and the rest
-        # are relative to it. Order is untouched, and the raw contributions
-        # stay in `signals` for auditing.
-        if fused and fused[0].score > 0:
-            top = fused[0].score
-            for hit in fused:
-                hit.signals["_raw_rrf"] = hit.score
-                hit.score = hit.score / top
-        return fused
+        # A very large limit, because the slice happens in the caller.
+        return _group_by_document(fused, len(fused), 0)
 
     def _load_hits(self, passage_ids: list[int], query: str,
                    kind: str | None,
@@ -459,6 +461,22 @@ class SearchEngine:
         end = min(len(text), start + SNIPPET_CHARS)
         snippet = _flatten(text[start:end])
         return ("…" if start > 0 else "") + snippet + ("…" if end < len(text) else "")
+
+
+def _rescale(hits: list[RankedHit]) -> None:
+    """Make RRF scores readable, in place.
+
+    Fusion produces values around 0.01-0.03, which all round to 0.00 in any
+    display. Rescale so the best hit on the page is 1.0 and the rest are
+    relative to it. Order is untouched, and the raw contributions stay in
+    `signals` for auditing.
+    """
+    if not hits or hits[0].score <= 0:
+        return
+    top = hits[0].score
+    for hit in hits:
+        hit.signals["_raw_rrf"] = hit.score
+        hit.score = hit.score / top
 
 
 def _code_clause(code: str) -> str:
