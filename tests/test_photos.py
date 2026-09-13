@@ -209,3 +209,110 @@ def test_place_and_year_narrow_together(conn, cfg, nas):
     assert len(search.query("photos 2021", semantic=False).photos) == 1
     assert search.query("Goa 2021", semantic=False).photos == [], \
         "filters must narrow together, not union"
+
+
+def _photo_client(cfg, nas, name="photo.jpg", size=(1200, 1800)):
+    """A client whose config actually has `nas` as a root, plus one photo row."""
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+    from PIL import Image
+
+    from tracepaper.api import create_app, open_connection
+
+    path = nas / name
+    Image.new("RGB", size, (90, 140, 200)).save(path)
+
+    client = TestClient(create_app(replace(cfg, roots=[str(nas)])))
+    conn = open_connection()
+    try:
+        conn.execute(
+            "INSERT INTO items (kind, uri, title, mime, extraction_status) "
+            "VALUES ('photo', ?, ?, 'image/jpeg', 'complete')", (str(path), name))
+        item_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+    return client, item_id, path
+
+
+def test_thumbnail_is_a_small_jpeg_not_the_original(cfg, nas):
+    """Serving originals would push tens of megabytes per results row, and HEIC
+    -- most of a phone library -- does not render in a browser at all, so the
+    grid would show broken images for exactly the photos most likely to match."""
+    import io
+
+    from PIL import Image
+
+    client, item_id, path = _photo_client(cfg, nas)
+    response = client.get(f"/thumb/{item_id}?size=320")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert len(response.content) < path.stat().st_size, "must be smaller"
+
+    thumb = Image.open(io.BytesIO(response.content))
+    assert max(thumb.size) <= 320
+    assert thumb.size[0] < thumb.size[1], "aspect ratio must be preserved"
+
+
+def test_thumbnail_size_is_clamped(cfg, nas):
+    """`size` comes from the query string, so it must not become a way to ask
+    the server to render something enormous."""
+    import io
+
+    from PIL import Image
+
+    client, item_id, _ = _photo_client(cfg, nas)
+    thumb = Image.open(io.BytesIO(client.get(f"/thumb/{item_id}?size=99999").content))
+    assert max(thumb.size) <= 1024
+
+
+def test_thumbnail_refuses_a_path_outside_the_roots(cfg, nas):
+    """Same guarantee as /file: a stored uri is not a capability to read the
+    filesystem."""
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from tracepaper.api import create_app, open_connection
+
+    client = TestClient(create_app(replace(cfg, roots=[str(nas)])))
+    conn = open_connection()
+    try:
+        conn.execute("INSERT INTO items (kind, uri, title, extraction_status) "
+                     "VALUES ('photo', '/etc/passwd', 'x', 'complete')")
+        item_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert client.get(f"/thumb/{item_id}").status_code == 403
+
+
+def test_an_unrenderable_file_does_not_500_the_page(cfg, nas):
+    """A thumbnail is a convenience. A file that is not really an image must
+    fail its own request, not break the results grid."""
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from tracepaper.api import create_app, open_connection
+
+    path = nas / "not-really.jpg"
+    path.write_text("this is not an image")
+
+    client = TestClient(create_app(replace(cfg, roots=[str(nas)])))
+    conn = open_connection()
+    try:
+        conn.execute("INSERT INTO items (kind, uri, title, mime, "
+                     "extraction_status) VALUES ('photo', ?, 'x', "
+                     "'image/jpeg', 'complete')", (str(path),))
+        item_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get(f"/thumb/{item_id}")
+    assert response.status_code == 422
+    assert "preview" in response.json()["detail"]

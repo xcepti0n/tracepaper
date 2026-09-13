@@ -101,6 +101,14 @@ button.fix:hover { color:var(--accent); border-color:var(--accent); }
              justify-content:space-between; flex-wrap:wrap; }
 .field.job .actions { margin:0; }
 .excludes { line-height:2; }
+.photos { display:grid; gap:12px; margin:12px 0;
+          grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); }
+.photo { margin:0; border:1px solid #e3e3e3; border-radius:6px;
+         overflow:hidden; background:#fff; }
+.photo img { display:block; width:100%; height:150px; object-fit:cover;
+             background:#f3f3f3; }
+.photo figcaption { padding:6px 8px; font-size:12px; word-break:break-word; }
+.photo .tags { margin-top:4px; }
 .excludes code { margin-right:4px; }
 .status { font-size:12.5px; margin-top:5px; min-height:17px; }
 .status .ok { color:var(--accent); font-weight:600; }
@@ -554,7 +562,8 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
   <div class="lbl">{_esc(result.answer_key)}</div>
   <div class="val">{_esc(best.value)}{_esc(unit)}</div>
   <div class="cite">
-    <a href="/api/items/{best.item_id}">{_esc(best.item_title)}</a>
+    <a href="/file/{best.item_id}" target="_blank" rel="noopener"
+       >{_esc(best.item_title)}</a>
     {f"&middot; p.{best.page}" if best.page else ""}
     &middot; <span class="pill {human}">{_esc(best.source)}</span>
     {_fix_button(best.item_id, result.answer_key, best.value)}
@@ -563,7 +572,8 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
         if result.alternatives:
             rows = "".join(
                 f"<tr><td>{_esc(v.value)}{_esc(' ' + v.unit if v.unit else '')}</td>"
-                f'<td><a href="/api/items/{v.item_id}">{_esc(v.item_title)}</a></td>'
+                f'<td><a href="/file/{v.item_id}" target="_blank" '
+                f'rel="noopener">{_esc(v.item_title)}</a></td>'
                 f'<td><span class="pill">{_esc(v.source)}</span></td></tr>'
                 for v in result.alternatives)
             out.append('<p class="hint">Documents disagree — none is chosen '
@@ -580,7 +590,8 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
                 when = event["date"][:4]
             who = ", ".join(f'{e["name"]} ({e["role"]})' for e in event["entities"])
             evidence = " ".join(
-                f'<a href="/api/items/{e["item_id"]}">{_esc(e["title"])}</a>'
+                f'<a href="/file/{e["item_id"]}" target="_blank" '
+                f'rel="noopener">{_esc(e["title"])}</a>'
                 for e in event["evidence"])
             out.append(f"""<div class="hit">
   <h3>{_esc(event["title"])}</h3>
@@ -605,14 +616,25 @@ def _unified_tab(conn: sqlite3.Connection, query: str, limit: int,
         filters = ", ".join(result.photo_filters)
         out.append(f'<h2>Photos <span class="count">{len(result.photos)}</span>'
                    f'</h2><p class="hint">matching {_esc(filters)}</p>')
+        # A grid of actual thumbnails. A list of filenames is unusable for
+        # photos -- the picture is the thing you recognise, and clicking it
+        # should open the photo, not its confidence scores.
+        out.append('<div class="photos">')
         for photo in result.photos:
             tags = " ".join(f'<span class="pill">{_esc(t)}</span>'
                             for t in photo["tags"][:6])
-            out.append(f"""<div class="hit">
-  <h3><a href="/api/items/{photo["item_id"]}">{_esc(photo["title"])}</a></h3>
-  <div class="path">{_esc(photo["uri"] or "")}</div>
-  <div class="snip">{tags}</div>
-</div>""")
+            out.append(f"""<figure class="photo">
+  <a href="/file/{photo["item_id"]}" target="_blank" rel="noopener">
+    <img src="/thumb/{photo["item_id"]}?size=320" alt="{_esc(photo["title"])}"
+         loading="lazy">
+  </a>
+  <figcaption>
+    <a href="/file/{photo["item_id"]}" target="_blank" rel="noopener"
+       >{_esc(photo["title"])}</a>
+    <div class="tags">{tags}</div>
+  </figcaption>
+</figure>""")
+        out.append('</div>')
 
     # 5. Matching documents -- the floor that always has something to say.
     if result.hits:

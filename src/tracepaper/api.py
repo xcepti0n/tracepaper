@@ -205,6 +205,37 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         finally:
             conn.close()
 
+    def _indexed_path(item_id: int) -> Path:
+        """The on-disk path of an indexed item, or an HTTPException.
+
+        The path comes from the index, never from the request, and must sit
+        inside a configured root: a stored uri is not a capability to read the
+        whole filesystem. Shared by /file and /thumb so neither can drift from
+        the other's checks.
+        """
+        conn = open_connection()
+        try:
+            row = conn.execute(
+                "SELECT uri FROM items WHERE id = ? AND deleted_at IS NULL",
+                (item_id,)).fetchone()
+        finally:
+            conn.close()
+
+        if row is None or not row["uri"]:
+            raise HTTPException(status_code=404, detail="no such file")
+
+        path = Path(row["uri"]).resolve()
+        roots = [Path(r).resolve() for r in get_config().roots]
+        if not any(path == root or root in path.parents for root in roots):
+            raise HTTPException(status_code=403,
+                                detail="that file is outside the indexed roots")
+        if not path.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=f"{path} is indexed but not readable now — is the share "
+                       "mounted?")
+        return path
+
     @app.get("/file/{item_id}")
     def serve_file(item_id: int, download: bool = False):
         """Serve the original document.
@@ -222,29 +253,57 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         conn = open_connection()
         try:
             row = conn.execute(
-                "SELECT uri, title, mime FROM items WHERE id = ? "
-                "AND deleted_at IS NULL", (item_id,)).fetchone()
+                "SELECT uri, mime FROM items WHERE id = ? AND deleted_at IS NULL",
+                (item_id,)).fetchone()
         finally:
             conn.close()
+        mime = row["mime"] if row else None
 
-        if row is None or not row["uri"]:
-            raise HTTPException(status_code=404, detail="no such file")
-
-        path = Path(row["uri"]).resolve()
-        roots = [Path(r).resolve() for r in get_config().roots]
-        if not any(path == root or root in path.parents for root in roots):
-            # Either the roots changed or the uri is not ours to serve.
-            raise HTTPException(status_code=403,
-                                detail="that file is outside the indexed roots")
-        if not path.is_file():
-            raise HTTPException(
-                status_code=404,
-                detail=f"{path} is indexed but not readable now — is the share "
-                       "mounted?")
-
+        path = _indexed_path(item_id)
         return FileResponse(
-            path, media_type=row["mime"] or "application/octet-stream",
+            path, media_type=mime or "application/octet-stream",
             filename=path.name if download else None)
+
+    @app.get("/thumb/{item_id}")
+    def serve_thumbnail(item_id: int, size: int = 320):
+        """A small JPEG preview of an image, for the results grid.
+
+        Serving originals would push tens of megabytes per row, and HEIC -- most
+        of a phone's library -- does not render in a browser at all, so the grid
+        would show broken images for exactly the photos most likely to match.
+
+        Falls back to a 302 at the original when Pillow is unavailable, so the
+        grid degrades to "maybe renders" rather than to nothing.
+        """
+        import io
+
+        from fastapi.responses import RedirectResponse, Response
+
+        path = _indexed_path(item_id)
+        size = max(64, min(int(size), 1024))
+
+        try:
+            from PIL import Image, ImageOps
+        except ImportError:
+            return RedirectResponse(f"/file/{item_id}")
+
+        try:
+            with Image.open(path) as image:
+                # EXIF orientation: a phone photo is often stored rotated, and
+                # ignoring the tag shows portraits on their side.
+                image = ImageOps.exif_transpose(image)
+                image.thumbnail((size, size))
+                if image.mode not in ("RGB", "L"):
+                    image = image.convert("RGB")
+                buffer = io.BytesIO()
+                image.save(buffer, format="JPEG", quality=80)
+        except Exception as exc:
+            # A thumbnail is a convenience; a broken one must not 500 the page.
+            raise HTTPException(status_code=422,
+                                detail=f"cannot render a preview: {exc}")
+
+        return Response(content=buffer.getvalue(), media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/api/items/{item_id}")
     def api_item(item_id: int) -> dict[str, Any]:

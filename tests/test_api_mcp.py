@@ -936,3 +936,27 @@ def test_how_it_works_cites_its_sources(client):
 def test_how_it_works_is_reachable_from_the_nav(client):
     page = client.get("/").text
     assert "tab=how" in page, "the docs page must be linked, not hidden"
+
+
+def test_photo_results_are_a_thumbnail_grid(client, cfg, nas):
+    """A list of filenames is unusable for photos -- the picture is the thing
+    you recognise. And clicking one must open the photo, not its JSON."""
+    page = client.get("/?q=photo").text
+    if 'class="photos"' not in page:
+        pytest.skip("no photo hits in this fixture")
+    assert "/thumb/" in page
+    assert 'loading="lazy"' in page, "a grid of originals would be enormous"
+
+
+def test_no_document_title_links_to_the_json_api(client):
+    """Every citation of a document should open the document. The only
+    /api/items link left is the deliberate "why" affordance next to the score,
+    which is asking a different question."""
+    import re
+
+    for tab in ("search", "browse", "status"):
+        page = client.get(f"/?tab={tab}&q=invoice").text
+        for match in re.finditer(r'<a href="/api/items/[^"]*"[^>]*>(.*?)</a>',
+                                 page, re.S):
+            assert match.group(1).strip() == "why", (
+                f"a title still opens JSON on the {tab} tab: {match.group(0)!r}")
