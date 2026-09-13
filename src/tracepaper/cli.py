@@ -326,11 +326,21 @@ def _cmd_prune(args, cfg, conn) -> int:
     # ON DELETE CASCADE carries passages, records, tags and embeddings with it.
     ids = [item_id for item_id, _ in doomed]
     uris = [uri for _, uri in doomed]
+    total = len(ids)
+    # Progress matters here: each item cascades into passages, embeddings,
+    # records and tags, so deleting a couple of hundred thousand items can take
+    # tens of minutes with nothing on screen. Silence is indistinguishable from
+    # a hang, and this runs in one transaction that a panicked Ctrl+C undoes.
+    print(f"deleting {total:,} item(s) and everything derived from them…")
     with conn:
         for start in range(0, len(ids), 500):
             chunk = ids[start:start + 500]
             placeholders = ",".join("?" * len(chunk))
             conn.execute(f"DELETE FROM items WHERE id IN ({placeholders})", chunk)
+            done = min(start + 500, total)
+            if done % 10_000 < 500 or done == total:
+                print(f"  {done:,}/{total:,} ({done * 100 // total}%)",
+                      flush=True)
         # file_state is keyed by uri and has no foreign key, so it needs its own
         # pass -- and it must read the uris collected BEFORE the delete above,
         # not join back to items, which no longer has those rows. Left behind,
@@ -341,7 +351,8 @@ def _cmd_prune(args, cfg, conn) -> int:
             placeholders = ",".join("?" * len(chunk))
             conn.execute(
                 f"DELETE FROM file_state WHERE uri IN ({placeholders})", chunk)
-    print(f"deleted {len(ids)} item(s) and everything derived from them.")
+    print(f"deleted {len(ids):,} item(s) and everything derived from them.")
+    print("run `tracepaper embed` again: the queue is much smaller now.")
     return 0
 
 

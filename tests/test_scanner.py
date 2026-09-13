@@ -407,3 +407,25 @@ def test_a_default_exclude_can_be_turned_off_explicitly(tmp_path):
     cfg = Config.load(config_file)
     assert "node_modules" not in cfg.excludes
     assert ".obsidian" in cfg.excludes, "only the named default is dropped"
+
+
+def test_prune_reports_progress_while_deleting(conn, cfg, capsys):
+    """Each item cascades into passages, embeddings, records and tags, so
+    deleting hundreds of thousands takes tens of minutes. Silence there is
+    indistinguishable from a hang -- and it runs in one transaction that a
+    panicked Ctrl+C would roll back."""
+    from tracepaper.cli import _cmd_prune
+
+    for i in range(3):
+        conn.execute("INSERT INTO items (kind, uri, extraction_status) VALUES "
+                     "('document', ?, 'complete')",
+                     (f"/nas/x/.venv/lib/f{i}.py",))
+    conn.commit()
+
+    class Args:
+        apply = True
+
+    _cmd_prune(Args(), cfg, conn)
+    out = capsys.readouterr().out
+    assert "deleting 3 item(s)" in out, "it must say what it is about to do"
+    assert "3/3" in out, "it must report progress, not only a final line"
