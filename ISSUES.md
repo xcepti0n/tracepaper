@@ -11,6 +11,11 @@ that closed it. Anyone (you, me) can add here; keep entries short and say what
       Mac. Without it, photos are findable only by tag and filename.
       *Done when:* captions exist for the bulk of the photo library.
 
+- [ ] **Build output is still in the index.** `dist/`, `build/` and
+      `*.dist-info` are now excluded from future scans and hidden from search,
+      but ~22+ items indexed before that are still stored.
+      *Done when:* `tracepaper prune --apply` has removed them.
+
 - [ ] **Vendored code is still in the index.** `.venv`, `site-packages` and
       `node_modules` were excluded from *future* scans, but files indexed
       before that are still there. Search now hides them behind the Code
@@ -38,6 +43,11 @@ that closed it. Anyone (you, me) can add here; keep entries short and say what
       *Done when:* those NFS rules are removed and a scan still works.
 
 ## Done
+
+- [x] **Build output appeared in ordinary results.** A `LICENSE` inside
+      `dist/.../typing_extensions-4.14.0.dist-info/` has no extension, so
+      extension-based classification called it a document. Code is now decided
+      by directory first. (this commit)
 
 - [x] **No second page of results.** Paging over passages repeated documents
       and returned short pages; it now pages over documents. (`31b6dc9`)

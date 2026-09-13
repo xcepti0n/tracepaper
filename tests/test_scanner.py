@@ -530,3 +530,42 @@ def test_prune_formats_reports_before_changing_anything(conn, cfg, capsys):
     _cmd_prune(Args(), cfg, conn)
     assert "re-run with --apply --formats" in capsys.readouterr().out
     assert conn.execute("SELECT COUNT(*) FROM passages").fetchone()[0] == 1
+
+
+def test_generated_package_directories_are_not_scanned(conn, cfg, nas):
+    """PyInstaller output filled a page of results with LICENSE and METADATA.
+
+    These directories carry a version in the name, so a fixed exclude list
+    cannot hold them -- they are matched as patterns.
+    """
+    build = nas / "Projects" / "DexterAI" / "dist" / "DexterAI" / "_internal"
+    (build / "typing_extensions-4.14.0.dist-info" / "licenses").mkdir(parents=True)
+    (build / "typing_extensions-4.14.0.dist-info" / "licenses" / "LICENSE"
+     ).write_text("MIT License. Permission is hereby granted.")
+    (build / "typing_extensions-4.14.0.dist-info" / "METADATA").write_text(
+        "Name: typing_extensions\nVersion: 4.14.0\n")
+
+    keep = nas / "Personal"
+    keep.mkdir(parents=True)
+    (keep / "return_2023.pdf.txt").write_text("Tax return for 2023.")
+
+    Scanner(conn, cfg).scan(nas)
+
+    found = {r["uri"] for r in conn.execute("SELECT uri FROM items")}
+    assert any("return_2023" in uri for uri in found), "real documents stay"
+    assert not [uri for uri in found if "dist-info" in uri], \
+        f"packaging output was indexed: {found}"
+    assert not [uri for uri in found if "_internal" in uri]
+
+
+def test_a_folder_merely_named_like_a_build_is_kept(conn, cfg, nas):
+    """"dist" and "build" are ordinary words; only proven output is skipped."""
+    (nas / "Distribution").mkdir(parents=True)
+    (nas / "Distribution" / "supplier list.txt").write_text("Acme Ltd, Bolt Co.")
+    (nas / "Notes").mkdir(parents=True)
+    (nas / "Notes" / "build a shed.txt").write_text("Shed plans and timber list.")
+
+    Scanner(conn, cfg).scan(nas)
+
+    found = {r["uri"] for r in conn.execute("SELECT uri FROM items")}
+    assert len(found) == 2, f"ordinary folders must be scanned: {found}"

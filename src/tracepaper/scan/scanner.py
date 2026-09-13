@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+from fnmatch import fnmatch
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -79,19 +80,26 @@ def hash_file(path: Path, chunk: int = HASH_CHUNK) -> str:
     return h.hexdigest()
 
 
-def _is_excluded(path: Path, root: Path, excludes: Iterable[str]) -> bool:
-    """True if any path component under the root matches an exclude pattern."""
+def _is_excluded(path: Path, root: Path, excludes: Iterable[str],
+                 patterns: Iterable[str] = ()) -> bool:
+    """True if any path component under the root matches an exclude."""
     try:
         rel = path.relative_to(root)
     except ValueError:
         rel = path
     names = set(rel.parts)
-    return any(pattern in names for pattern in excludes)
+    if any(pattern in names for pattern in excludes):
+        return True
+    # Generated directory names carry a version, so they cannot be listed:
+    # `typing_extensions-4.14.0.dist-info`, `tracepaper.egg-info`.
+    return any(fnmatch(name, pattern)
+               for name in names for pattern in patterns)
 
 
 def walk(root: Path, cfg: Config) -> Iterator[tuple[Path, os.stat_result]]:
     """Yield (path, stat) for every eligible file below root. Metadata only."""
     excludes = set(cfg.excludes)
+    patterns = tuple(cfg.exclude_patterns)
     stack = [root]
     while stack:
         current = stack.pop()
@@ -102,7 +110,8 @@ def walk(root: Path, cfg: Config) -> Iterator[tuple[Path, os.stat_result]]:
             continue
 
         for entry in entries:
-            if entry.name in excludes:
+            if entry.name in excludes or any(
+                    fnmatch(entry.name, pattern) for pattern in patterns):
                 continue
             path = Path(entry.path)
             try:
@@ -113,7 +122,7 @@ def walk(root: Path, cfg: Config) -> Iterator[tuple[Path, os.stat_result]]:
                     if st.st_size > cfg.max_file_bytes:
                         log.info("skipping oversized file %s (%d bytes)", path, st.st_size)
                         continue
-                    if _is_excluded(path, root, excludes):
+                    if _is_excluded(path, root, excludes, patterns):
                         continue
                     yield path, st
             except (PermissionError, OSError) as exc:

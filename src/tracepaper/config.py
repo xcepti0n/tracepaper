@@ -43,9 +43,33 @@ DEFAULT_EXCLUDES: tuple[str, ...] = (
     ".idea",
     ".vscode",
     "site-packages",
+    "dist-packages",
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
+    ".tox",
+    ".gradle",
+    # Packaging output. A single PyInstaller build drops hundreds of METADATA,
+    # RECORD and LICENSE files with no extension, which look like documents to
+    # anything reading the filename -- one project's `dist/` filled an entire
+    # page of results for "3d printer".
+    #
+    # `_internal` is PyInstaller's own; the `*.dist-info` and `*.egg-info`
+    # directories beside it are matched by pattern, not by this list, since
+    # their names carry a version (see scan.scanner).
+    "_internal",
+    "egg-info",
+    # NOT "dist" or "build" on their own. Those are ordinary English words and
+    # a folder named either could hold real documents. Search still hides
+    # anything under them (query/modes.py) -- indexing is the cheaper mistake
+    # to make, and it stays reversible.
+)
+
+# Directory name patterns excluded from scanning, matched with fnmatch against
+# the directory name. For generated names a fixed list cannot hold.
+DEFAULT_EXCLUDE_PATTERNS: tuple[str, ...] = (
+    "*.dist-info",
+    "*.egg-info",
 )
 
 # Soft-delete only after this many consecutive scans miss a path. An unmounted
@@ -67,6 +91,7 @@ class Config:
     backup_dir: Path | None = None
     roots: tuple[Path, ...] = ()
     excludes: tuple[str, ...] = DEFAULT_EXCLUDES
+    exclude_patterns: tuple[str, ...] = DEFAULT_EXCLUDE_PATTERNS
     max_file_bytes: int = 512 * 1024 * 1024
     miss_threshold: int = DEFAULT_MISS_THRESHOLD
     vanish_guard: float = DEFAULT_VANISH_GUARD

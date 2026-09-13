@@ -1097,9 +1097,20 @@ def _coverage_panel(conn: sqlite3.Connection) -> str:
     excluded = " ".join(f"<code>{_esc(name)}</code>"
                         for name in sorted(active))
 
+    try:
+        from .api import get_config
+        pattern_list = get_config().exclude_patterns
+    except Exception:
+        from .config import DEFAULT_EXCLUDE_PATTERNS
+        pattern_list = DEFAULT_EXCLUDE_PATTERNS
+    patterns = " ".join(f"<code>{_esc(x)}</code>" for x in sorted(pattern_list))
+
     from .query import modes
     code_suffixes = " ".join(
         f"<code>{_esc(x)}</code>" for x in sorted(modes.CODE_SUFFIXES))
+    code_dirs = " ".join(
+        f"<code>{_esc(x)}</code>" for x in
+        sorted(modes.CODE_DIRS) + [f"*{x}" for x in modes.CODE_DIR_SUFFIXES])
 
     # What is actually indexed, by extension -- the honest answer to "is my
     # stuff in there", and where an unwanted pattern shows up first.
@@ -1137,14 +1148,22 @@ reads the name and skips what is inside.</p>
 
 <h3>Hidden from search by default</h3>
 <p class="hint">Code and config files stay in the index, but they are kept out
-of results. To include them, pick <b>Code</b> next to the search box, or search
-<b>Everything</b> and tick the box. Nothing is deleted.</p>
+of results. To see them, pick <b>Code</b> next to the search box. Nothing is
+deleted.</p>
 <p class="excludes">{code_suffixes}</p>
+<p class="hint">Everything inside these folders counts as code too, whatever
+the file is called. Build output is full of files like <code>LICENSE</code>
+and <code>METADATA</code> that have no file extension at all.</p>
+<p class="excludes">{code_dirs}</p>
 
 <h3>Never indexed</h3>
 <p class="hint">These folder and file names are skipped wherever they appear.
-They hold app data and caches, not your documents.</p>
+They hold app data, caches and build output, not your documents.</p>
 <p class="excludes">{excluded}</p>
+<p class="hint">These name patterns are skipped too. Build tools generate
+these folders with a version number in the name, so they cannot be listed
+one by one.</p>
+<p class="excludes">{patterns}</p>
 <p class="hint">This list applies to the <b>next</b> scan. Files already
 indexed stay until you remove them. To remove them, run
 <code>tracepaper prune</code>. It only reports; add <code>--apply</code> to
