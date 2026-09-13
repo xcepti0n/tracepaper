@@ -115,7 +115,21 @@ class Config:
         if "roots" in scan:
             updates["roots"] = tuple(Path(r).expanduser() for r in scan["roots"])
         if "excludes" in scan:
-            updates["excludes"] = tuple(scan["excludes"])
+            # MERGE, never replace. A config written months ago cannot know
+            # about a name added since, and replacing the list silently dropped
+            # every default -- which is how .obsidian plugin JavaScript ended up
+            # indexed on a host whose config predated that exclude.
+            #
+            # Prefix a name with "!" to genuinely un-exclude a default, so the
+            # escape hatch stays available but has to be asked for.
+            configured = [str(x) for x in scan["excludes"]]
+            keep = {name[1:] for name in configured if name.startswith("!")}
+            added = [name for name in configured if not name.startswith("!")]
+            merged = [name for name in DEFAULT_EXCLUDES if name not in keep]
+            for name in added:
+                if name not in merged:
+                    merged.append(name)
+            updates["excludes"] = tuple(merged)
         for key in ("max_file_bytes", "miss_threshold", "vanish_guard",
                     "follow_symlinks", "passage_target_chars",
                     "passage_overlap_chars"):

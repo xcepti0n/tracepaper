@@ -375,3 +375,35 @@ def test_prune_removes_excluded_items_and_their_file_state(conn, cfg):
         "passages must cascade away with their item")
     states = [r[0] for r in conn.execute("SELECT uri FROM file_state")]
     assert states == [good], "file_state must not keep the excluded path"
+
+
+def test_configured_excludes_merge_with_the_defaults(tmp_path):
+    """A config written months ago cannot know about a name added since.
+    Replacing the list silently dropped every default -- which is exactly how
+    .obsidian plugin JavaScript got indexed on a host whose tracepaper.toml
+    predated that exclude."""
+    from tracepaper.config import DEFAULT_EXCLUDES, Config
+
+    config_file = tmp_path / "tracepaper.toml"
+    config_file.write_text(
+        '[scan]\nexcludes = ["@eaDir", "MyOwnFolder"]\n')
+
+    cfg = Config.load(config_file)
+    assert "MyOwnFolder" in cfg.excludes, "a configured name must be kept"
+    assert ".obsidian" in cfg.excludes, (
+        "defaults must survive a config that predates them")
+    for name in DEFAULT_EXCLUDES:
+        assert name in cfg.excludes
+    assert len(set(cfg.excludes)) == len(cfg.excludes), "no duplicates"
+
+
+def test_a_default_exclude_can_be_turned_off_explicitly(tmp_path):
+    """Merging must not remove the escape hatch -- just make it deliberate."""
+    from tracepaper.config import Config
+
+    config_file = tmp_path / "tracepaper.toml"
+    config_file.write_text('[scan]\nexcludes = ["!node_modules"]\n')
+
+    cfg = Config.load(config_file)
+    assert "node_modules" not in cfg.excludes
+    assert ".obsidian" in cfg.excludes, "only the named default is dropped"

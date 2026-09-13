@@ -774,7 +774,6 @@ def _coverage_panel(conn: sqlite3.Connection) -> str:
     formats were both invisible, so "why is this here" and "why is that
     missing" were equally unanswerable.
     """
-    from .config import DEFAULT_EXCLUDES
     from .extract import text as text_extract
 
     groups = [
@@ -791,8 +790,17 @@ def _coverage_panel(conn: sqlite3.Connection) -> str:
         + "</code></td></tr>"
         for label, suffixes in groups)
 
+    # The EFFECTIVE list, not the module defaults: a config file that set its
+    # own `excludes` used to replace them, so showing the defaults here would
+    # have displayed names the running scanner was not actually using.
+    try:
+        from .api import get_config
+        active = get_config().excludes
+    except Exception:
+        from .config import DEFAULT_EXCLUDES
+        active = DEFAULT_EXCLUDES
     excluded = " ".join(f"<code>{_esc(name)}</code>"
-                        for name in sorted(DEFAULT_EXCLUDES))
+                        for name in sorted(active))
 
     # What is actually indexed, by extension -- the honest answer to "is my
     # stuff in there", and where an unwanted pattern shows up first.
