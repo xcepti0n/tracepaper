@@ -44,6 +44,24 @@ EML_SUFFIXES = {".eml"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".gif", ".tiff",
                   ".tif", ".webp", ".bmp"}
 
+# Text by encoding, but not by intent: machine output with no sentence in it.
+# These pass the "looks like text" sniff in _extract_unknown and then chunk into
+# tens of thousands of passages each -- one 3D-printing .gcode file produced
+# 104,227, more than four times the entire document corpus that surrounds it.
+# Nobody searches for `G1 X92.7 Y104.5 E.03`, and the noise buries what they do
+# search for. Indexed by filename and path, contents skipped.
+MACHINE_SUFFIXES = {
+    ".gcode", ".gco", ".g",          # 3D printer / CNC toolpaths
+    ".nc", ".tap",                   # CNC
+    ".stl", ".obj", ".3mf", ".amf",  # meshes (ASCII STL/OBJ sniff as text)
+    ".ply", ".step", ".stp", ".iges", ".igs",
+    ".map", ".sym", ".lst",          # linker and compiler output
+    ".pack", ".idx",                 # VCS packfiles
+    ".min.js", ".min.css",           # minified bundles
+    ".ipynb_checkpoints",
+    ".dump", ".mdump",
+}
+
 
 def guess_mime(path: Path) -> str:
     mime, _ = mimetypes.guess_type(str(path))
@@ -105,6 +123,15 @@ def _extract_unknown(path: Path) -> ExtractedText:
 
     FR-2 -- never reject a file.
     """
+    # Machine output is text by encoding and meaningless by content, so the
+    # printable-character sniff below would happily ingest all of it.
+    name = path.name.lower()
+    if (path.suffix.lower() in MACHINE_SUFFIXES
+            or any(name.endswith(suffix) for suffix in MACHINE_SUFFIXES)):
+        return ExtractedText(
+            text="", status="partial",
+            note="machine-generated format: indexed by filename only")
+
     sample = _read_bytes(path, 8192)
     if b"\x00" in sample:
         return ExtractedText(text="", status="partial",

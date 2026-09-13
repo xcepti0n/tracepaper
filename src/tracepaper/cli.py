@@ -57,6 +57,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "prune", help="remove indexed items that the excludes now cover")
     p_prune.add_argument("--apply", action="store_true",
                          help="actually delete; without this, only report")
+    p_prune.add_argument(
+        "--formats", action="store_true",
+        help="also drop the contents of machine-generated formats "
+             "(.gcode, .stl, …), keeping the files findable by name")
 
     p_embed = sub.add_parser("embed", help="compute passage embeddings")
     p_embed.add_argument("--model", default=embed.DEFAULT_MODEL)
@@ -306,6 +310,9 @@ def _cmd_prune(args, cfg, conn) -> int:
         if parts & excludes:
             doomed.append((int(row["id"]), row["uri"]))
 
+    if args.formats:
+        _prune_machine_formats(args, conn, rows)
+
     if not doomed:
         print("nothing to prune: no indexed item is under an excluded path")
         return 0
@@ -354,6 +361,52 @@ def _cmd_prune(args, cfg, conn) -> int:
     print(f"deleted {len(ids):,} item(s) and everything derived from them.")
     print("run `tracepaper embed` again: the queue is much smaller now.")
     return 0
+
+
+def _prune_machine_formats(args, conn, rows) -> None:
+    """Drop the *contents* of machine-generated files, keeping the files.
+
+    A .gcode toolpath is text by encoding and meaningless by content, so the
+    old "looks like text" sniff ingested it whole -- one file became 104,227
+    passages. Deleting the item would also lose the filename, which is the part
+    worth keeping ("which gcode did I slice for the stand?"), so this removes
+    only the passages and marks the item partial, exactly as a binary would be.
+    """
+    from .extract.text import MACHINE_SUFFIXES
+
+    targets = []
+    for row in rows:
+        name = Path(row["uri"]).name.lower()
+        if (Path(row["uri"]).suffix.lower() in MACHINE_SUFFIXES
+                or any(name.endswith(s) for s in MACHINE_SUFFIXES)):
+            targets.append(int(row["id"]))
+
+    if not targets:
+        return
+
+    counted = conn.execute(
+        f"SELECT COUNT(*) FROM passages WHERE item_id IN "
+        f"({','.join('?' * len(targets[:500]))})", targets[:500]).fetchone()[0]
+    print(f"\n{len(targets):,} machine-generated file(s) have indexed contents "
+          f"(~{counted:,} passages in the first 500 alone).")
+
+    if not args.apply:
+        print("nothing changed. re-run with --apply --formats to drop them.")
+        return
+
+    print("dropping their passages (the files stay findable by name)…")
+    removed = 0
+    with conn:
+        for start in range(0, len(targets), 500):
+            chunk = targets[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            cur = conn.execute(
+                f"DELETE FROM passages WHERE item_id IN ({marks})", chunk)
+            removed += cur.rowcount if cur.rowcount > 0 else 0
+            conn.execute(
+                f"UPDATE items SET extraction_status = 'partial' "
+                f"WHERE id IN ({marks})", chunk)
+    print(f"removed {removed:,} passage(s) from {len(targets):,} file(s).")
 
 
 def _cmd_embed(args, conn) -> int:

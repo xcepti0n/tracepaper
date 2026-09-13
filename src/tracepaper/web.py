@@ -776,6 +776,9 @@ def _coverage_panel(conn: sqlite3.Connection) -> str:
     """
     from .extract import text as text_extract
 
+    machine = " ".join(f"<code>{_esc(x)}</code>"
+                       for x in sorted(text_extract.MACHINE_SUFFIXES))
+
     groups = [
         ("Text and markup", text_extract.TEXT_SUFFIXES),
         ("Spreadsheets", text_extract.CSV_SUFFIXES | text_extract.XLSX_SUFFIXES),
@@ -827,6 +830,12 @@ def _coverage_panel(conn: sqlite3.Connection) -> str:
 <p class="hint">Every file is findable by name and path. These formats also have
 their <em>contents</em> read; anything else is indexed by filename only.</p>
 <table><tr><th>Kind</th><th>Extensions</th></tr>{format_rows}</table>
+<h3>Indexed by name only</h3>
+<p class="hint">Machine output: text by encoding, meaningless by content. One
+3D-printing <code>.gcode</code> file produced 104,227 passages — more than the
+whole document corpus around it — so these are findable by filename and path,
+with their contents skipped.</p>
+<p class="excludes">{machine}</p>
 <h3>Always skipped</h3>
 <p class="hint">Matched on the exact directory or file name, at any depth.
 Application internals and caches, not documents.</p>

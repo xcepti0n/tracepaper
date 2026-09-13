@@ -157,3 +157,49 @@ def test_corrupt_file_does_not_break_the_pipeline(conn, cfg, nas):
 
     assert result.processed == 2
     assert len(SearchEngine(conn).search("readable content").hits) == 1
+
+
+def test_gcode_is_indexed_by_name_but_not_by_contents(tmp_path):
+    """G-code is text by encoding and meaningless by content, so the
+    "looks like text" sniff ingested it whole: one 3D-printing file produced
+    104,227 passages, more than four times the entire document corpus around
+    it. Nobody searches for `G1 X92.7 Y104.5 E.03`, and the noise buries what
+    they do search for."""
+    from tracepaper.extract.text import extract
+
+    path = tmp_path / "EN4P_Onewheel_stand.gcode"
+    path.write_text("\n".join(f"G1 X{i}.7 Y104.5 E.0{i % 9}" for i in range(5000)))
+
+    result = extract(path)
+    assert result.text == "", "the toolpath must not become passages"
+    assert result.status == "partial", "the file stays in the index"
+    assert "machine-generated" in (result.note or "")
+
+
+def test_an_ascii_stl_is_not_mistaken_for_a_document(tmp_path):
+    from tracepaper.extract.text import extract
+
+    path = tmp_path / "model.stl"
+    path.write_text("solid Model\n facet normal 0 0 1\n  outer loop\n"
+                    "   vertex 0 0 0\n  endloop\n endfacet\nendsolid Model\n")
+    assert extract(path).text == ""
+
+
+def test_a_real_text_file_is_still_read(tmp_path):
+    """The denylist must be narrow: an ordinary note keeps working."""
+    from tracepaper.extract.text import extract
+
+    path = tmp_path / "note.txt"
+    path.write_text("the passport expires in March 2027")
+    assert "passport" in extract(path).text
+
+
+def test_an_unknown_but_genuine_text_format_is_still_read(tmp_path):
+    """FR-2: never reject a file. An unrecognised extension that really is
+    prose must still be indexed by content."""
+    from tracepaper.extract.text import extract
+
+    path = tmp_path / "letter.whatever"
+    path.write_text("Dear Sir, the insurance claim was settled in April.")
+    result = extract(path)
+    assert "insurance claim" in result.text

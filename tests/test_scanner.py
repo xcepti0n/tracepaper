@@ -339,6 +339,7 @@ def test_prune_reports_before_it_deletes(conn, cfg, capsys):
 
     class Args:
         apply = False
+        formats = False
 
     assert _cmd_prune(Args(), cfg, conn) == 0
     assert "nothing deleted" in capsys.readouterr().out
@@ -367,6 +368,7 @@ def test_prune_removes_excluded_items_and_their_file_state(conn, cfg):
 
     class Args:
         apply = True
+        formats = False
 
     assert _cmd_prune(Args(), cfg, conn) == 0
 
@@ -425,6 +427,7 @@ def test_prune_reports_progress_while_deleting(conn, cfg, capsys):
 
     class Args:
         apply = True
+        formats = False
 
     _cmd_prune(Args(), cfg, conn)
     out = capsys.readouterr().out
@@ -474,3 +477,56 @@ def test_every_cascading_foreign_key_to_items_is_indexed(conn):
 
     assert not missing, (
         f"cascading foreign keys to items with no leading index: {missing}")
+
+
+def test_prune_formats_keeps_the_file_but_drops_its_contents(conn, cfg, capsys):
+    """Deleting the item would lose the filename, which is the part worth
+    keeping -- "which gcode did I slice for the stand?" is a real search. So
+    only the passages go, and the item becomes partial, exactly as a binary is."""
+    from tracepaper.cli import _cmd_prune
+
+    conn.execute("INSERT INTO items (kind, uri, extraction_status) VALUES "
+                 "('document', '/nas/3d/stand.gcode', 'complete')")
+    gcode_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("INSERT INTO items (kind, uri, extraction_status) VALUES "
+                 "('document', '/nas/docs/passport.pdf', 'complete')")
+    pdf_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    for item_id, text in ((gcode_id, "G1 X92.7 Y104.5"), (pdf_id, "passport")):
+        conn.execute("INSERT INTO passages (item_id, version, ordinal, text) "
+                     "VALUES (?, 1, 0, ?)", (item_id, text))
+    conn.commit()
+
+    class Args:
+        apply = True
+        formats = True
+
+    _cmd_prune(Args(), cfg, conn)
+
+    assert conn.execute("SELECT COUNT(*) FROM passages WHERE item_id = ?",
+                        (gcode_id,)).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM passages WHERE item_id = ?",
+                        (pdf_id,)).fetchone()[0] == 1, "documents untouched"
+    assert conn.execute("SELECT COUNT(*) FROM items WHERE id = ?",
+                        (gcode_id,)).fetchone()[0] == 1, (
+        "the file must stay findable by name")
+    assert conn.execute("SELECT extraction_status FROM items WHERE id = ?",
+                        (gcode_id,)).fetchone()[0] == "partial"
+
+
+def test_prune_formats_reports_before_changing_anything(conn, cfg, capsys):
+    from tracepaper.cli import _cmd_prune
+
+    conn.execute("INSERT INTO items (kind, uri, extraction_status) VALUES "
+                 "('document', '/nas/3d/a.gcode', 'complete')")
+    item_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("INSERT INTO passages (item_id, version, ordinal, text) "
+                 "VALUES (?, 1, 0, 'G1 X1')", (item_id,))
+    conn.commit()
+
+    class Args:
+        apply = False
+        formats = True
+
+    _cmd_prune(Args(), cfg, conn)
+    assert "re-run with --apply --formats" in capsys.readouterr().out
+    assert conn.execute("SELECT COUNT(*) FROM passages").fetchone()[0] == 1
