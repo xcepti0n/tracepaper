@@ -95,12 +95,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request, q: str = "", tab: str = "search",
              limit: int = 20, semantic: bool = True,
-             mode: str = "everything", offset: int = 0) -> str:
+             mode: str = "everything", offset: int = 0,
+             section: str = "general") -> str:
         conn = open_connection()
         try:
             return render_page(conn, query=q, tab=tab, limit=limit,
                                semantic=semantic, mode=mode,
-                               offset=max(0, offset))
+                               offset=max(0, offset), section=section)
         finally:
             conn.close()
 

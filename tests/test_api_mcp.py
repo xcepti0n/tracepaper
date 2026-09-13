@@ -872,7 +872,7 @@ def test_settings_shows_what_is_indexed_and_what_is_skipped(client):
     was no way to see why: neither the excludes nor the understood formats were
     visible anywhere, so "why is this here" and "why is that missing" were
     equally unanswerable."""
-    page = client.get("/?tab=settings").text
+    page = client.get("/?tab=settings&section=formats").text
     assert "What gets indexed" in page
     assert "Never indexed" in page
     assert ".obsidian" in page, "the exclude list must be visible"
@@ -1039,7 +1039,7 @@ def test_search_page_links_each_passage_to_its_page(cfg, conn, nas):
 
 def test_settings_offers_the_controls_instead_of_terminal_commands(client):
     """Settings was half documentation. The things it describes are now doable."""
-    page = client.get("/?tab=settings").text
+    page = client.get("/?tab=settings&section=search").text
 
     assert "Folder rules" in page, "rules must be settable from the page"
     assert "Clean up the index" in page, "prune must not need a terminal"
@@ -1175,3 +1175,51 @@ def test_an_image_result_shows_its_thumbnail(cfg, conn, nas):
     assert "digital-passport.jpg" in page, "the image should rank"
     assert "/thumb/1" in page, "an image result must show its picture"
     assert 'class="hit with-thumb"' in page
+
+
+@pytest.mark.parametrize("section,expected", [
+    ("general", "Updates"),
+    ("search", "Folder rules"),
+    ("storage", "Index location"),
+    ("formats", "What gets indexed"),
+])
+def test_each_settings_section_renders(client, section, expected):
+    page = client.get(f"/?tab=settings&section={section}").text
+    assert expected in page
+    assert 'class="subnav"' in page, "every section needs the section links"
+
+
+def test_settings_opens_on_the_things_you_press(client):
+    """Updates and Jobs were at the bottom, behind a long reference table.
+
+    Updating meant scrolling past everything else on the page, so they are
+    what Settings now opens on.
+    """
+    page = client.get("/?tab=settings").text
+
+    assert "Updates" in page and "Jobs" in page
+    # The long reference table is not on the landing section.
+    assert "Found by name only" not in page
+
+
+def test_an_unknown_section_falls_back_rather_than_erroring(client):
+    """A stale bookmark or a typo should not produce an empty page."""
+    page = client.get("/?tab=settings&section=nonsense")
+    assert page.status_code == 200
+    assert "Updates" in page.text
+
+
+def test_no_settings_section_is_a_long_scroll(client):
+    """The reason for splitting the page: no section should be huge.
+
+    The formats section is the reference material and is allowed to be the
+    longest, but the sections with controls on them must stay short.
+    """
+    import re
+
+    for section in ("general", "search", "storage"):
+        page = client.get(f"/?tab=settings&section={section}").text
+        body = re.search(r"<main>.*</main>", page, re.S).group(0)
+        assert len(body) < 6000, (
+            f"the {section} section is {len(body)} bytes; it should not need "
+            f"a long scroll")

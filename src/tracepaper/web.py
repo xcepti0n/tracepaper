@@ -71,6 +71,14 @@ button.ghost { background:transparent; color:var(--accent);
 .hit .path { color:var(--muted); font-size:12px; font-family:ui-monospace,monospace;
              word-break:break-all; margin-bottom:7px; }
 .hit .snip { font-size:14px; }
+/* Sub-navigation inside a tab. Looks like the main nav but lighter, so the
+   two levels stay distinguishable. */
+.subnav { display:flex; gap:4px; flex-wrap:wrap; margin:0 0 4px;
+  border-bottom:1px solid var(--line); padding-bottom:10px; }
+.subnav a { padding:6px 12px; text-decoration:none; color:var(--muted);
+  border-radius:6px; font-size:13.5px; }
+.subnav a:hover { color:var(--fg); background:var(--accent-soft); }
+.subnav a.on { color:var(--fg); background:var(--accent-soft); font-weight:600; }
 .tips { margin:8px 0 0; padding-left:18px; line-height:1.75; }
 .tips li { font-size:13.5px; color:var(--muted); }
 .tips li b { color:var(--fg); font-weight:600; }
@@ -636,7 +644,8 @@ window.__tpOnReady = {push: function (fn) { fn(); }};
 
 def render_page(conn: sqlite3.Connection, *, query: str = "", tab: str = "search",
                 limit: int = 20, semantic: bool = True,
-                mode: str = "everything", offset: int = 0) -> str:
+                mode: str = "everything", offset: int = 0,
+                section: str = "general") -> str:
     """One search box over every layer, plus a browse view for exploring.
 
     The user should not have to know whether a word is an entity, a field or
@@ -653,7 +662,7 @@ def render_page(conn: sqlite3.Connection, *, query: str = "", tab: str = "search
     if tab == "how":
         body = _how_tab()
     elif tab == "settings":
-        body = _settings_tab(conn)
+        body = _settings_tab(conn, section)
     elif tab == "status":
         body = _status_tab(conn)
     elif tab == "browse":
@@ -1197,7 +1206,43 @@ files are read in, and what they produce is saved with a note saying where it
 came from. Anything you correct yourself wins over all of it, for good.</p>"""
 
 
-def _settings_tab(conn: sqlite3.Connection) -> str:
+# Settings holds ten sections. As one page, the two you actually press
+# buttons on (Updates, Jobs) sat at the bottom behind a 6KB reference table,
+# so every update meant scrolling past everything else. Split into sections
+# ordered by how often they are used, not by how the code is arranged.
+SETTINGS_SECTIONS = (
+    ("general", "General", "Update Tracepaper and run jobs."),
+    ("search", "Search rules", "Change what search shows and clean the index."),
+    ("storage", "Storage", "Where your files, index and backups live."),
+    ("formats", "What gets indexed", "Which files are read, and which are skipped."),
+)
+
+
+def _settings_tab(conn: sqlite3.Connection, section: str = "general") -> str:
+    """Settings, split into sections so nothing needs a long scroll."""
+    if section not in {name for name, _, _ in SETTINGS_SECTIONS}:
+        section = "general"
+
+    nav = "".join(
+        f'<a href="/?tab=settings&amp;section={name}" '
+        f'class="{"on" if name == section else ""}" title="{_esc(blurb)}">{label}</a>'
+        for name, label, blurb in SETTINGS_SECTIONS)
+    blurb = next(b for n, _, b in SETTINGS_SECTIONS if n == section)
+    head = f'<nav class="subnav">{nav}</nav><p class="hint">{_esc(blurb)}</p>'
+
+    if section == "general":
+        # Updates first: it is the button pressed most and was hardest to find.
+        body = _updates_panel() + _jobs_panel()
+    elif section == "search":
+        body = _rules_panel(conn) + _cleanup_panel()
+    elif section == "formats":
+        body = _coverage_panel(conn)
+    else:
+        body = _storage_panel(conn)
+    return head + body
+
+
+def _storage_panel(conn: sqlite3.Connection) -> str:
     """Storage configuration, with every path validated before saving."""
     from . import settings as settings_module
     from . import storage
@@ -1266,11 +1311,6 @@ def _settings_tab(conn: sqlite3.Connection) -> str:
   </div>
 </form>""")
 
-    out.append(_rules_panel(conn))
-    out.append(_cleanup_panel())
-    out.append(_coverage_panel(conn))
-    out.append(_jobs_panel())
-    out.append(_updates_panel())
     return "".join(out)
 
 
