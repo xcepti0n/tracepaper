@@ -1057,12 +1057,24 @@ def _pending_formats(conn: sqlite3.Connection, limit: int = 12) -> list[dict]:
     # awkward to express with instr/substr alone.
     from collections import Counter
 
+    from .query import modes
+    from . import rules as rules_module
+
     counts: Counter[str] = Counter()
     for row in conn.execute(
             "SELECT uri FROM items WHERE deleted_at IS NULL AND uri IS NOT NULL "
             "AND extraction_status IN ('pending','partial')"):
-        name = str(row["uri"]).rpartition("/")[2]
-        counts[("." + name.rpartition(".")[2].lower()) if "." in name else ""] += 1
+        uri = str(row["uri"])
+        name = uri.rpartition("/")[2]
+        suffix = ("." + name.rpartition(".")[2].lower()) if "." in name else ""
+        # Same filter as the headline count, or the table contradicts it: 515
+        # pending above a list whose first row said 1,300 was not believable.
+        if suffix in _NO_TEXT_SUFFIXES or modes.is_code(uri):
+            continue
+        if (rules_module.is_ruled(conn, uri, "code")
+                or rules_module.is_ruled(conn, uri, "hide")):
+            continue
+        counts[suffix] += 1
 
     out = []
     for suffix, total in counts.most_common(limit):

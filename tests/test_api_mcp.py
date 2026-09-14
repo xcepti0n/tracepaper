@@ -1596,3 +1596,13 @@ def test_pending_counts_only_work_worth_doing(client, conn, nas):
     from tracepaper.api import _NO_TEXT_SUFFIXES
     assert ".mp3" in _NO_TEXT_SUFFIXES and ".mp4" in _NO_TEXT_SUFFIXES
     assert ".pdf" not in _NO_TEXT_SUFFIXES, "a PDF can always yield text"
+
+
+def test_the_breakdown_adds_up_to_the_headline(client):
+    """A headline of 515 above a table whose first row says 1,300 is not
+    believable. Both must apply the same filter."""
+    info = client.get("/api/status").json()
+
+    listed = sum(f["items"] for f in info.get("pending_formats", []))
+    assert listed <= info["pending"], (
+        "the table cannot show more files than the count it explains")
