@@ -520,6 +520,58 @@ async function saveSettings(event) {
   }
 }
 
+async function testLlm() {
+  const box = document.getElementById('llm_status');
+  const endpoint = document.getElementById('llm_endpoint').value.trim();
+  box.textContent = 'Checking ' + endpoint + '...';
+  let result;
+  try {
+    const response = await fetch('/api/llm/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json',
+                'X-Tracepaper-Request': '1'},
+      body: JSON.stringify({endpoint: endpoint}),
+    });
+    result = await response.json();
+  } catch (err) {
+    box.textContent = 'Could not run the test.';
+    return;
+  }
+  if (!result.ok) {
+    box.textContent = result.error || 'No answer.';
+    return;
+  }
+  const names = (result.models || []).map(m => m.name);
+  box.textContent = 'Reached it. ' + names.length + ' model(s) installed.';
+  const hint = document.getElementById('vlm_hint');
+  if (names.length) {
+    // Listed as text rather than a dropdown: Ollama does not reliably flag
+    // which models read images, so the choice cannot be narrowed for you.
+    hint.textContent = 'Installed: ' + names.join(', ');
+  }
+}
+
+async function saveCaptions(event) {
+  event.preventDefault();
+  const response = await fetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json',
+              'X-Tracepaper-Request': '1'},
+    body: JSON.stringify({
+      llm_enabled: document.getElementById('llm_enabled').checked,
+      llm_endpoint: document.getElementById('llm_endpoint').value.trim(),
+      vlm_model: document.getElementById('vlm_model').value.trim(),
+    }),
+  });
+  const result = await response.json();
+  if (result.ok) {
+    toast('Saved');
+    setTimeout(() => location.reload(), 1200);
+  } else {
+    toast((result.problems || ['Not saved']).join(' '));
+  }
+}
+
 function escapeHtml(text) {
   const el = document.createElement('div');
   el.textContent = text;
@@ -1514,6 +1566,7 @@ SETTINGS_SECTIONS = (
     ("search", "Search rules", "Change what search shows and clean the index."),
     ("storage", "Storage", "Where your files, index and backups live."),
     ("formats", "What gets indexed", "Which files are read, and which are skipped."),
+    ("ai", "Photo captions", "Describe photos so you can search them by content."),
 )
 
 
@@ -1536,6 +1589,8 @@ def _settings_tab(conn: sqlite3.Connection, section: str = "general") -> str:
         body = _rules_panel(conn) + _cleanup_panel()
     elif section == "formats":
         body = _coverage_panel(conn)
+    elif section == "ai":
+        body = _captions_panel(conn)
     else:
         body = _storage_panel(conn)
     return head + body
@@ -1610,6 +1665,77 @@ def _storage_panel(conn: sqlite3.Connection) -> str:
   </div>
 </form>""")
 
+    return "".join(out)
+
+
+def _captions_panel(conn: sqlite3.Connection) -> str:
+    """Turn photo captions on, and point them at a model.
+
+    Most photos are named `IMG_4821.jpg`, so a caption is the only text many
+    of them will ever have. This is the one place the product uses a model at
+    query-adjacent time, and it stays confined to ingest: captions are written
+    once into the index, and searching them afterwards is plain text matching.
+    """
+    from .api import get_config
+
+    cfg = get_config()
+    total = conn.execute(
+        "SELECT COUNT(*) AS n FROM items WHERE kind = 'photo' "
+        "AND deleted_at IS NULL").fetchone()["n"]
+    done = conn.execute(
+        "SELECT COUNT(DISTINCT item_id) AS n FROM tags "
+        "WHERE namespace = 'caption'").fetchone()["n"]
+    pending = max(0, int(total) - int(done))
+
+    out = ['<h2>Photo captions</h2>']
+    out.append('<p class="hint">Photos are hard to search because the file '
+               'name rarely says what is in the picture. Tracepaper can ask a '
+               'model on your own machine to describe each photo in one '
+               'sentence, then search that text. Nothing leaves your '
+               'network.</p>')
+
+    out.append(f'<div><span class="stat"><b>{int(total):,}</b>'
+               f'<span>photos</span></span>'
+               f'<span class="stat"><b>{int(done):,}</b>'
+               f'<span>described</span></span>'
+               f'<span class="stat"><b>{pending:,}</b>'
+               f'<span>still to do</span></span></div>')
+
+    if not cfg.llm_enabled:
+        out.append('<p class="hint">Captions are off. Turn them on below, '
+                   'then run the Describe photos job under General.</p>')
+
+    checked = " checked" if cfg.llm_enabled else ""
+    out.append(f"""
+<form id="captions" onsubmit="saveCaptions(event)">
+  <h2>Model</h2>
+  <p class="hint">Ollama on your own machine or your network. Use the address
+    of the computer running it, not localhost, unless it runs here.</p>
+  <div class="field">
+    <label><input type="checkbox" id="llm_enabled"{checked}>
+      Describe photos with a model</label>
+  </div>
+  <div class="rule-add">
+    <input type="text" id="llm_endpoint" value="{_esc(cfg.llm_endpoint)}"
+           placeholder="http://mac.studio.local:11434">
+    <button type="button" class="ghost" onclick="testLlm()">Test</button>
+  </div>
+  <div id="llm_status" class="status"></div>
+  <div class="field">
+    <label class="hint" for="vlm_model">Model for photos</label>
+    <input type="text" id="vlm_model" value="{_esc(cfg.vlm_model)}"
+           placeholder="gemma4:e4b">
+    <div id="vlm_hint" class="hint">Press Test to list what is installed.</div>
+  </div>
+  <div class="actions">
+    <button type="submit">Save</button>
+  </div>
+</form>
+<p class="hint">Not every model can read images. Some accept a photo and
+  answer as if none arrived, and one was seen inventing a confident
+  description of a picture it never saw. Tracepaper throws those replies away
+  rather than storing them, so a bad model means no captions, never wrong
+  ones. <b>gemma4:e4b</b> was tested and works.</p>""")
     return "".join(out)
 
 

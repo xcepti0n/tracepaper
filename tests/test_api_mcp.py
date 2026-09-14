@@ -1355,3 +1355,56 @@ def test_dates_render_readably_and_never_raise():
     # Whatever the scanner stored, a listing must not blow up on it.
     for bad in ("", "not-a-date", "0000", 12345):
         _short_date(bad)
+
+
+def test_every_setting_the_api_accepts_has_a_field_in_the_ui(conn):
+    """A setting saveable by the API but absent from the UI is invisible.
+
+    This existed for llm_endpoint and llm_model: the API took them, the form
+    never sent them, and there was no input to type them into. The user was
+    told to "go to Settings" for a control that was not there.
+    """
+    from tracepaper.web import _captions_panel
+
+    page = _captions_panel(conn)
+
+    for field in ("llm_enabled", "llm_endpoint", "vlm_model"):
+        assert f'id="{field}"' in page, f"{field} has no input in the UI"
+
+
+def test_captions_panel_reports_progress(conn):
+    from tracepaper.web import _captions_panel
+
+    page = _captions_panel(conn)
+
+    assert "photos" in page and "described" in page
+
+
+def test_captions_settings_survive_a_save(tmp_path):
+    """Saving the model must actually persist, including the vision model."""
+    from tracepaper import settings as settings_module
+    from tracepaper.config import Config
+
+    config_file = tmp_path / "tracepaper.toml"
+    ok, problems = settings_module.save(
+        config_file, roots=[str(tmp_path)], db_path=str(tmp_path / "i.db"),
+        llm_enabled=True, llm_endpoint="http://mac.studio.local:11434",
+        vlm_model="gemma4:e4b", validate_paths=False)
+
+    assert ok, problems
+    loaded = Config.load(config_file)
+    assert loaded.llm_enabled is True
+    assert loaded.llm_endpoint == "http://mac.studio.local:11434"
+    # vlm_model is the one captions actually use, and it was not saveable.
+    assert loaded.vlm_model == "gemma4:e4b"
+
+
+def test_llm_test_endpoint_reports_an_unreachable_address(client):
+    """Finding out weeks later via an empty caption count is the failure this
+    button exists to prevent."""
+    result = client.post("/api/llm/test",
+                         json={"endpoint": "http://127.0.0.1:9"},
+                         headers={"X-Tracepaper-Request": "1"}).json()
+
+    assert result["ok"] is False
+    assert "127.0.0.1:9" in result["error"]

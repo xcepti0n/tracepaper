@@ -70,6 +70,7 @@ def save(path: Path | str, *, roots: list[str], db_path: str,
          llm_enabled: bool | None = None,
          llm_endpoint: str | None = None,
          llm_model: str | None = None,
+         vlm_model: str | None = None,
          validate_paths: bool = True) -> tuple[bool, list[str]]:
     """Write the settings the UI owns, preserving everything else.
 
@@ -101,6 +102,10 @@ def save(path: Path | str, *, roots: list[str], db_path: str,
         llm["endpoint"] = llm_endpoint
     if llm_model:
         llm["model"] = llm_model
+    # The vision model lives under [enrich] because only the background
+    # enricher uses it, which is also where config.load reads it from.
+    if vlm_model:
+        data.setdefault("enrich", {})["vlm_model"] = vlm_model
 
     _write_atomic(path, _to_toml(data))
     return True, []

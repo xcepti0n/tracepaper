@@ -540,7 +540,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             config_file, roots=roots, db_path=db_path, backup_dir=backup_dir,
             llm_enabled=payload.get("llm_enabled"),
             llm_endpoint=payload.get("llm_endpoint"),
-            llm_model=payload.get("llm_model"))
+            llm_model=payload.get("llm_model"),
+            vlm_model=payload.get("vlm_model"))
         if not ok:
             return {"ok": False, "problems": problems}
 
@@ -548,6 +549,52 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         set_config(Config.load(config_file))
         return {"ok": True, "config_file": str(config_file),
                 "restart_required": str(_config.db_path) != db_path}
+
+    @app.post("/api/llm/test")
+    def api_llm_test(payload: dict) -> dict[str, Any]:
+        """Can we reach this Ollama, and what can it do?
+
+        Saving an endpoint that turns out to be unreachable is the kind of
+        thing you find out weeks later via an empty caption count, so the UI
+        offers a button that asks now. Returns the model list so a name can be
+        picked rather than typed from memory.
+        """
+        import json
+        import urllib.error
+        import urllib.request
+
+        endpoint = str(payload.get("endpoint") or "").strip().rstrip("/")
+        if not endpoint:
+            return {"ok": False, "error": "No address given."}
+        if not endpoint.startswith(("http://", "https://")):
+            endpoint = "http://" + endpoint
+
+        try:
+            with urllib.request.urlopen(f"{endpoint}/api/tags",
+                                        timeout=8) as response:
+                data = json.loads(response.read())
+        except urllib.error.URLError as exc:
+            return {"ok": False,
+                    "error": f"Could not reach {endpoint}. {exc.reason}"}
+        except Exception as exc:                       # noqa: BLE001
+            return {"ok": False, "error": f"{endpoint} did not answer. {exc}"}
+
+        models = []
+        for entry in data.get("models") or []:
+            name = entry.get("name") or entry.get("model") or ""
+            if not name:
+                continue
+            # A model that cannot read an image cannot caption a photo, and
+            # Ollama's own capability list is not reliable here: the GGUF
+            # gemma4 builds read images fine but are not flagged for vision.
+            # So the flag is reported, never used to filter.
+            models.append({
+                "name": name,
+                "vision": "vision" in (entry.get("capabilities") or []),
+                "size_gb": round((entry.get("size") or 0) / 1e9, 1),
+            })
+        models.sort(key=lambda m: m["name"])
+        return {"ok": True, "endpoint": endpoint, "models": models}
 
     @app.get("/api/health")
     def api_health() -> dict[str, Any]:
