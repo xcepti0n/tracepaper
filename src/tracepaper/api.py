@@ -870,7 +870,7 @@ def _status_uncached(conn: sqlite3.Connection) -> dict[str, Any]:
     }
     last_scan = conn.execute(
         "SELECT root, started_at, finished_at, seen, added, changed, moved, "
-        "removed, status FROM scans ORDER BY id DESC LIMIT 1"
+        "removed, status, message FROM scans ORDER BY id DESC LIMIT 1"
     ).fetchone()
 
     return {

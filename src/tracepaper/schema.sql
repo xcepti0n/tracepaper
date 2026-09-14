@@ -76,7 +76,11 @@ CREATE TABLE IF NOT EXISTS scans (
     moved       INTEGER NOT NULL DEFAULT 0,
     removed     INTEGER NOT NULL DEFAULT 0,
     status      TEXT NOT NULL DEFAULT 'running'
-                CHECK (status IN ('running','complete','failed','interrupted'))
+                CHECK (status IN ('running','complete','failed','interrupted')),
+    -- Why it stopped. Without this the UI could only say "failed", and the
+    -- reason lived in the journal, which is exactly where someone who is
+    -- looking at a web page is not.
+    message     TEXT
 );
 
 -- -------------------------------------------------------------- passages

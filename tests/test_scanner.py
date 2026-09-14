@@ -569,3 +569,30 @@ def test_a_folder_merely_named_like_a_build_is_kept(conn, cfg, nas):
 
     found = {r["uri"] for r in conn.execute("SELECT uri FROM items")}
     assert len(found) == 2, f"ordinary folders must be scanned: {found}"
+
+
+def test_a_failed_scan_records_why(conn, cfg, nas):
+    """"failed" with no reason meant opening the journal to find out.
+
+    Uses the vanish guard, which is the failure that actually happens: an
+    unmounted share, or (as it turned out) a prune that removed more than the
+    guard's threshold.
+    """
+    from tracepaper.scan.scanner import ScanAborted, Scanner
+
+    for n in range(10):
+        (nas / f"doc{n}.txt").write_text(f"Document {n}.")
+    Scanner(conn, cfg).scan(nas)
+
+    # Everything disappears, as it would if the NAS were not mounted.
+    for n in range(10):
+        (nas / f"doc{n}.txt").unlink()
+
+    with pytest.raises(ScanAborted):
+        Scanner(conn, cfg).scan(nas)
+
+    row = conn.execute(
+        "SELECT status, message FROM scans ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["status"] == "failed"
+    assert row["message"], "the reason must be stored, not just the failure"
+    assert "disappeared" in row["message"]

@@ -38,9 +38,23 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
     return conn
 
 
+# Columns added to tables that already exist in the field. `CREATE TABLE IF
+# NOT EXISTS` cannot add one, so each is applied separately and ignored when
+# already present. Additive only: no column is ever dropped or retyped here,
+# so an older build still opens the same database.
+_ADDED_COLUMNS = (
+    ("scans", "message", "TEXT"),
+)
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     sql = resources.files("tracepaper").joinpath("schema.sql").read_text()
     conn.executescript(sql)
+    for table, column, decl in _ADDED_COLUMNS:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        except sqlite3.OperationalError:
+            pass          # already there
     conn.execute(
         "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",

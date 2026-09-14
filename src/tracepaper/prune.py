@@ -35,6 +35,13 @@ def prune_reasons(conn: sqlite3.Connection, cfg: Config, uri: str) -> set[str]:
     for pattern in getattr(cfg, "exclude_patterns", ()):
         if any(fnmatch(part, pattern) for part in parts):
             reasons.add(pattern)
+    # Only rules the SCANNER also honours may be reasons to delete. Anything
+    # else and prune removes a file that the next scan re-adds, forever: the
+    # first version of this treated "looks like code" as a reason, so a prune
+    # deleted 12,261 files and the following scan put 2,266 straight back and
+    # then tripped the vanish guard, leaving the index unable to update at
+    # all. Being code is a reason to hide something from search, not a reason
+    # to stop indexing it.
     if rules.is_ruled(conn, uri, "code"):
         reasons.add("folder marked as code")
     if rules.is_ruled(conn, uri, "hide"):

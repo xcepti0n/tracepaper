@@ -1803,6 +1803,13 @@ def _status_tab(conn: sqlite3.Connection) -> str:
 
     scan = info["last_scan"]
     if scan:
+        # A failure has to say why on the page. "failed" on its own sent you
+        # to the journal, which is not where someone reading a web page is.
+        failure = ""
+        if scan["status"] == "failed" and scan.get("message"):
+            failure = (f'<p class="hint"><span class="pill warn">scan failed'
+                       f'</span> {_esc(scan["message"])}</p>')
+        out.append(failure)
         out.append(f"""<table><tr><th>Last scan</th><th></th></tr>
   <tr><td>root</td><td><code>{_esc(scan["root"])}</code></td></tr>
   <tr><td>status</td><td>{_esc(scan["status"])}</td></tr>

@@ -152,3 +152,52 @@ def test_a_folder_you_marked_as_code_becomes_prunable(conn, cfg):
     report = prune.preview(conn, cfg)
     assert report["items"] == 1
     assert any("code" in r["reason"] for r in report["reasons"])
+
+
+def test_prune_never_removes_what_the_next_scan_would_re_add(conn, cfg, nas):
+    """Prune and the scanner must agree, or the index cannot settle.
+
+    The first version treated "looks like code" as a reason to delete. A
+    prune removed 12,261 files, the next scan re-added 2,266 of them, and the
+    vanish guard then aborted every scan from that point on: the index
+    stopped updating entirely. Being code hides a file from search; it is not
+    a reason to stop indexing it.
+    """
+    from tracepaper import prune
+    from tracepaper.index.indexer import Indexer
+    from tracepaper.scan.scanner import Scanner
+
+    (nas / "proj" / "src").mkdir(parents=True)
+    (nas / "proj" / "src" / "main.py").write_text("print('hello')\n")
+    (nas / "notes.txt").write_text("An ordinary note.")
+
+    Scanner(conn, cfg).scan(nas)
+    Indexer(conn, cfg).run_pending()
+    before = conn.execute("SELECT COUNT(*) AS n FROM items").fetchone()["n"]
+
+    prune.apply(conn, cfg)
+    Scanner(conn, cfg).scan(nas)
+
+    after = conn.execute("SELECT COUNT(*) AS n FROM items "
+                         "WHERE deleted_at IS NULL").fetchone()["n"]
+    assert after == before, (
+        "a prune followed by a scan must be stable; instead the scan re-added "
+        "what the prune removed")
+
+
+def test_a_scan_skips_folders_you_marked(conn, cfg, nas):
+    """The other half of the agreement, from the scanner's side."""
+    from tracepaper import rules
+    from tracepaper.scan.scanner import Scanner
+
+    (nas / "Projects").mkdir(parents=True)
+    (nas / "Projects" / "readme.txt").write_text("Project notes.")
+    (nas / "keep.txt").write_text("An ordinary note.")
+
+    rules.add_rule(conn, str(nas / "Projects"), "code")
+    Scanner(conn, cfg).scan(nas)
+
+    found = {r["uri"] for r in conn.execute("SELECT uri FROM items")}
+    assert any("keep.txt" in uri for uri in found)
+    assert not any("readme.txt" in uri for uri in found), \
+        "a folder marked as code should not be indexed at all"

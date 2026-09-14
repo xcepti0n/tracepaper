@@ -96,10 +96,38 @@ def _is_excluded(path: Path, root: Path, excludes: Iterable[str],
                for name in names for pattern in patterns)
 
 
+def _ruled_prefixes(cfg: Config) -> list[str]:
+    """Path prefixes the user marked as code or hidden.
+
+    Read once per walk rather than per file: this opens its own connection
+    because `walk` is deliberately connection-free, and a query per directory
+    entry would dominate the scan.
+    """
+    from ..db import connect
+    from .. import rules as rules_module
+
+    try:
+        conn = connect(cfg.db_path)
+    except Exception:
+        return []
+    try:
+        return [row["prefix"] + "/" for row in conn.execute(
+            "SELECT prefix FROM path_rules WHERE rule IN ('code', 'hide')")]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
 def walk(root: Path, cfg: Config) -> Iterator[tuple[Path, os.stat_result]]:
     """Yield (path, stat) for every eligible file below root. Metadata only."""
     excludes = set(cfg.excludes)
     patterns = tuple(cfg.exclude_patterns)
+    # Folders you marked as code or hidden are not indexed at all. Without
+    # this, prune deletes them and the next scan puts them straight back:
+    # the two disagreed about what belongs in the index, so every scan after
+    # a prune re-added thousands of files and then tripped the vanish guard.
+    ruled = tuple(_ruled_prefixes(cfg))
     stack = [root]
     while stack:
         current = stack.pop()
@@ -114,6 +142,8 @@ def walk(root: Path, cfg: Config) -> Iterator[tuple[Path, os.stat_result]]:
                     fnmatch(entry.name, pattern) for pattern in patterns):
                 continue
             path = Path(entry.path)
+            if ruled and str(path.resolve()).startswith(ruled):
+                continue
             try:
                 if entry.is_dir(follow_symlinks=cfg.follow_symlinks):
                     stack.append(path)
@@ -182,8 +212,11 @@ class Scanner:
                     result.errors.append((uri, str(exc)))
 
             self._handle_missing(root, prior, seen_uris, prior_count, result)
-        except Exception:
-            self._finish_scan(scan_id, result, status="failed")
+        except Exception as exc:
+            # The reason, not just the fact. A status of "failed" with no
+            # message sent you to the journal to find out why.
+            self._finish_scan(scan_id, result, status="failed",
+                              message=str(exc)[:500])
             raise
 
         self._finish_scan(scan_id, result, status="complete")
@@ -199,14 +232,16 @@ class Scanner:
             )
             return int(cur.lastrowid)
 
-    def _finish_scan(self, scan_id: int, result: ScanResult, status: str) -> None:
+    def _finish_scan(self, scan_id: int, result: ScanResult, status: str,
+                     message: str | None = None) -> None:
         with transaction(self.conn) as conn:
             conn.execute(
                 "UPDATE scans SET finished_at = ?, seen = ?, candidates = ?, "
-                "changed = ?, added = ?, moved = ?, removed = ?, status = ? "
-                "WHERE id = ?",
+                "changed = ?, added = ?, moved = ?, removed = ?, status = ?, "
+                "message = ? WHERE id = ?",
                 (utcnow(), result.seen, result.candidates, result.changed,
-                 result.added, result.moved, result.removed, status, scan_id),
+                 result.added, result.moved, result.removed, status,
+                 message, scan_id),
             )
 
     def _load_prior_state(self, root: Path) -> dict[str, sqlite3.Row]:

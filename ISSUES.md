@@ -33,6 +33,13 @@ that closed it. Anyone (you, me) can add here; keep entries short and say what
 
 ## Done
 
+- [x] **Prune and the scanner disagreed, so the index stopped updating.**
+      Prune deleted files for "looks like code", the next scan re-added them,
+      and the vanish guard then aborted every scan. Being code hides a file
+      from search; it is not a reason to stop indexing it. (this commit)
+- [x] **A failed scan said "failed" and nothing else.** The reason is stored
+      and shown on Status. (this commit)
+
 - [x] **Browse listed field names, led by C++ header noise.** It is a folder
       and file browser now; the field list moved below it, filtered to
       documents, and reads in words. (this commit)
