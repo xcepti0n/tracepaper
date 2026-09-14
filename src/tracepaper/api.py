@@ -532,9 +532,18 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.post("/api/settings")
     def api_save_settings(payload: dict) -> dict[str, Any]:
         config_file = settings.find_config() or Path("tracepaper.toml")
-        roots = payload.get("roots") or []
+        # A field the caller did not send keeps its current value. Settings is
+        # more than one form now, and each sends only what it owns: defaulting
+        # roots to [] instead made the captions form fail validation on a
+        # folder list it never touched, and a caller passing roots=null would
+        # have erased them.
+        roots = payload.get("roots")
+        if roots is None:
+            roots = [str(r) for r in _config.roots]
         db_path = payload.get("db_path") or str(_config.db_path)
-        backup_dir = payload.get("backup_dir") or None
+        backup_dir = payload.get("backup_dir")
+        if backup_dir is None:
+            backup_dir = str(_config.backup_dir) if _config.backup_dir else None
 
         ok, problems = settings.save(
             config_file, roots=roots, db_path=db_path, backup_dir=backup_dir,

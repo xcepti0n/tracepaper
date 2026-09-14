@@ -1408,3 +1408,39 @@ def test_llm_test_endpoint_reports_an_unreachable_address(client):
 
     assert result["ok"] is False
     assert "127.0.0.1:9" in result["error"]
+
+
+def test_saving_one_settings_form_does_not_wipe_another(populated, cfg, tmp_path,
+                                                       monkeypatch):
+    """Settings is several forms, each sending only the fields it owns.
+
+    The captions form sends no roots. Defaulting them to an empty list failed
+    validation with "At least one documents folder is required", so captions
+    could not be turned on at all, and a caller sending roots=null would have
+    erased the folder list outright.
+    """
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from tracepaper import settings as settings_module
+    from tracepaper.api import create_app
+    from tracepaper.config import Config
+
+    config_file = tmp_path / "tracepaper.toml"
+    monkeypatch.setattr(settings_module, "find_config", lambda: config_file)
+    configured = replace(cfg, roots=[tmp_path])
+    client = TestClient(create_app(configured))
+
+    result = client.post(
+        "/api/settings",
+        json={"llm_enabled": True,
+              "llm_endpoint": "http://192.168.0.133:11434",
+              "vlm_model": "gemma4:e4b"},
+        headers={"X-Tracepaper-Request": "1"}).json()
+
+    assert result.get("ok") is True, result.get("problems")
+    # The folder list the captions form never sent must still be there.
+    saved = Config.load(config_file)
+    assert [str(r) for r in saved.roots] == [str(tmp_path)]
+    assert saved.vlm_model == "gemma4:e4b"
