@@ -23,6 +23,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re
 import subprocess
 import sys
 import tempfile
@@ -192,6 +193,53 @@ def _downscaled(path: Path, max_pixels: int = CAPTION_MAX_PIXELS) -> bytes:
         return path.read_bytes()
 
 
+# Some models accept an image, then answer as if none arrived. The MLX build of
+# gemma4:e4b does this on every photo, and gemma4:26b-mlx is worse: it invents
+# a confident caption ("a group of people wearing suits") for an image it never
+# saw. A wrong caption is stored as searchable text and is far more damaging
+# than no caption, so both shapes are rejected here rather than trusted.
+_BLIND_MARKERS = (
+    "no image was provided",
+    "image was not provided",
+    "cannot describe the image",
+    "can't describe the image",
+    "unable to describe",
+    "i need an image",
+    "i need the image",
+    "please provide the image",
+    "as an ai",
+    "i cannot see",
+    "i can't see",
+    "there is no image",
+    "no image was attached",
+    "didn't receive an image",
+    "did not receive an image",
+)
+
+# The shortest genuine description of a photo still runs to a few words. A
+# terse refusal that dodges the markers above is caught by length.
+MIN_CAPTION_CHARS = 15
+
+
+def _usable_caption(text: str) -> str:
+    """The caption, or "" when the model plainly did not see the image.
+
+    Em dashes are stripped because captions are rendered in the UI, and a
+    model's punctuation choices should not leak into the interface.
+    """
+    cleaned = text.strip()
+    if len(cleaned) < MIN_CAPTION_CHARS:
+        return ""
+    lowered = cleaned.lower()
+    if any(marker in lowered for marker in _BLIND_MARKERS):
+        log.warning("model returned a no-image reply, discarding: %r",
+                    cleaned[:120])
+        return ""
+    for dash in ("\u2014", "\u2013"):
+        cleaned = cleaned.replace(dash, ", ")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def caption(path: Path, *, endpoint: str, model: str,
             timeout: int = 180) -> str:
     """A prose caption from a vision LLM. Returns "" on any failure.
@@ -219,7 +267,7 @@ def caption(path: Path, *, endpoint: str, model: str,
             headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(request, timeout=timeout) as response:
             reply = json.loads(response.read())
-        return str(reply.get("response", "")).strip()[:300]
+        return _usable_caption(str(reply.get("response", "")))[:300]
     except Exception as exc:
         log.debug("caption failed for %s: %s", path, exc)
         return ""

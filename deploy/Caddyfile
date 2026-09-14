@@ -14,6 +14,13 @@
 #
 # The cost is trusting the CA root once per device -- see deploy/README.md.
 #
+# `tls internal` on its own issues 12-hour certificates and renews them every
+# few hours. That is fine for a browser but miserable for anything pinning a
+# cert, and it makes an outage look like an expiry every single day. The
+# explicit `issuer internal` block below sets a 90-day lifetime, which is the
+# normal figure people expect. The CA root itself is unaffected and lasts
+# years, so trusting it once per device is still a one-time step.
+#
 # There is deliberately no `log` directive. The Debian package runs Caddy under
 # ProtectSystem=full, which remounts /var/log read-only, so pointing a log
 # writer there fails at config load and Caddy exits before binding anything.
@@ -21,7 +28,11 @@
 #   journalctl -u caddy -f
 
 https://{$TRACEPAPER_DOMAIN} {
-	tls internal
+	tls {
+		issuer internal {
+			lifetime 90d
+		}
+	}
 
 	encode zstd gzip
 

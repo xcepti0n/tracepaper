@@ -183,11 +183,21 @@ pct exec <CTID> -- env DOMAIN=tracepaper.example.net \
 Or during install: `TLS_DOMAIN=tracepaper.example.net ./deploy/proxmox-install.sh`.
 
 **Why a self-issued certificate.** A hostname that resolves only inside your
-network cannot be validated from outside, so no public CA will sign for it —
+network cannot be validated from outside, so no public CA will sign for it.
 Let's Encrypt says as much in "Certificates for localhost" and recommends
 issuing your own. `tls internal` runs a small CA inside the container, signs for
 this host, and renews indefinitely. Nothing leaves the LAN and there is no API
 token anywhere.
+
+Certificates are issued for 90 days. Left to its defaults `tls internal` uses a
+12-hour lifetime, which means a cert expiring twice a day and every real
+problem looking like an expiry. The CA root is separate and lasts years, so
+trusting it on a device stays a one-time step.
+
+**HTTPS needs the hostname.** The certificate covers the DNS name only, so
+`https://<container-ip>` fails the TLS handshake before any HTTP happens, and
+plain `http://<container-ip>` redirects straight to that broken URL. Always
+browse to the name.
 
 The cost is trusting that CA root once per device:
 

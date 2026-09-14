@@ -394,3 +394,55 @@ def test_captions_downscale_large_images(tmp_path):
     assert len(shrunk) < big.stat().st_size
     with Image.open(io.BytesIO(shrunk)) as img:
         assert max(img.size) <= CAPTION_MAX_PIXELS
+
+
+# A model that answers without seeing the image is the one failure that makes
+# the index worse instead of merely incomplete. Measured on this machine:
+# gemma4:e4b-mlx replies "no image was provided" to every photo, and
+# gemma4:26b-mlx invents a confident caption for an image it never saw.
+@pytest.mark.parametrize("reply", [
+    "I cannot describe the image because no image was provided.",
+    "Please provide the image you would like me to describe.",
+    "I need an image to describe it.",
+    "I need the image to provide a description.",
+    "There is no image attached to describe.",
+    "As an AI, I am unable to describe images.",
+])
+def test_no_image_replies_are_never_stored_as_captions(reply):
+    from tracepaper.extract.vision import _usable_caption
+
+    assert _usable_caption(reply) == ""
+
+
+def test_a_real_caption_survives_the_guard():
+    """The guard must not be so eager that it drops genuine descriptions."""
+    from tracepaper.extract.vision import _usable_caption
+
+    for good in (
+        "A red house with a brown roof stands on a tan field under a sun.",
+        "Three stacked colored bars beneath a yellow circle.",
+        # "not provided" in a caption about a form must not trip the guard,
+        # which is why the marker is the image-specific phrasing.
+        "A tax form where the date is not provided.",
+        "A dog on a beach.",
+    ):
+        assert _usable_caption(good) == " ".join(good.split())
+
+
+def test_captions_carry_no_em_dashes_into_the_ui():
+    """gemma4:e4b writes em dashes, and captions are rendered on the page."""
+    from tracepaper.extract.vision import _usable_caption
+
+    out = _usable_caption(
+        "A white field containing three stripes—red, green and blue—"
+        "and a yellow circle.")
+
+    assert "—" not in out and "–" not in out
+    assert "stripes, red" in out
+
+
+def test_a_terse_refusal_is_rejected_on_length():
+    from tracepaper.extract.vision import _usable_caption
+
+    assert _usable_caption("No.") == ""
+    assert _usable_caption("") == ""

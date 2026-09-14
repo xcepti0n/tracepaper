@@ -384,6 +384,30 @@ def test_caddyfile_has_no_log_directive():
         "leave logging on journald")
 
 
+def test_certificates_last_long_enough_to_not_look_like_an_outage():
+    """`tls internal` alone issues 12-hour certs. A cert that expires twice a
+    day makes every real problem look like an expiry, and the short window sent
+    us chasing a phantom outage once already. 90 days is the figure people
+    expect from a certificate."""
+    caddyfile = (DEPLOY / "Caddyfile").read_text()
+
+    assert "issuer internal" in caddyfile, (
+        "an explicit issuer block is what allows a lifetime to be set")
+    match = re.search(r"lifetime\s+(\d+)d", caddyfile)
+    assert match, "the internal issuer needs an explicit lifetime"
+    assert int(match.group(1)) >= 90, (
+        f"{match.group(1)}d is too short; 90 days or more")
+
+
+def test_tls_still_terminates_on_the_dns_name():
+    """HTTPS works only for a name in the certificate. Caddy refuses the
+    handshake outright for a bare IP, so the site address must stay the
+    substituted domain rather than becoming an address."""
+    caddyfile = (DEPLOY / "Caddyfile").read_text()
+
+    assert "https://{$TRACEPAPER_DOMAIN} {" in caddyfile
+
+
 def test_caddy_install_binds_the_app_inward():
     """While the app still listens on 0.0.0.0 the plain-HTTP port keeps working
     and quietly bypasses TLS. The plaintext path has to actually go away."""
