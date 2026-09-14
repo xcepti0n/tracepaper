@@ -153,3 +153,21 @@ def test_plain_text_has_no_page_number():
     parts = passages.split("some plain text\n\nanother block")
     assert parts
     assert all(p.page is None for p in parts)
+
+
+def test_subtitles_are_indexed_as_text(tmp_path):
+    """A subtitle file is plain text, and often the only searchable record of
+    what was said in a video. 140 sat unindexed because the suffix was
+    missing from the list, reported as "no extractor"."""
+    from tracepaper.extract import text as text_module
+
+    for suffix in (".srt", ".vtt"):
+        assert suffix in text_module.TEXT_SUFFIXES
+
+    path = tmp_path / "episode.srt"
+    path.write_text("1\n00:00:01,000 --> 00:00:04,000\n"
+                    "the sprinkler valve is leaking\n")
+
+    extracted = text_module.extract(path)
+
+    assert "sprinkler valve" in (extracted.text or "")

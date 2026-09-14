@@ -1018,6 +1018,8 @@ _NO_TEXT_SUFFIXES = {
     ".mp3", ".mp4", ".mkv", ".mov", ".avi", ".wav", ".flac", ".m4a", ".aac",
     ".ogg", ".wmv", ".m4v", ".zip", ".iso", ".dmg", ".exe", ".stl", ".gcode",
     ".ttf", ".otf", ".woff", ".woff2",
+    # More video containers. Their subtitles carry the text, not the file.
+    ".webm", ".3gp", ".3gpp", ".flv", ".mpg", ".mpeg", ".ts", ".m2ts",
 }
 
 

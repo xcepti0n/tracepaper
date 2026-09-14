@@ -35,7 +35,11 @@ class ExtractedText:
 
 
 TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".rst", ".log", ".json", ".yaml",
-                 ".yml", ".ini", ".cfg", ".toml", ".html", ".htm", ".xml"}
+                 ".yml", ".ini", ".cfg", ".toml", ".html", ".htm", ".xml",
+                 # Subtitles are plain text and are often the only searchable
+                 # record of what was said in a video. 140 of them sat
+                 # unindexed here purely because the suffix was missing.
+                 ".srt", ".vtt", ".sub", ".ass"}
 CSV_SUFFIXES = {".csv", ".tsv"}
 PDF_SUFFIXES = {".pdf"}
 DOCX_SUFFIXES = {".docx"}
