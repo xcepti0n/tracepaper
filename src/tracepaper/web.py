@@ -2056,8 +2056,22 @@ def _status_tab(conn: sqlite3.Connection) -> str:
     # Pending enrichment is stated plainly rather than left to be discovered.
     if info["pending"]:
         out.append(f'<p class="hint"><span class="pill warn">pending</span> '
-                   f'{info["pending"]} item(s) awaiting full extraction. '
-                   f'already searchable by whatever text was indexed.</p>')
+                   f'{info["pending"]:,} file(s) have no searchable text yet. '
+                   f'They are findable by name.</p>')
+
+        # A total is not actionable. Whether it is scanned PDFs worth running
+        # OCR over, or videos that will never hold text, decides whether there
+        # is work to do at all.
+        formats = info.get("pending_formats") or []
+        if formats:
+            rows = "".join(
+                f'<tr><td><code>{_esc(f["suffix"])}</code></td>'
+                f'<td>{f["items"]:,}</td>'
+                f'<td><span class="pill">{_esc(f["reason"])}</span></td>'
+                f'<td class="hint">{_esc(f["detail"])}</td></tr>'
+                for f in formats)
+            out.append(f'<table><tr><th>Type</th><th>Files</th>'
+                       f'<th>Why</th><th>What it means</th></tr>{rows}</table>')
 
     embeddings = info["embeddings"]
     embedded = sum(embeddings["by_model"].values())

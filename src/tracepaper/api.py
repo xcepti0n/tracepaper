@@ -979,5 +979,58 @@ def _status_uncached(conn: sqlite3.Connection) -> dict[str, Any]:
             "SELECT COUNT(*) AS n FROM items WHERE deleted_at IS NULL "
             "AND extraction_status IN ('pending','partial')"),
         "queued_jobs": count("SELECT COUNT(*) AS n FROM jobs WHERE state='queued'"),
+        "pending_formats": _pending_formats(conn),
         "last_scan": dict(last_scan) if last_scan else None,
     }
+
+
+# Why a file might have no searchable text. The distinction matters because it
+# decides what to do: OCR is a job you can run, a missing extractor is a
+# package to install, and a format with no text in it is finished as it is.
+_PENDING_REASONS = {
+    ".pdf": ("needs OCR", "A scanned PDF is images of pages. Text comes from "
+                          "OCR, which has not reached it yet."),
+    ".jpg": ("needs OCR", "Text inside a picture is found by OCR."),
+    ".jpeg": ("needs OCR", "Text inside a picture is found by OCR."),
+    ".png": ("needs OCR", "Text inside a picture is found by OCR."),
+    ".heic": ("needs OCR", "Text inside a picture is found by OCR."),
+    ".tiff": ("needs OCR", "Text inside a picture is found by OCR."),
+    ".mp4": ("no text", "Video holds no text to index. Findable by name."),
+    ".mkv": ("no text", "Video holds no text to index. Findable by name."),
+    ".mov": ("no text", "Video holds no text to index. Findable by name."),
+    ".avi": ("no text", "Video holds no text to index. Findable by name."),
+    ".mp3": ("no text", "Audio holds no text to index. Findable by name."),
+    ".flac": ("no text", "Audio holds no text to index. Findable by name."),
+    ".zip": ("not opened", "Archives are not opened. Findable by name."),
+    ".iso": ("not opened", "Disc images are not opened. Findable by name."),
+    ".exe": ("no text", "Programs hold no text to index."),
+    ".dmg": ("not opened", "Disc images are not opened. Findable by name."),
+}
+
+
+def _pending_formats(conn: sqlite3.Connection, limit: int = 12) -> list[dict]:
+    """Which file types are waiting for text, and why.
+
+    "6,323 items pending" is a number nobody can act on. Whether that is
+    scanned PDFs worth running OCR over, or videos that will never have text,
+    is the difference between hours of work and nothing to do.
+    """
+    # Grouped in Python: SQLite has no reverse(), and the suffix of a path is
+    # awkward to express with instr/substr alone.
+    from collections import Counter
+
+    counts: Counter[str] = Counter()
+    for row in conn.execute(
+            "SELECT uri FROM items WHERE deleted_at IS NULL AND uri IS NOT NULL "
+            "AND extraction_status IN ('pending','partial')"):
+        name = str(row["uri"]).rpartition("/")[2]
+        counts[("." + name.rpartition(".")[2].lower()) if "." in name else ""] += 1
+
+    out = []
+    for suffix, total in counts.most_common(limit):
+        label, why = _PENDING_REASONS.get(
+            suffix, ("no extractor", "No handler for this type yet, so only "
+                                     "the file name is searchable."))
+        out.append({"suffix": suffix or "(no extension)", "items": int(total),
+                    "reason": label, "detail": why})
+    return out

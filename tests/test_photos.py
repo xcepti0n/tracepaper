@@ -489,3 +489,36 @@ def test_country_names_are_searchable_not_just_codes():
     assert COUNTRY_NAMES["US"] == "United States"
     # Codes map to a single name, never a list, or the tag would be ambiguous.
     assert all(isinstance(v, str) for v in COUNTRY_NAMES.values())
+
+
+def test_photo_results_are_ordered_by_relevance_not_date(conn, cfg, nas):
+    """SQL ordered only by created_at and truncated, so the newest photos came
+    back whatever was typed and the same handful appeared for every query. A
+    caption match must outrank a photo that merely shares a tag."""
+    from tracepaper.query.unified import UnifiedSearch
+
+    with conn:
+        for index, (name, caption) in enumerate((
+                ("old_match.jpg", "a dog running on a beach"),
+                ("new_nomatch.jpg", None))):
+            c = conn.execute(
+                "INSERT INTO items (kind, uri, title, created_at, "
+                "extraction_status) VALUES ('photo', ?, ?, ?, 'complete')",
+                (str(nas / name), name, f"20{20 + index}-01-01"))
+            item_id = c.lastrowid
+            conn.execute(
+                "INSERT INTO tags (item_id, namespace, value, source, "
+                "confidence) VALUES (?, 'object', 'dog', 'vision', 0.9)",
+                (item_id,))
+            if caption:
+                conn.execute(
+                    "INSERT INTO tags (item_id, namespace, value, source, "
+                    "confidence) VALUES (?, 'caption', ?, 'vlm', 0.5)",
+                    (item_id, caption))
+
+    photos = UnifiedSearch(conn).query("dog on a beach", semantic=False).photos
+
+    assert photos, "expected photo results"
+    # The older photo wins because its description matches, despite the other
+    # being newer.
+    assert photos[0]["title"] == "old_match.jpg"

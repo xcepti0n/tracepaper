@@ -1547,3 +1547,26 @@ def test_an_unmatched_photo_query_returns_nothing_not_documents(client):
 
     assert result["total"] == 0
     assert result["photos"] == []
+
+
+def test_status_says_which_formats_are_waiting_and_why(client):
+    """"6,323 items pending" is a number nobody can act on.
+
+    Scanned PDFs worth running OCR over and videos that will never hold text
+    are both "pending", and the difference decides whether there is any work
+    to do.
+    """
+    info = client.get("/api/status").json()
+
+    assert "pending_formats" in info
+    for entry in info["pending_formats"]:
+        assert entry["suffix"] and entry["items"] > 0
+        assert entry["reason"], "every type needs a stated reason"
+        assert entry["detail"], "and a plain-English explanation"
+
+
+def test_pending_reasons_distinguish_work_from_nothing_to_do():
+    from tracepaper.api import _PENDING_REASONS
+
+    assert _PENDING_REASONS[".pdf"][0] == "needs OCR", "a job you can run"
+    assert _PENDING_REASONS[".mp4"][0] == "no text", "nothing to be done"

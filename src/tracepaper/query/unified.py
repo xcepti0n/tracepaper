@@ -138,7 +138,7 @@ class UnifiedSearch:
             self._events(text, meaningful, result)
             self._entities(meaningful, result)
         if mode in ("everything", "photos"):
-            self._photos(meaningful, result)
+            self._photos(meaningful, result, limit=limit, offset=offset)
 
         if mode == "photos":
             # Photos are shown as a grid, not as passages.
@@ -341,7 +341,8 @@ class UnifiedSearch:
         return [int(r["item_id"])
                 for r in self.conn.execute(" ".join(sql), params).fetchall()]
 
-    def _photos(self, tokens: list[str], result: UnifiedResult) -> None:
+    def _photos(self, tokens: list[str], result: UnifiedResult,
+                limit: int = 60, offset: int = 0) -> None:
         """Photos matching tags in the query -- "photos from Goa in 2019".
 
         Every filter must match the same photo, so a year and a place narrow
@@ -414,13 +415,19 @@ class UnifiedSearch:
             arms.append(f"{base} AND i.id IN ({placeholders})")
             params.extend(caption_ids)
 
-        sql = " UNION ".join(arms) + " ORDER BY created_at DESC, id LIMIT 60"
+        # Fetch a wider slate than is shown, because the ordering that matters
+        # is relevance and SQL cannot compute it here: a caption match and a
+        # three-tag match are worth different amounts, and that is decided in
+        # Python just below. Ordering only by date in SQL and then truncating
+        # returned the newest 60 photos whatever was typed, which is why the
+        # same handful appeared for every query.
+        sql = " UNION ".join(arms) + " ORDER BY created_at DESC, id LIMIT 300"
         rows = self.conn.execute(sql, params).fetchall()
         caption_set = set(caption_ids)
         result.photo_filters = [f"{ns}={value}" for ns, value in matched]
         if caption_ids:
             result.photo_filters.append("description")
-        result.photos = [
+        photos = [
             {"item_id": int(r["id"]), "title": r["title"], "uri": r["uri"],
              "date": r["created_at"],
              # How well this photo answers the query, so it can compete with
@@ -431,3 +438,8 @@ class UnifiedSearch:
                  "ORDER BY namespace LIMIT 8", (r["id"],))]}
             for r in rows
         ]
+        # Best answer first, newest as the tie-break. A photo whose written
+        # description matches beats one that merely shares a tag, and without
+        # this the two were indistinguishable once SQL had sorted by date.
+        photos.sort(key=lambda p: (-p["score"], p["date"] or "", -p["item_id"]))
+        result.photos = photos[offset:offset + limit] if limit else photos
