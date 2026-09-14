@@ -135,6 +135,39 @@ th,td { text-align:left; padding:9px 13px; border-bottom:1px solid var(--line);
         font-size:14px; }
 th { background:var(--accent-soft); font-weight:600; font-size:13px; }
 tr:last-child td { border-bottom:0; }
+/* File browser. One table for folders and files together, the way every file
+   manager does it, because splitting them into two tables loses the sense of
+   being in a single place. */
+.fb { width:100%; border-collapse:collapse; background:var(--card);
+      border:1px solid var(--line); border-radius:9px; overflow:hidden; }
+.fb th { background:var(--accent-soft); font-weight:600; font-size:12px;
+         text-transform:uppercase; letter-spacing:.03em; color:var(--muted);
+         text-align:left; padding:8px 13px; border-bottom:1px solid var(--line); }
+.fb td { padding:0; border-bottom:1px solid var(--line); font-size:14px;
+         vertical-align:middle; }
+.fb tr:last-child td { border-bottom:0; }
+.fb tbody tr:hover { background:var(--accent-soft); }
+/* The whole name cell is the click target, not just the text. */
+.fb .nm a { display:flex; align-items:center; gap:9px; padding:9px 13px;
+            text-decoration:none; color:var(--fg); min-width:0; }
+.fb .nm a:hover .t { text-decoration:underline; color:var(--accent); }
+.fb .t { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fb .ic { flex:none; width:19px; text-align:center; font-size:15px;
+          line-height:1; }
+.fb .meta { padding:9px 13px; color:var(--muted); font-size:13px;
+            white-space:nowrap; }
+.fb .num { text-align:right; font-variant-numeric:tabular-nums; }
+.fb .act { padding:6px 13px; text-align:right; white-space:nowrap; }
+.fb .dir .t { font-weight:600; }
+.fb .tags { padding:9px 4px; white-space:nowrap; }
+/* Folders first, and a faint tint so the boundary reads without a header row. */
+.fb .dir { background:linear-gradient(90deg,var(--accent-soft) 0 3px,transparent 3px); }
+.fb-bar { display:flex; align-items:center; justify-content:space-between;
+          gap:12px; margin:0 0 10px; flex-wrap:wrap; }
+.fb-bar .sum { color:var(--muted); font-size:13px; }
+@media (max-width:640px) {
+  .fb .hide-sm { display:none; }
+}
 .pill { display:inline-block; padding:1px 7px; border-radius:20px; font-size:11px;
         background:var(--accent-soft); color:var(--accent); font-weight:600; }
 .pill.human { background:#2d5f4f; color:#fff; }
@@ -1114,54 +1147,102 @@ def _browse_tab(conn: sqlite3.Connection, query: str, path: str = "",
 
     folders = view["folders"]
     files = view["files"]
-    if not folders and not files:
-        out.append('<div class="empty"><b>Nothing indexed here.</b>'
-                   '<p class="hint">Either this folder is empty, or a scan '
-                   'has not reached it yet.</p></div>')
+    visible = files if show_code else [f for f in files if not f["is_code"]]
+    hidden = len(files) - len(visible)
 
-    if folders:
-        rows = []
-        for folder in folders:
-            marked = (f' <span class="pill">{_esc(folder["rule"])}</span>'
-                      if folder.get("rule") else "")
-            # Say when a folder is mostly code, since that is the thing worth
-            # acting on and the count alone does not show it.
-            mostly_code = ""
-            if folder["items"] and folder["code_items"] / folder["items"] > 0.6:
-                mostly_code = ('<span class="pill warn">mostly code</span>')
-            rows.append(
-                f'<tr><td><a href="/?tab=browse&amp;path='
-                f'{quote(folder["path"])}">{_esc(_short_name(folder["name"]))}</a>'
-                f'{marked}</td>'
-                f'<td>{folder["items"]:,}</td><td>{mostly_code}</td>'
-                f'<td><button type="button" class="ghost small" '
-                f'data-mark-code="{_esc(folder["path"])}">Mark as code</button>'
-                f'</td></tr>')
-        out.append('<h2>Folders</h2>')
-        out.append(f'<table><tr><th>Name</th><th>Files</th><th></th><th></th>'
-                   f'</tr>{"".join(rows)}</table>')
-
-    if files:
-        visible = files if show_code else [f for f in files if not f["is_code"]]
-        hidden = len(files) - len(visible)
-        rows = "".join(
-            f'<tr><td><a href="/file/{f["item_id"]}" target="_blank" '
-            f'rel="noopener">{_esc(f["name"])}</a></td>'
-            f'<td>{_human_size(f["size_bytes"])}</td>'
-            f'<td>{_esc(f["status"])}</td></tr>'
-            for f in visible)
-        out.append(f'<h2>Files <span class="count">{len(visible):,}</span></h2>')
+    if not folders and not visible:
         if hidden:
             params = urlencode({"tab": "browse", "path": view["path"] or "",
                                 "code": "1"})
-            out.append(f'<p class="hint">{hidden:,} code file(s) hidden. '
-                       f'<a href="/?{params}">Show them</a></p>')
-        if rows:
-            out.append(f'<table><tr><th>Name</th><th>Size</th><th>Indexed</th>'
-                       f'</tr>{rows}</table>')
-        if view["truncated"]:
-            out.append('<p class="hint">Showing the first few hundred. Use '
-                       'Search to find something specific.</p>')
+            out.append(f'<div class="empty"><b>Only code in this folder.</b>'
+                       f'<p class="hint">{hidden:,} code file(s) hidden. '
+                       f'<a href="/?{params}">Show them</a></p></div>')
+        else:
+            out.append('<div class="empty"><b>Nothing indexed here.</b>'
+                       '<p class="hint">Either this folder is empty, or a '
+                       'scan has not reached it yet.</p></div>')
+        out.append('<div id="browse_status" class="status"></div>')
+        out.append(_fields_panel(conn, query))
+        return "".join(out)
+
+    # One count line instead of two section headings, so the eye goes to the
+    # listing rather than to furniture.
+    counts = []
+    if folders:
+        counts.append(f'{len(folders):,} folder' + ("s" if len(folders) != 1 else ""))
+    if visible:
+        counts.append(f'{len(visible):,} file' + ("s" if len(visible) != 1 else ""))
+    out.append('<div class="fb-bar"><span class="sum">'
+               + ", ".join(counts) + '</span>')
+    if hidden:
+        params = urlencode({"tab": "browse", "path": view["path"] or "",
+                            "code": "1"})
+        out.append(f'<span class="sum">{hidden:,} code file(s) hidden. '
+                   f'<a href="/?{params}">Show them</a></span>')
+    elif show_code and files:
+        params = urlencode({"tab": "browse", "path": view["path"] or ""})
+        out.append(f'<span class="sum"><a href="/?{params}">Hide code</a></span>')
+    out.append('</div>')
+
+    rows: list[str] = []
+
+    # Folders first, as a file manager does, then files. Both in one table so
+    # the columns line up and the folder is plainly the same kind of thing.
+    for folder in folders:
+        marked = (f' <span class="pill">{_esc(folder["rule"])}</span>'
+                  if folder.get("rule") else "")
+        if folder["items"] and folder["code_items"] / folder["items"] > 0.6:
+            marked += ' <span class="pill warn">mostly code</span>'
+        inner = folder.get("subfolders") or 0
+        detail = f'{folder["items"]:,} file' + ("s" if folder["items"] != 1 else "")
+        if inner:
+            detail += f', {inner:,} folder' + ("s" if inner != 1 else "")
+        rows.append(
+            f'<tr class="dir">'
+            f'<td class="nm"><a href="/?tab=browse&amp;path='
+            f'{quote(folder["path"])}">'
+            f'<span class="ic">\U0001F4C1</span>'
+            f'<span class="t">{_esc(_short_name(folder["name"]))}</span></a></td>'
+            f'<td class="tags">{marked}</td>'
+            f'<td class="meta num hide-sm">{_esc(detail)}</td>'
+            f'<td class="meta num">{_human_size(folder.get("size_bytes"))}</td>'
+            f'<td class="meta hide-sm">'
+            f'{_esc(_short_date(folder.get("modified_at")))}</td>'
+            f'<td class="act"><button type="button" class="ghost small" '
+            f'data-mark-code="{_esc(folder["path"])}">Mark as code</button>'
+            f'</td></tr>')
+
+    for f in visible:
+        tags = ""
+        if f["is_code"]:
+            tags = '<span class="pill">code</span>'
+        elif f["status"] != "complete":
+            # Worth saying: these are findable by name but their text is not
+            # searchable yet.
+            tags = '<span class="pill warn">text pending</span>'
+        rows.append(
+            f'<tr>'
+            f'<td class="nm"><a href="/file/{f["item_id"]}" target="_blank" '
+            f'rel="noopener">'
+            f'<span class="ic">'
+            f'{_file_icon(f["name"], f.get("kind"), f["is_code"])}</span>'
+            f'<span class="t">{_esc(f["name"])}</span></a></td>'
+            f'<td class="tags">{tags}</td>'
+            f'<td class="meta num hide-sm"></td>'
+            f'<td class="meta num">{_human_size(f["size_bytes"])}</td>'
+            f'<td class="meta hide-sm">'
+            f'{_esc(_short_date(f.get("modified_at")))}</td>'
+            f'<td class="act"></td></tr>')
+
+    out.append(
+        '<table class="fb"><thead><tr><th>Name</th><th></th>'
+        '<th class="num hide-sm">Contents</th><th class="num">Size</th>'
+        '<th class="hide-sm">Modified</th><th></th></tr></thead><tbody>'
+        + "".join(rows) + '</tbody></table>')
+
+    if view["truncated"]:
+        out.append('<p class="hint">Showing the first few hundred. Use '
+                   'Search to find something specific.</p>')
 
     out.append('<div id="browse_status" class="status"></div>')
     out.append(_fields_panel(conn, query))
@@ -1189,6 +1270,60 @@ def _breadcrumbs(path: str | None, roots: list[str]) -> str:
             parts.append(f'<a href="/?tab=browse&amp;path={quote(walked)}">'
                          f'{_esc(segment)}</a>')
     return f'<nav class="crumbs">{" / ".join(parts)}</nav>'
+
+
+# A glyph per file type. Emoji rather than an icon font or SVG sprite: no
+# extra request, no build step, and it survives the copy-paste of this file.
+_ICONS = (
+    (("pdf",), "\U0001F4C4"),
+    (("doc", "docx", "odt", "rtf", "pages"), "\U0001F4DD"),
+    (("xls", "xlsx", "csv", "ods", "numbers"), "\U0001F4CA"),
+    (("ppt", "pptx", "odp", "key"), "\U0001F4D1"),
+    (("jpg", "jpeg", "png", "gif", "heic", "webp", "tif", "tiff", "bmp",
+      "svg", "raw", "dng", "cr2", "nef"), "\U0001F5BC\uFE0F"),
+    (("mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv"), "\U0001F3AC"),
+    (("mp3", "wav", "flac", "m4a", "aac", "ogg"), "\U0001F3B5"),
+    (("zip", "tar", "gz", "bz2", "7z", "rar", "xz"), "\U0001F5DC\uFE0F"),
+    (("txt", "md", "rst", "log"), "\U0001F4C3"),
+    (("epub", "mobi", "azw3"), "\U0001F4D5"),
+    (("ttf", "otf", "woff", "woff2"), "\U0001F524"),
+)
+
+
+def _file_icon(name: str, kind: str | None = None, is_code: bool = False) -> str:
+    """A glyph for this file, chosen on extension.
+
+    `is_code` wins over the extension, since the point of the code marking is
+    to make build output and source obvious at a glance in a folder that also
+    holds real documents.
+    """
+    if is_code:
+        return "\u2699\uFE0F"
+    suffix = name.rpartition(".")[2].lower() if "." in name else ""
+    for suffixes, glyph in _ICONS:
+        if suffix in suffixes:
+            return glyph
+    if kind == "photo":
+        return "\U0001F5BC\uFE0F"
+    return "\U0001F4C4"
+
+
+def _short_date(value: str | None) -> str:
+    """`2026-09-14T03:59:28` as `14 Sep 2026`, and "" for anything unparseable.
+
+    Dates come from the filesystem via the scanner, so the format is whatever
+    was stored. Anything unexpected prints nothing rather than raising.
+    """
+    if not value:
+        return ""
+    try:
+        from datetime import datetime
+
+        text = str(value).strip().replace("Z", "+00:00")
+        stamp = datetime.fromisoformat(text)
+    except (ValueError, TypeError):
+        return str(value)[:10]
+    return f"{stamp.day} {stamp:%b %Y}"
 
 
 def _short_name(name: str) -> str:

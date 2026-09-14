@@ -1254,8 +1254,11 @@ def test_browse_lists_folders(browsable, nas, conn):
     from tracepaper.web import _browse_tab
 
     page = _browse_tab(conn, "", str(nas))
-    assert "<h2>Folders" in page
-    assert ">Personal</a>" in page and ">Code</a>" in page
+    assert 'class="fb"' in page, "the listing is a file-browser table"
+    assert ">Personal<" in page and ">Code<" in page
+    # Folders are visibly folders, not just rows of text.
+    assert "\U0001F4C1" in page, "folder rows need a folder icon"
+    assert "2 folders" in page, "the count line replaces the section headings"
 
 
 def test_browse_hides_code_files_until_asked(browsable, nas, conn):
@@ -1302,3 +1305,53 @@ def test_a_result_path_links_into_browse(browsable, conn):
     page = render_page(conn, query="pay date", tab="search", semantic=False)
     assert 'tab=browse&amp;path=' in page, \
         "the folder under a result should be clickable"
+
+
+def test_browse_shows_size_and_date_like_a_file_manager(browsable, nas, conn):
+    """A listing without size or a date is a list of names, not a browser."""
+    from tracepaper.web import _browse_tab
+
+    page = _browse_tab(conn, "", str(nas / "Personal"))
+
+    assert ">Size<" in page and ">Modified<" in page
+    # Folder rows carry the same columns as file rows, which is the point of
+    # putting both in one table.
+    assert 'class="fb"' in page
+
+
+def test_browse_rolls_folder_totals_up(browsable, nas, conn):
+    """A folder's size and date come from what is inside it."""
+    from tracepaper import browse as browse_module
+
+    view = browse_module.listing(conn, [str(nas)], str(nas))
+    folders = {f["name"]: f for f in view["folders"]}
+
+    assert folders, "expected folders directly under the root"
+    for folder in folders.values():
+        assert "size_bytes" in folder and "modified_at" in folder
+        assert "subfolders" in folder
+    assert any(f["size_bytes"] > 0 for f in folders.values()), (
+        "a folder holding indexed files should report a non-zero size")
+
+
+def test_file_icons_distinguish_types():
+    from tracepaper.web import _file_icon
+
+    pdf = _file_icon("statement.pdf")
+    photo = _file_icon("IMG_4821.jpg")
+    sheet = _file_icon("budget.xlsx")
+
+    assert len({pdf, photo, sheet}) == 3, "each type needs its own glyph"
+    # Code wins over the extension: the whole point is spotting build output
+    # in a folder that also holds real documents.
+    assert _file_icon("LICENSE", is_code=True) != _file_icon("LICENSE")
+
+
+def test_dates_render_readably_and_never_raise():
+    from tracepaper.web import _short_date
+
+    assert _short_date("2026-09-14T03:59:28") == "14 Sep 2026"
+    assert _short_date(None) == ""
+    # Whatever the scanner stored, a listing must not blow up on it.
+    for bad in ("", "not-a-date", "0000", 12345):
+        _short_date(bad)

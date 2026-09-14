@@ -68,8 +68,8 @@ def listing(conn: sqlite3.Connection, roots: list[str],
 
     prefix = path + "/"
     rows = conn.execute(
-        "SELECT id, uri, title, kind, size_bytes, extraction_status "
-        "FROM items WHERE deleted_at IS NULL AND uri LIKE ? || '%' "
+        "SELECT id, uri, title, kind, size_bytes, extraction_status, "
+        "modified_at FROM items WHERE deleted_at IS NULL AND uri LIKE ? || '%' "
         "ORDER BY uri LIMIT ?", (prefix, limit * 40)).fetchall()
 
     folders: dict[str, dict] = {}
@@ -81,8 +81,18 @@ def listing(conn: sqlite3.Connection, roots: list[str],
             name = rest.split("/", 1)[0]
             entry = folders.setdefault(
                 name, {"name": name, "path": prefix + name, "items": 0,
-                       "code_items": 0})
+                       "code_items": 0, "size_bytes": 0, "modified_at": None,
+                       "folders": set()})
             entry["items"] += 1
+            entry["size_bytes"] += int(row["size_bytes"] or 0)
+            # A folder's date is the newest thing in it, which is what a file
+            # manager shows and what tells you whether it is still in use.
+            if row["modified_at"] and (entry["modified_at"] is None
+                                       or row["modified_at"] > entry["modified_at"]):
+                entry["modified_at"] = row["modified_at"]
+            deeper = rest.split("/", 2)
+            if len(deeper) > 2:
+                entry["folders"].add(deeper[1])
             if modes.is_code(row["uri"]):
                 entry["code_items"] += 1
         elif len(files) < limit:
@@ -93,11 +103,13 @@ def listing(conn: sqlite3.Connection, roots: list[str],
                 "kind": row["kind"],
                 "size_bytes": row["size_bytes"],
                 "status": row["extraction_status"],
+                "modified_at": row["modified_at"],
                 "is_code": modes.is_code(row["uri"]),
             })
 
     for entry in folders.values():
         entry["rule"] = _rule_for(conn, entry["path"])
+        entry["subfolders"] = len(entry.pop("folders"))
 
     parent = str(PurePosixPath(path).parent)
     if _root_for(roots, path) == path:
@@ -114,11 +126,14 @@ def listing(conn: sqlite3.Connection, roots: list[str],
 
 
 def _folder_entry(conn: sqlite3.Connection, path: str, name: str) -> dict:
-    total = conn.execute(
-        "SELECT COUNT(*) AS n FROM items WHERE deleted_at IS NULL "
-        "AND uri LIKE ? || '/%'", (path.rstrip("/"),)).fetchone()["n"]
-    return {"name": name, "path": path.rstrip("/"), "items": int(total),
-            "code_items": 0, "rule": _rule_for(conn, path)}
+    row = conn.execute(
+        "SELECT COUNT(*) AS n, SUM(size_bytes) AS bytes, "
+        "MAX(modified_at) AS newest FROM items WHERE deleted_at IS NULL "
+        "AND uri LIKE ? || '/%'", (path.rstrip("/"),)).fetchone()
+    return {"name": name, "path": path.rstrip("/"), "items": int(row["n"]),
+            "code_items": 0, "rule": _rule_for(conn, path),
+            "size_bytes": int(row["bytes"] or 0), "modified_at": row["newest"],
+            "subfolders": 0}
 
 
 def _rule_for(conn: sqlite3.Connection, path: str) -> str | None:
