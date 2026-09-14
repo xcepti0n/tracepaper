@@ -416,7 +416,16 @@ configure_service() {
   # roots is empty and there is no backup_dir: nothing is mounted yet.
   # add-nas.sh fills both in when you attach storage, and the Settings page
   # validates whatever you point it at.
-  inct "cat >/etc/tracepaper.toml <<'EOF'
+  inct "install -d -o tracepaper -g tracepaper -m 750 /etc/tracepaper
+# An install over a version that kept the config directly in /etc. Move it
+# first, and before the defaults below are written, so real settings are never
+# replaced by an empty config.
+if [ -f /etc/tracepaper.toml ] && [ ! -e /etc/tracepaper/tracepaper.toml ]; then
+  mv /etc/tracepaper.toml /etc/tracepaper/tracepaper.toml
+fi
+# Re-running the installer must not wipe the settings already in place.
+if [ ! -e /etc/tracepaper/tracepaper.toml ]; then
+cat >/etc/tracepaper/tracepaper.toml <<'EOF'
 # Written by deploy/proxmox-install.sh. Editable from the Settings page in the
 # web UI, which validates every path before saving.
 #
@@ -448,21 +457,13 @@ model = \"gemma4:e4b-mlx\"
 [enrich]
 load_threshold = 0.7
 EOF
-chown root:tracepaper /etc/tracepaper.toml
-chmod 640 /etc/tracepaper.toml
-# Settings are editable from the web UI, and saving replaces the file rather
-# than writing into it, which needs write permission on the DIRECTORY. Giving
-# the service group write access to all of /etc would be indefensible, so the
-# config lives in its own directory with /etc/tracepaper.toml as a symlink for
-# anyone used to finding it there.
-install -d -o root -g tracepaper -m 775 /etc/tracepaper
-if [ ! -L /etc/tracepaper.toml ]; then
-  mv /etc/tracepaper.toml /etc/tracepaper/tracepaper.toml
-  ln -sfn /etc/tracepaper/tracepaper.toml /etc/tracepaper.toml
 fi
-chown root:tracepaper /etc/tracepaper/tracepaper.toml
-chmod 660 /etc/tracepaper/tracepaper.toml"
-  msg_ok "Configuration written to /etc/tracepaper.toml"
+# The service rewrites this when settings are saved from the web UI, so it is
+# owned by the service user rather than root. systemd recreates the directory
+# on every start via ConfigurationDirectory=.
+chown tracepaper:tracepaper /etc/tracepaper/tracepaper.toml
+chmod 640 /etc/tracepaper/tracepaper.toml"
+  msg_ok "Configuration written to /etc/tracepaper/tracepaper.toml"
 
   msg_info "Installing systemd units…"
   # Prefer the units from the checkout, so there is one source of truth.
@@ -602,14 +603,14 @@ finish() {
   echo
   echo "  Container : $CTID ($HOSTNAME_)"
   echo "  Index     : /var/lib/tracepaper/index.db  (local disk, never the NAS)"
-  echo "  Config    : /etc/tracepaper.toml"
+  echo "  Config    : /etc/tracepaper/tracepaper.toml"
   echo "  Documents : none yet — attach storage below"
   echo
   echo "  Logs      : pct exec $CTID -- journalctl -u tracepaper -f"
   echo "  Restart   : pct exec $CTID -- systemctl restart tracepaper"
   echo "  Scan now  : pct exec $CTID -- systemctl start --no-block tracepaper-scan"
   echo "  Scan log  : pct exec $CTID -- journalctl -u tracepaper-scan -f"
-  echo "  Status    : pct exec $CTID -- sudo -u tracepaper /opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml status"
+  echo "  Status    : pct exec $CTID -- sudo -u tracepaper /opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper/tracepaper.toml status"
   echo
   echo "  Next — attach the folder you want indexed. From this host:"
   echo

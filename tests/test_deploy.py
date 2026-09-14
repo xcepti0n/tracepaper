@@ -719,9 +719,9 @@ def test_web_service_does_not_reach_the_network_for_the_model():
 
 
 def test_saving_writes_through_a_symlink_not_over_it(tmp_path):
-    """/etc/tracepaper.toml is a symlink into a directory the service can
-    write. Replacing the link itself would leave a root-owned file in /etc and
-    break every save after the first."""
+    """Nothing ships a symlinked config now, but an admin may well point the
+    config at one. Replacing the link instead of its target would move the
+    file out from under them."""
     from tracepaper import settings as settings_module
 
     real_dir = tmp_path / "etc" / "tracepaper"
@@ -752,3 +752,34 @@ def test_saving_keeps_the_file_mode(tmp_path):
                          validate_paths=False)
 
     assert config.stat().st_mode & 0o777 == 0o660
+
+
+def test_the_service_can_rewrite_its_own_config():
+    """Settings are editable from the web UI, so the service has to be able to
+    replace its config file. That needs write permission on the directory, not
+    the file, and /etc itself must never be that directory.
+
+    ConfigurationDirectory= is systemd's own mechanism for this: it creates the
+    directory owned by User= before ExecStart, on every start. Earlier attempts
+    at this used a symlink from /etc/tracepaper.toml, which os.replace would
+    have turned back into a root-owned regular file on the first save.
+    """
+    unit = (DEPLOY / "tracepaper.service").read_text()
+
+    assert "ConfigurationDirectory=tracepaper" in unit
+    # The config must live in that directory, not directly in /etc.
+    assert "--config /etc/tracepaper/tracepaper.toml" in unit
+    assert "--config /etc/tracepaper.toml" not in unit
+
+
+def test_the_installer_never_clobbers_existing_settings():
+    """Re-running the installer, or installing over a version that kept the
+    config in /etc, must not replace real settings with an empty default."""
+    script = (DEPLOY / "proxmox-install.sh").read_text()
+
+    assert "if [ ! -e /etc/tracepaper/tracepaper.toml ]; then" in script, (
+        "the default config must only be written when none exists")
+    assert "mv /etc/tracepaper.toml /etc/tracepaper/tracepaper.toml" in script, (
+        "an older install keeps its config directly in /etc")
+    # No symlink: the unit passes --config, so the path is just a setting.
+    assert "ln -sfn" not in script

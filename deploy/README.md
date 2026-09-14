@@ -298,7 +298,7 @@ restart, not a reservation.
 | Bind-mounts documents `ro` | Read-only at both levels — the kernel enforces NFR-7 |
 | Bind-mounts backups `rw` | The only state that cannot be regenerated |
 | Installs Python + tesseract | OCR for screenshots and scanned PDFs |
-| Writes `/etc/tracepaper.toml` | Index on local disk, never the NAS |
+| Writes `/etc/tracepaper/tracepaper.toml` | Index on local disk, never the NAS |
 | Enables service + 2 timers | Hourly scan, nightly enrichment |
 
 Nothing is indexed when it finishes. Start the first scan when you are ready to
@@ -397,7 +397,7 @@ The rest is easier from a shell:
 ```bash
 # Health and shape of the index
 pct exec <CTID> -- sudo -u tracepaper /opt/tracepaper/.venv/bin/tracepaper \
-  --config /etc/tracepaper.toml status
+  --config /etc/tracepaper/tracepaper.toml status
 
 # Logs
 pct exec <CTID> -- journalctl -u tracepaper -f
@@ -408,7 +408,7 @@ pct exec <CTID> -- systemctl list-timers 'tracepaper*'
 
 # Back up the irreplaceable layer by hand
 pct exec <CTID> -- sudo -u tracepaper /opt/tracepaper/.venv/bin/tracepaper \
-  --config /etc/tracepaper.toml backup /mnt/nas/backups/tracepaper/manual.json
+  --config /etc/tracepaper/tracepaper.toml backup /mnt/nas/backups/tracepaper/manual.json
 ```
 
 **"Scan aborted, the share is probably not mounted."** Working as intended:
@@ -477,7 +477,7 @@ WRITE_SHARE=/volume1/backups/tracepaper
 DOCS_MOUNT=/mnt/nas/documents               # where it lands in the container
 BACKUP_MOUNT=/mnt/nas/backups/tracepaper
 NFS_VERS=4.1                                # 3 for older DSM
-CONFIG=/etc/tracepaper.toml
+CONFIG=/etc/tracepaper/tracepaper.toml
 ```
 
 ---

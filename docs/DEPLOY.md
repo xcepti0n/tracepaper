@@ -162,7 +162,7 @@ After=network-online.target remote-fs.target
 [Service]
 User=tracepaper
 WorkingDirectory=/opt/tracepaper
-ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml serve --host 0.0.0.0
+ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper/tracepaper.toml serve --host 0.0.0.0
 Restart=on-failure
 
 # The service needs to write only its own index directory.
@@ -189,8 +189,8 @@ After=remote-fs.target
 [Service]
 Type=oneshot
 User=tracepaper
-ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml scan --index --embed
-ExecStartPost=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml backup /mnt/nas/backups/tracepaper-human-layer.json
+ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper/tracepaper.toml scan --index --embed
+ExecStartPost=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper/tracepaper.toml backup /mnt/nas/backups/tracepaper-human-layer.json
 ```
 
 ```ini
@@ -226,7 +226,7 @@ Type=oneshot
 User=tracepaper
 Nice=19
 IOSchedulingClass=idle
-ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml enrich --wait
+ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper/tracepaper.toml enrich --wait
 ```
 
 ```ini

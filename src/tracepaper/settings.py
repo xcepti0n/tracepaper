@@ -114,11 +114,10 @@ def save(path: Path | str, *, roots: list[str], db_path: str,
 def _write_atomic(path: Path, text: str) -> None:
     """Replace the file in one step, so a crash cannot truncate the config.
 
-    Writes through a symlink rather than over it. /etc/tracepaper.toml is a
-    link into a directory the service can write; replacing the link itself
-    would leave a root-owned file in /etc and break every save after the
-    first. The temp file must also land in the directory the real file lives
-    in, since os.replace cannot cross filesystems.
+    Writes through a symlink rather than over it, so pointing the config at a
+    link does not silently replace the link with a regular file. The temp file
+    lands in the directory the real file lives in, since os.replace cannot
+    cross filesystems.
     """
     path = Path(path)
     if path.is_symlink():

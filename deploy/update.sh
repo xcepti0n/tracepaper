@@ -13,7 +13,17 @@ set -Eeuo pipefail
 
 APP_DIR="${APP_DIR:-/opt/tracepaper}"
 UNIT_DIR="/etc/systemd/system"
-CONFIG="${CONFIG:-/etc/tracepaper.toml}"
+# The config moved into its own directory so the service can rewrite it
+# from the Settings page. Fall back to the old path on a container that
+# has not been re-installed since.
+CONFIG="${CONFIG:-}"
+if [[ -z "$CONFIG" ]]; then
+  if [[ -f /etc/tracepaper/tracepaper.toml ]]; then
+    CONFIG=/etc/tracepaper/tracepaper.toml
+  else
+    CONFIG=/etc/tracepaper.toml
+  fi
+fi
 VENV="$APP_DIR/.venv"
 
 RD=$'\033[01;31m'; GN=$'\033[1;92m'; YW=$'\033[33m'; BL=$'\033[36m'; CL=$'\033[m'

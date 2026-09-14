@@ -24,7 +24,20 @@ User=tracepaper
 Group=tracepaper
 
 WorkingDirectory=/opt/tracepaper
-ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml serve --host 0.0.0.0 --port 8823
+
+# Settings are editable from the web UI, so the service has to be able to
+# rewrite its own config. Replacing a file needs write permission on the
+# DIRECTORY holding it, and granting that on /etc would be indefensible, so the
+# config lives in a directory of its own.
+#
+# ConfigurationDirectory is systemd's own answer to this: it creates
+# /etc/tracepaper owned by User= with the mode below, on every start, before
+# ExecStart. No symlink, no chown in an installer, and nothing to repair if the
+# directory is missing.
+ConfigurationDirectory=tracepaper
+ConfigurationDirectoryMode=0750
+
+ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper/tracepaper.toml serve --host 0.0.0.0 --port 8823
 
 Restart=always
 RestartSec=3

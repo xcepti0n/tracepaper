@@ -64,7 +64,17 @@ SMB_CREDENTIALS="${SMB_CREDENTIALS:-/etc/samba/tracepaper.cred}"
 SMB_VERS="${SMB_VERS:-3.0}"
 BACKUP_MOUNT="${BACKUP_MOUNT:-/mnt/nas/backups/tracepaper}"
 NFS_VERS="${NFS_VERS:-4.1}"
-CONFIG="${CONFIG:-/etc/tracepaper.toml}"
+# The config moved into its own directory so the service can rewrite it
+# from the Settings page. Fall back to the old path on a container that
+# has not been re-installed since.
+CONFIG="${CONFIG:-}"
+if [[ -z "$CONFIG" ]]; then
+  if [[ -f /etc/tracepaper/tracepaper.toml ]]; then
+    CONFIG=/etc/tracepaper/tracepaper.toml
+  else
+    CONFIG=/etc/tracepaper.toml
+  fi
+fi
 
 RD=$'\033[01;31m'; GN=$'\033[1;92m'; YW=$'\033[33m'; BL=$'\033[36m'; CL=$'\033[m'
 msg_info()  { echo -e " ${BL}➜${CL} $1"; }
