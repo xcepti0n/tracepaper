@@ -1570,3 +1570,29 @@ def test_pending_reasons_distinguish_work_from_nothing_to_do():
 
     assert _PENDING_REASONS[".pdf"][0] == "needs OCR", "a job you can run"
     assert _PENDING_REASONS[".mp4"][0] == "no text", "nothing to be done"
+
+
+def test_pending_counts_only_work_worth_doing(client, conn, nas):
+    """A pending count that includes code you hid and video that will never
+    hold text can never reach zero, and cannot be acted on.
+
+    The real index reported 6,323 pending, of which roughly half was source
+    code the user had already excluded from search.
+    """
+    with conn:
+        for name, status in (("song.mp3", "pending"),
+                             ("clip.mp4", "pending"),
+                             ("scan.pdf", "pending")):
+            conn.execute(
+                "INSERT INTO items (kind, uri, title, extraction_status) "
+                "VALUES ('document', ?, ?, ?)",
+                (str(nas / name), name, status))
+
+    info = client.get("/api/status").json()
+
+    assert info["pending_all"] >= info["pending"], (
+        "the unfiltered total is never smaller than the actionable one")
+    # Audio and video hold no text, so they are not work.
+    from tracepaper.api import _NO_TEXT_SUFFIXES
+    assert ".mp3" in _NO_TEXT_SUFFIXES and ".mp4" in _NO_TEXT_SUFFIXES
+    assert ".pdf" not in _NO_TEXT_SUFFIXES, "a PDF can always yield text"

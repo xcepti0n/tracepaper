@@ -2055,9 +2055,15 @@ def _status_tab(conn: sqlite3.Connection) -> str:
 
     # Pending enrichment is stated plainly rather than left to be discovered.
     if info["pending"]:
+        skipped = max(0, int(info.get("pending_all") or 0)
+                      - int(info["pending"]))
+        note = ""
+        if skipped:
+            note = (f' A further {skipped:,} are code, or formats that hold '
+                    f'no text, so they need nothing.')
         out.append(f'<p class="hint"><span class="pill warn">pending</span> '
                    f'{info["pending"]:,} file(s) have no searchable text yet. '
-                   f'They are findable by name.</p>')
+                   f'They are findable by name.{note}</p>')
 
         # A total is not actionable. Whether it is scanned PDFs worth running
         # OCR over, or videos that will never hold text, decides whether there

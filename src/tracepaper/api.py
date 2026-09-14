@@ -974,8 +974,12 @@ def _status_uncached(conn: sqlite3.Connection) -> dict[str, Any]:
         "events": count("SELECT COUNT(*) AS n FROM events"),
         "entities": count("SELECT COUNT(*) AS n FROM entities"),
         "embeddings": embed.stats(conn),
-        # Pending work is surfaced, never silently missing (NFR-4).
-        "pending": count(
+        # Pending work is surfaced, never silently missing (NFR-4), but only
+        # work that is actually wanted. Counting code you marked as hidden, and
+        # video that will never hold text, gives a number that can never reach
+        # zero and cannot be acted on: 6,323 "pending" was half source code.
+        "pending": _pending_wanted(conn),
+        "pending_all": count(
             "SELECT COUNT(*) AS n FROM items WHERE deleted_at IS NULL "
             "AND extraction_status IN ('pending','partial')"),
         "queued_jobs": count("SELECT COUNT(*) AS n FROM jobs WHERE state='queued'"),
@@ -1006,6 +1010,40 @@ _PENDING_REASONS = {
     ".exe": ("no text", "Programs hold no text to index."),
     ".dmg": ("not opened", "Disc images are not opened. Findable by name."),
 }
+
+
+# Types that will never yield text, so they are finished as they are rather
+# than waiting for anything.
+_NO_TEXT_SUFFIXES = {
+    ".mp3", ".mp4", ".mkv", ".mov", ".avi", ".wav", ".flac", ".m4a", ".aac",
+    ".ogg", ".wmv", ".m4v", ".zip", ".iso", ".dmg", ".exe", ".stl", ".gcode",
+    ".ttf", ".otf", ".woff", ".woff2",
+}
+
+
+def _pending_wanted(conn: sqlite3.Connection) -> int:
+    """Files still waiting for text that anyone would actually want indexed.
+
+    Excludes anything hidden by a rule, anything the classifier calls code, and
+    formats that hold no text. What is left is real work.
+    """
+    from .query import modes
+    from . import rules as rules_module
+
+    total = 0
+    for row in conn.execute(
+            "SELECT uri FROM items WHERE deleted_at IS NULL AND uri IS NOT NULL "
+            "AND extraction_status IN ('pending','partial')"):
+        uri = str(row["uri"])
+        name = uri.rpartition("/")[2]
+        suffix = ("." + name.rpartition(".")[2].lower()) if "." in name else ""
+        if suffix in _NO_TEXT_SUFFIXES or modes.is_code(uri):
+            continue
+        if (rules_module.is_ruled(conn, uri, "code")
+                or rules_module.is_ruled(conn, uri, "hide")):
+            continue
+        total += 1
+    return total
 
 
 def _pending_formats(conn: sqlite3.Connection, limit: int = 12) -> list[dict]:
