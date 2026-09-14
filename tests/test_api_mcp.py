@@ -1523,3 +1523,27 @@ def test_an_unwritable_config_explains_itself(populated, cfg, tmp_path):
         assert str(config_file) in result["problems"][0]
     finally:
         locked.chmod(0o700)
+
+
+def test_the_api_can_search_photos_not_only_documents(client):
+    """Photos match on tags and captions, not passage text, so a document
+    search cannot reach them however it is phrased.
+
+    The API had no mode parameter at all, so mode=photos was silently ignored
+    and document hits came back. That made "no photos matched" impossible to
+    tell apart from "photos were never searched", and it sent me chasing a
+    phantom gap in geotagging.
+    """
+    result = client.get("/api/search?q=beach&mode=photos").json()
+
+    assert result["mode"] == "photos"
+    assert "photos" in result, "photo results come back under their own key"
+
+
+def test_an_unmatched_photo_query_returns_nothing_not_documents(client):
+    """The bug that hid the real answer: a nonsense place name returned 18
+    document hits, which read as though photos existed for it."""
+    result = client.get("/api/search?q=zzqqxxnonsenseplace&mode=photos").json()
+
+    assert result["total"] == 0
+    assert result["photos"] == []

@@ -240,14 +240,35 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def api_search(q: str = Query(..., min_length=1), limit: int = 20,
                    offset: int = 0, kind: str | None = None,
                    semantic: bool = True,
-                   code: str = "exclude") -> dict[str, Any]:
+                   code: str = "exclude",
+                   mode: str = "documents") -> dict[str, Any]:
+        """Search. `mode` mirrors the web UI: documents, photos, code, or
+        everything.
+
+        Photos are their own arm: they match on tags and captions rather than
+        passage text, so a document search cannot reach them however it is
+        phrased. Without this the API silently ignored mode=photos and returned
+        document hits, which made "no photos matched" indistinguishable from
+        "photos were never searched".
+        """
         conn = open_connection()
         try:
+            if mode == "photos":
+                from .query.unified import UnifiedSearch
+
+                found = UnifiedSearch(conn).query(
+                    q, limit=limit, offset=offset, semantic=semantic,
+                    mode="photos")
+                return {"query": q, "mode": "photos",
+                        "total": len(found.photos), "photos": found.photos,
+                        "hits": []}
+
             response = SearchEngine(conn).search(
                 q, limit=limit, offset=offset, kind=kind, semantic=semantic,
                 code=code)
             return {
                 "query": response.query,
+                "mode": mode,
                 "total": response.total,
                 "hits": [
                     {
