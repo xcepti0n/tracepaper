@@ -52,8 +52,13 @@ _load_error: str | None = None
 DEFAULT_CACHE_DIR = "/var/lib/tracepaper/hf-cache"
 
 
-def cache_dir() -> str:
-    """The model cache directory, preferring an explicit environment setting.
+def ensure_cache_dir() -> str:
+    """Make sure the model cache is a directory we can actually write.
+
+    Returns the path, and exports it so every library in the chain agrees:
+    huggingface_hub reads HF_HOME, torch.hub reads HOME, and sentence
+    transformers reads SENTENCE_TRANSFORMERS_HOME. Setting them here means a
+    unit missing one still works.
 
     Falls back to a temporary directory when the configured one cannot be
     written, so a bad deployment degrades to a slow start rather than to
@@ -62,9 +67,23 @@ def cache_dir() -> str:
     import os
     import tempfile
 
-    for candidate in (os.environ.get("TRACEPAPER_MODEL_CACHE"),
-                      os.environ.get("HF_HOME"),
-                      DEFAULT_CACHE_DIR):
+    resolved = _first_writable(
+        os.environ.get("TRACEPAPER_MODEL_CACHE"),
+        os.environ.get("HF_HOME"),
+        DEFAULT_CACHE_DIR)
+    if resolved is None:
+        resolved = str(Path(tempfile.gettempdir()) / "tracepaper-models")
+        Path(resolved).mkdir(parents=True, exist_ok=True)
+        log.warning("falling back to %s for the model cache; it will not "
+                    "survive a reboot, so the model is re-downloaded", resolved)
+    os.environ.setdefault("HF_HOME", resolved)
+    return resolved
+
+
+def _first_writable(*candidates: str | None) -> str | None:
+    """The first candidate directory that exists, or can be made, and is
+    writable. None when every one of them fails."""
+    for candidate in candidates:
         if not candidate:
             continue
         try:
@@ -76,11 +95,7 @@ def cache_dir() -> str:
         except OSError:
             log.warning("model cache %s is not writable, trying the next one",
                         candidate)
-    fallback = Path(tempfile.gettempdir()) / "tracepaper-models"
-    fallback.mkdir(parents=True, exist_ok=True)
-    log.warning("falling back to %s for the model cache; it will not survive "
-                "a reboot, so the model is re-downloaded", fallback)
-    return str(fallback)
+    return None
 
 # An embedding model is not inference: it is a deterministic function from text
 # to a vector, and the same query embeds identically forever. So it IS allowed
@@ -158,9 +173,17 @@ def load_model(model_id: str = DEFAULT_MODEL, *, force: bool = False):
         return None
     try:
         from sentence_transformers import SentenceTransformer
-        # Explicit, so this does not depend on which cache variable each
-        # library in the chain happens to honour.
-        model = SentenceTransformer(model_id, cache_folder=cache_dir())
+        # Deliberately NOT passing cache_folder. HF_HOME is a cache ROOT whose
+        # models live under HF_HOME/hub, while cache_folder names a directory
+        # holding model folders directly. Passing the former as the latter sent
+        # the loader looking one level too high, so an already-downloaded model
+        # was missed and, with HF_HUB_OFFLINE set, the load failed outright.
+        #
+        # The env vars are the supported mechanism and the ones every library
+        # in the chain reads. What they needed was a WRITABLE target, which is
+        # what ensure_cache_dir() and HOME in the unit provide.
+        ensure_cache_dir()
+        model = SentenceTransformer(model_id)
         _model_cache[model_id] = model
         _load_error = None
         return model

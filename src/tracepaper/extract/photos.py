@@ -57,6 +57,29 @@ def extract_tags(path: Path) -> PhotoTags:
     return result
 
 
+# ISO 3166-1 alpha-2 to the name people actually type. Deliberately a literal
+# table rather than a new dependency: a country list is static, and pycountry
+# would pull in a large data package to answer one question.
+#
+# Not exhaustive by design. An unlisted code still stores the code itself, so
+# nothing is lost; add a row when a country turns up in a real library.
+COUNTRY_NAMES = {
+    "AE": "United Arab Emirates", "AR": "Argentina", "AT": "Austria",
+    "AU": "Australia", "BD": "Bangladesh", "BE": "Belgium", "BR": "Brazil",
+    "CA": "Canada", "CH": "Switzerland", "CN": "China", "CZ": "Czechia",
+    "DE": "Germany", "DK": "Denmark", "EG": "Egypt", "ES": "Spain",
+    "FI": "Finland", "FR": "France", "GB": "United Kingdom", "GR": "Greece",
+    "HK": "Hong Kong", "HU": "Hungary", "ID": "Indonesia", "IE": "Ireland",
+    "IL": "Israel", "IN": "India", "IS": "Iceland", "IT": "Italy",
+    "JP": "Japan", "KE": "Kenya", "KR": "South Korea", "LK": "Sri Lanka",
+    "MA": "Morocco", "MX": "Mexico", "MY": "Malaysia", "NL": "Netherlands",
+    "NO": "Norway", "NP": "Nepal", "NZ": "New Zealand", "PE": "Peru",
+    "PH": "Philippines", "PL": "Poland", "PT": "Portugal", "QA": "Qatar",
+    "RU": "Russia", "SA": "Saudi Arabia", "SE": "Sweden", "SG": "Singapore",
+    "TH": "Thailand", "TR": "Turkey", "TW": "Taiwan", "UA": "Ukraine",
+    "US": "United States", "VN": "Vietnam", "ZA": "South Africa",
+}
+
 def _place_tags(result: PhotoTags) -> None:
     """GPS to place names, offline (D-005).
 
@@ -79,13 +102,22 @@ def _place_tags(result: PhotoTags) -> None:
         return
 
     place = match[0]
+    # admin2 is the district or county. Included because it is how people name
+    # a place when the city is unfamiliar: "South Goa" rather than "Sanvordem".
     for field_name, namespace in (("name", "place"), ("admin1", "region"),
-                                  ("cc", "country")):
+                                  ("admin2", "district"), ("cc", "country")):
         value = place.get(field_name)
         if value:
             # Derived from an exact coordinate, so confidence stays high, but
             # it is a lookup rather than a measurement -- hence not 1.0.
             result.add(namespace, str(value), "geocode", 0.9)
+
+    # The geocoder returns a two-letter code, and nobody searches for "IN".
+    # Both are stored: the name is what gets typed, and the code stays so an
+    # index built before this still matches.
+    name = COUNTRY_NAMES.get(str(place.get("cc", "")).upper())
+    if name:
+        result.add("country", name, "geocode", 0.9)
 
 
 def _exif_tags(path: Path, result: PhotoTags) -> None:

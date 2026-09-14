@@ -351,20 +351,35 @@ class UnifiedSearch:
             return
 
         # Tag values the query actually mentions, as (namespace, value).
+        #
+        # Adjacent pairs are tried as well as single words, because plenty of
+        # real place names are two words: "new delhi", "united states",
+        # "south goa". Matching one token at a time could never find those, so
+        # a photo tagged New Delhi was unreachable by that name.
+        candidates: list[str] = []
+        meaningful = [t for t in tokens if t not in _PHOTO_WORDS]
+        for index, token in enumerate(meaningful):
+            candidates.append(token)
+            if index + 1 < len(meaningful):
+                candidates.append(f"{token} {meaningful[index + 1]}")
+
         matched: list[tuple[str, str]] = []
-        for token in tokens:
-            if token in _PHOTO_WORDS:
-                continue
+        seen: set[tuple[str, str]] = set()
+        # Longest first, so "new delhi" is preferred over a stray "delhi" tag.
+        for phrase in sorted(candidates, key=len, reverse=True):
             rows = self.conn.execute(
                 "SELECT DISTINCT namespace, value FROM tags "
                 "WHERE namespace != 'caption' "
                 "AND (lower(value) = ? OR lower(value) = ? "
                 "     OR (namespace IN ('year','month') AND value = ?)) "
                 "AND value != '_none' LIMIT 4",
-                (token, token.rstrip("s"), token),
+                (phrase, phrase.rstrip("s"), phrase),
             ).fetchall()
             for row in rows:
-                matched.append((row["namespace"], row["value"]))
+                key = (row["namespace"], row["value"])
+                if key not in seen:
+                    seen.add(key)
+                    matched.append(key)
 
         caption_ids = self._caption_matches(tokens)
 

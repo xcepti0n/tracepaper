@@ -166,8 +166,14 @@ def test_gps_becomes_a_place_name(tmp_path: Path):
     by_namespace = {ns: value for ns, value, _, _ in tags.tags}
 
     assert by_namespace["region"] == "Goa"
-    assert by_namespace["country"] == "IN"
     assert by_namespace["year"] == "2019"
+    # Both the country code and the name are stored: nobody searches for "IN",
+    # and the code stays so an index built before the names existed still
+    # matches. A dict keeps only the last, so check the tag list.
+    countries = {value for ns, value, _, _ in tags.tags if ns == "country"}
+    assert countries == {"IN", "India"}
+    # admin2 is how people name a place when the city is unfamiliar.
+    assert by_namespace["district"] == "South Goa"
 
 
 @requires_geocoder
@@ -446,3 +452,40 @@ def test_a_terse_refusal_is_rejected_on_length():
 
     assert _usable_caption("No.") == ""
     assert _usable_caption("") == ""
+
+
+def test_photos_are_findable_by_a_two_word_place(conn, cfg, nas):
+    """Plenty of real place names are two words, and matching one token at a
+    time could never find them: a photo tagged New Delhi was unreachable by
+    that name, and so was anything in the United States."""
+    from tracepaper.query.unified import UnifiedSearch
+
+    with conn:
+        c = conn.execute(
+            "INSERT INTO items (kind, uri, title, extraction_status) "
+            "VALUES ('photo', ?, 'trip.jpg', 'complete')",
+            (str(nas / "trip.jpg"),))
+        item_id = c.lastrowid
+        for namespace, value in (("place", "New Delhi"),
+                                 ("region", "NCT"),
+                                 ("country", "India")):
+            conn.execute(
+                "INSERT INTO tags (item_id, namespace, value, source, "
+                "confidence) VALUES (?, ?, ?, 'geocode', 0.9)",
+                (item_id, namespace, value))
+
+    search = UnifiedSearch(conn)
+    assert search.query("photos from New Delhi", semantic=False).photos, (
+        "a two-word place name must match")
+    # The single-word forms still work, and so does the country name.
+    assert search.query("India photos", semantic=False).photos
+
+
+def test_country_names_are_searchable_not_just_codes():
+    """The geocoder returns "IN". Nobody types that."""
+    from tracepaper.extract.photos import COUNTRY_NAMES
+
+    assert COUNTRY_NAMES["IN"] == "India"
+    assert COUNTRY_NAMES["US"] == "United States"
+    # Codes map to a single name, never a list, or the tag would be ambiguous.
+    assert all(isinstance(v, str) for v in COUNTRY_NAMES.values())

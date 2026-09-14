@@ -659,7 +659,7 @@ def test_the_model_cache_is_explicit_not_inherited(monkeypatch, tmp_path):
     wanted = tmp_path / "cache"
     monkeypatch.setenv("TRACEPAPER_MODEL_CACHE", str(wanted))
 
-    assert embed.cache_dir() == str(wanted)
+    assert embed.ensure_cache_dir() == str(wanted)
     assert wanted.exists(), "the directory is created, not merely named"
 
 
@@ -681,7 +681,7 @@ def test_an_unwritable_cache_falls_back_rather_than_failing(monkeypatch,
     try:
         monkeypatch.setenv("TRACEPAPER_MODEL_CACHE", str(locked / "cache"))
         monkeypatch.delenv("HF_HOME", raising=False)
-        resolved = embed.cache_dir()
+        resolved = embed.ensure_cache_dir()
 
         assert resolved != str(locked / "cache")
         assert Path(resolved).exists()
@@ -698,3 +698,17 @@ def test_a_failed_model_load_is_reportable():
     embed.load_model("definitely/not-a-real-model-xyz", force=True)
 
     assert embed.load_error(), "the failure reason must be retrievable"
+
+
+def test_the_loader_is_not_pointed_below_the_cache_root():
+    """HF_HOME is a cache ROOT; its models live under HF_HOME/hub. Passing it
+    as sentence-transformers' `cache_folder`, which names a directory holding
+    model folders directly, sent the loader one level too high: an
+    already-downloaded model was missed, and with HF_HUB_OFFLINE set the load
+    failed outright instead of falling back to a download.
+    """
+    source = Path("src/tracepaper/embed.py").read_text()
+
+    assert "cache_folder=" not in source, (
+        "let the environment variables locate the cache; they are what every "
+        "library in the chain reads")
