@@ -315,3 +315,59 @@ def test_list_keys_still_hides_deleted_items(conn, cfg, nas):
 
     keys = dict(FieldQuery(conn).list_keys())
     assert "only_on_deleted" not in keys
+
+
+def test_improving_an_extractor_can_reach_already_indexed_files(conn, cfg, nas):
+    """Extraction runs off a queue the scanner writes, and the scanner only
+    queues a file it sees as changed. So adding an .xls reader did nothing for
+    the four bank statements already in the index: still reported as having no
+    extractor, with their contents invisible."""
+    from tracepaper.index.indexer import Indexer
+
+    with conn:
+        conn.execute(
+            "INSERT INTO items (kind, uri, title, extraction_status) "
+            "VALUES ('document', ?, 'statement.xls', 'partial')",
+            (str(nas / "statement.xls"),))
+        conn.execute(
+            "INSERT INTO items (kind, uri, title, extraction_status) "
+            "VALUES ('document', ?, 'readme.txt', 'complete')",
+            (str(nas / "readme.txt"),))
+
+    queued = Indexer(conn, cfg).requeue_incomplete()
+
+    assert queued == 1, "only the incomplete file is queued"
+    rows = conn.execute(
+        "SELECT COUNT(*) AS n FROM jobs WHERE type = 'extract_text' "
+        "AND state = 'queued'").fetchone()
+    assert rows["n"] == 1
+
+
+def test_a_retry_can_be_limited_to_one_format(conn, cfg, nas):
+    """A new .xls reader should not trigger OCR over every image."""
+    from tracepaper.index.indexer import Indexer
+
+    with conn:
+        for name in ("a.xls", "b.jpg", "c.srt"):
+            conn.execute(
+                "INSERT INTO items (kind, uri, title, extraction_status) "
+                "VALUES ('document', ?, ?, 'partial')",
+                (str(nas / name), name))
+
+    queued = Indexer(conn, cfg).requeue_incomplete(suffixes={".xls", ".srt"})
+
+    assert queued == 2, "the image must be left alone"
+
+
+def test_a_retry_never_disturbs_a_clean_extraction(conn, cfg, nas):
+    """Re-extracting a file whose text was read cleanly risks losing it for
+    nothing."""
+    from tracepaper.index.indexer import Indexer
+
+    with conn:
+        conn.execute(
+            "INSERT INTO items (kind, uri, title, extraction_status) "
+            "VALUES ('document', ?, 'fine.pdf', 'complete')",
+            (str(nas / "fine.pdf"),))
+
+    assert Indexer(conn, cfg).requeue_incomplete() == 0

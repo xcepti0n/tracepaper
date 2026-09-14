@@ -93,6 +93,53 @@ class Indexer:
         ).fetchone()
         return int(row["n"]) if row else 0
 
+    def requeue_incomplete(self, suffixes: set[str] | None = None,
+                           limit: int | None = None) -> int:
+        """Queue extraction again for items that never yielded text.
+
+        Extraction runs off a job queue written by the scanner, and the scanner
+        only queues a file it sees as new or changed. So improving a handler
+        does nothing for files already in the index: adding an .xls reader left
+        four bank statements exactly as they were, still reported as having no
+        extractor.
+
+        This re-queues them. Restricted to items that are actually incomplete,
+        so it can never disturb a file whose text was extracted cleanly, and
+        optionally to a set of suffixes, so a new handler can be applied without
+        re-running OCR over everything.
+        """
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        rows = self.conn.execute(
+            "SELECT id, uri FROM items WHERE deleted_at IS NULL "
+            "AND uri IS NOT NULL "
+            "AND extraction_status IN ('pending', 'partial', 'failed')"
+        ).fetchall()
+
+        queued = 0
+        with self.conn:
+            for row in rows:
+                if limit is not None and queued >= limit:
+                    break
+                if suffixes is not None:
+                    name = str(row["uri"]).rpartition("/")[2]
+                    suffix = ("." + name.rpartition(".")[2].lower()
+                              if "." in name else "")
+                    if suffix not in suffixes:
+                        continue
+                # Same duplicate guard as the scanner: a file already waiting
+                # must not be queued twice.
+                self.conn.execute(
+                    "INSERT INTO jobs (item_id, type, state, created_at, "
+                    "updated_at) SELECT ?, 'extract_text', 'queued', ?, ? "
+                    "WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE item_id = ? "
+                    "AND type = 'extract_text' AND state IN ('queued', "
+                    "'claimed'))",
+                    (row["id"], now, now, row["id"]))
+                queued += 1
+        return queued
+
     def reindex_item(self, item_id: int) -> IndexResult:
         result = IndexResult()
         row = self.conn.execute(

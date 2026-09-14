@@ -665,6 +665,39 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         models.sort(key=lambda m: m["name"])
         return {"ok": True, "endpoint": endpoint, "models": models}
 
+    @app.post("/api/index/retry")
+    def api_retry_incomplete(payload: dict, request: Request) -> dict[str, Any]:
+        """Try extraction again on files that never yielded text.
+
+        Extraction runs off a queue the scanner writes, and the scanner only
+        queues a file it sees as changed, so improving an extractor does nothing
+        for what is already indexed. This re-queues the incomplete ones.
+
+        Queues only; the extraction itself happens in the indexing job, so a
+        long OCR run does not block this request.
+        """
+        _guard(request, "extraction retries")
+
+        only = payload.get("only")
+        suffixes = None
+        if only:
+            if isinstance(only, str):
+                only = [part.strip() for part in only.split(",")]
+            suffixes = {s if s.startswith(".") else f".{s}"
+                        for s in (str(x).strip().lower() for x in only) if s}
+
+        conn = open_connection()
+        try:
+            queued = Indexer(conn, _config).requeue_incomplete(
+                suffixes=suffixes, limit=payload.get("limit"))
+        finally:
+            conn.close()
+        # The pending count changes, so a stale status page would contradict it.
+        _STATUS_CACHE["value"] = None
+        return {"ok": True, "queued": queued,
+                "message": (f"{queued} file(s) queued for another attempt. "
+                            f"They are processed by the indexing job.")}
+
     @app.get("/api/health")
     def api_health() -> dict[str, Any]:
         """Liveness for the installer, systemd and any monitor.

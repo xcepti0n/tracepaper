@@ -51,6 +51,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_index = sub.add_parser("index", help="process queued extraction jobs")
     p_index.add_argument("--limit", type=int, default=None)
     p_index.add_argument("--item", type=int, default=None, help="reindex one item")
+    p_index.add_argument("--retry-incomplete", action="store_true",
+                         help="try again on files that yielded no text, for "
+                              "when an extractor has improved")
+    p_index.add_argument("--only", default=None,
+                         help="with --retry-incomplete, limit to these "
+                              "suffixes, e.g. .xls,.srt")
     p_index.add_argument("--embed", action="store_true",
                          help="also compute embeddings for semantic search")
 
@@ -282,7 +288,18 @@ def _cmd_scan(args, cfg: Config, conn) -> int:
 
 def _cmd_index(args, cfg: Config, conn) -> int:
     indexer = Indexer(conn, cfg)
-    if args.item is not None:
+    if getattr(args, "retry_incomplete", False):
+        suffixes = None
+        if args.only:
+            suffixes = {s if s.startswith(".") else f".{s}"
+                        for s in (part.strip().lower()
+                                  for part in args.only.split(","))
+                        if s}
+        queued = indexer.requeue_incomplete(suffixes=suffixes,
+                                            limit=args.limit)
+        print(f"queued {queued} item(s) for another attempt")
+        result = indexer.run_pending(limit=args.limit)
+    elif args.item is not None:
         result = indexer.reindex_item(args.item)
     else:
         result = indexer.run_pending(limit=args.limit)
