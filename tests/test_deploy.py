@@ -783,3 +783,32 @@ def test_the_installer_never_clobbers_existing_settings():
         "an older install keeps its config directly in /etc")
     # No symlink: the unit passes --config, so the path is just a setting.
     assert "ln -sfn" not in script
+
+
+def test_every_unit_points_at_the_config_the_service_writes():
+    """Settings are saved to one file. A unit reading a different one would
+    run with settings the UI cannot change, and the mismatch is silent."""
+    for name in ("tracepaper.service", "tracepaper-scan.service",
+                 "tracepaper-enrich.service", "tracepaper-backup.service"):
+        text = (DEPLOY / name).read_text()
+        assert "--config /etc/tracepaper/tracepaper.toml" in text, name
+        assert "--config /etc/tracepaper.toml" not in text, name
+
+
+def test_the_enrich_timer_does_not_second_guess_the_captions_setting():
+    """Captions are controlled in one place, the Settings page.
+
+    The timer passed no --captions flag while enrich defaulted the argument to
+    False, so turning captions on in the UI described nothing on a timer run.
+    Hardcoding the flag here would be the same bug mirrored: two controls, and
+    whichever disagrees wins by accident.
+    """
+    unit = (DEPLOY / "tracepaper-enrich.service").read_text()
+
+    # Only the command matters. The comment above it explains the reasoning and
+    # naturally names the flag.
+    exec_lines = [line for line in unit.splitlines()
+                  if line.startswith("ExecStart=")]
+    assert exec_lines, "no ExecStart in the enrich unit"
+    for line in exec_lines:
+        assert "--captions" not in line, line

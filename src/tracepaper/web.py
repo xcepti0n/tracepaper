@@ -1929,8 +1929,8 @@ def _jobs_panel() -> str:
     panel keep polling while a scan runs.
     """
     return """<h2>Jobs</h2>
-<p class="hint">These run on timers already &mdash; the buttons run them now.
-A first scan can take hours; it is safe to leave this page.</p>
+<p class="hint">These run on timers already. The buttons run them now.
+A first scan can take hours. It is safe to leave this page.</p>
 <div id="jobs_list"><span class="muted">loading&hellip;</span></div>
 <script>(window.__tpOnReady = window.__tpOnReady || []).push(function () { refreshJobs({quiet: true}); });</script>"""
 

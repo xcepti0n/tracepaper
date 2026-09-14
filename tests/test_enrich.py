@@ -134,3 +134,34 @@ def test_unclassifiable_photo_is_not_retried_forever(conn, cfg, nas):
     second = enricher.run()
 
     assert second.photos_tagged == 0
+
+
+def test_captions_follow_the_settings_switch(conn, cfg, monkeypatch):
+    """Turning captions on in Settings must be enough.
+
+    `run(captions=...)` defaulted to False, and the enrich timer passes no
+    flag, so the switch in the UI described nothing on a scheduled run. It now
+    defaults to whatever the config says.
+    """
+    from dataclasses import replace
+
+    from tracepaper.enrich import Enricher
+
+    called: list[bool] = []
+    monkeypatch.setattr(Enricher, "_caption_photos",
+                        lambda self, result, limit: called.append(True))
+    monkeypatch.setattr(Enricher, "_tag_photos",
+                        lambda self, result, limit: None)
+    monkeypatch.setattr(Enricher, "_embed", lambda self, result: None)
+
+    Enricher(conn, replace(cfg, llm_enabled=True)).run()
+    assert called == [True], "captions should run when settings enable them"
+
+    called.clear()
+    Enricher(conn, replace(cfg, llm_enabled=False)).run()
+    assert called == [], "captions should not run when settings disable them"
+
+    # An explicit argument still overrides, for a one-off run.
+    called.clear()
+    Enricher(conn, replace(cfg, llm_enabled=True)).run(captions=False)
+    assert called == []

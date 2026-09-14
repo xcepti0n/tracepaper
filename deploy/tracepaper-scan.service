@@ -13,7 +13,7 @@ WorkingDirectory=/opt/tracepaper
 # scan reconciles the tree, --index extracts what changed. No --embed: on a
 # small Proxmox host embeddings belong in the nightly enrich pass, where they
 # yield to anything else running (see tracepaper-enrich.service).
-ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml scan --index
+ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper/tracepaper.toml scan --index
 
 # Extraction is heavier than the service's own ceiling — OCR rasterises pages
 # into memory — and it must not be killed halfway through a large PDF.

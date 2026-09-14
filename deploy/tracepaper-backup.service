@@ -16,7 +16,7 @@ WorkingDirectory=/opt/tracepaper
 # Deliberately not a copy of index.db. A SQLite file copied while the service
 # has it open can be torn mid-transaction, and it would restore only into a
 # schema-compatible build. A JSON export survives both.
-ExecStart=/bin/sh -c 'exec /opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml backup "$${BACKUP_DIR}/corrections-$$(date +%%Y%%m%%d).json"'
+ExecStart=/bin/sh -c 'exec /opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper/tracepaper.toml backup "$${BACKUP_DIR}/corrections-$$(date +%%Y%%m%%d).json"'
 Environment=BACKUP_DIR=/mnt/nas/backups/tracepaper
 
 # Dated filenames, so a bad correction is recoverable from an older file rather

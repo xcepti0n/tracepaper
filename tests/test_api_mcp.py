@@ -1116,9 +1116,13 @@ def test_no_em_dashes_anywhere_in_the_ui(client, tab):
     comments, which nobody reads. This checks what is actually served.
     """
     page = client.get(f"/?tab={tab}").text
-    assert "—" not in page, (
+    assert "\u2014" not in page, (
         f"em dash in the {tab} tab: "
         f"{page[max(0, page.find(chr(0x2014)) - 70):page.find(chr(0x2014)) + 70]!r}")
+    # An HTML entity renders as an em dash just the same, and checking only the
+    # literal character missed &mdash; sitting in the Jobs panel.
+    for entity in ("&mdash;", "&#8212;", "&#x2014;", "&ndash;", "&#8211;"):
+        assert entity not in page, f"{entity} in the {tab} tab"
 
 
 def _without_quoted_text(page: str) -> str:

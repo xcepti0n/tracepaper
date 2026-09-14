@@ -87,7 +87,18 @@ class Enricher:
         return self.respect_load and system_busy(self.load_threshold)
 
     def run(self, *, limit: int | None = None,
-            captions: bool = False) -> EnrichResult:
+            captions: bool | None = None) -> EnrichResult:
+        """One enrichment pass.
+
+        `captions` defaults to whatever the config says, so turning captions on
+        in Settings is enough. It used to default to False, which meant the
+        switch in the UI did nothing on a timer run: the timer did not pass
+        --captions, so photos were never described however the config read.
+        Pass it explicitly to override for one run.
+        """
+        if captions is None:
+            captions = bool(self.cfg.llm_enabled)
+
         started = time.monotonic()
         result = EnrichResult()
 

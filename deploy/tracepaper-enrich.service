@@ -16,13 +16,15 @@ WorkingDirectory=/opt/tracepaper
 # kernel deprioritises this work at every scheduling decision, so it yields
 # continuously instead of refusing to start, and it always makes progress.
 #
-# Resumable and idempotent — being killed mid-run costs only the item in
+# Resumable and idempotent. Being killed mid-run costs only the item in
 # flight, and the next run picks up where it stopped.
 #
-# Captions are NOT enabled: they need a vision model, which this container does
-# not have and this host should not run. Add --captions only if you have
-# pointed [llm] at an Ollama endpoint elsewhere (your Mac).
-ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper.toml enrich
+# Captions follow the Settings page: this passes no flag, and enrich describes
+# photos only when [llm] enabled is true and points at a vision model reachable
+# from here, such as Ollama on another machine. Hardcoding --captions here would
+# put the control in two places, and a timer that did not pass it was why the
+# switch in the UI appeared to do nothing.
+ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper/tracepaper.toml enrich
 
 # Embeddings are the memory-hungry part. Without semantic extras installed
 # this pass is nearly free, and this cap is simply never approached; with them

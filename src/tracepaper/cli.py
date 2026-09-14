@@ -141,8 +141,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_enrich = sub.add_parser(
         "enrich", help="background pass: photo tags, captions, embeddings")
     p_enrich.add_argument("--limit", type=int, default=None)
-    p_enrich.add_argument("--captions", action="store_true",
-                          help="also caption photos with thin object tags (slow)")
+    # Tri-state on purpose: unset means "do what the config says", so the
+    # timer needs no flag and the Settings switch is the single control.
+    p_enrich.add_argument("--captions", action="store_true", default=None,
+                          help="describe photos even if settings say otherwise")
+    p_enrich.add_argument("--no-captions", dest="captions",
+                          action="store_false",
+                          help="skip describing photos for this run")
     p_enrich.add_argument("--now", action="store_true",
                           help="run even if the machine is busy")
     p_enrich.add_argument("--wait", action="store_true",

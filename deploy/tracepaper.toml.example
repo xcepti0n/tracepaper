@@ -1,6 +1,6 @@
 # Tracepaper — configuration as installed on Proxmox.
 #
-# Copy to /etc/tracepaper.toml. The installer writes this file for you; this
+# Copy to /etc/tracepaper/tracepaper.toml. The installer writes this file for you; this
 # copy is here so you can see what it wrote and why.
 #
 # The Settings page in the web UI edits the paths below and validates them
