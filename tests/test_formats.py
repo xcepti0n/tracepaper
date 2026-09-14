@@ -203,3 +203,67 @@ def test_an_unknown_but_genuine_text_format_is_still_read(tmp_path):
     path.write_text("Dear Sir, the insurance claim was settled in April.")
     result = extract(path)
     assert "insurance claim" in result.text
+
+
+def test_a_bank_html_table_named_xls_is_read(tmp_path):
+    """Banks commonly export an HTML table and name it .xls. openpyxl cannot
+    open those, so four real bank statements sat unindexed under "no
+    extractor" with their contents invisible to search."""
+    from tracepaper.extract import text as text_module
+
+    path = tmp_path / "Acct Statement_XX8707.xls"
+    path.write_text(
+        "<html><body><table>"
+        "<tr><th>Date</th><th>Narration</th><th>Amount</th></tr>"
+        "<tr><td>01/02/2025</td><td>SALARY CREDIT</td><td>4200.00</td></tr>"
+        "</table></body></html>")
+
+    extracted = text_module.extract(path)
+
+    assert extracted.status == "complete"
+    assert "SALARY CREDIT" in extracted.text
+    # Markup must not reach the index.
+    assert "<table" not in extracted.text and "<td>" not in extracted.text
+
+
+def test_a_csv_named_xls_is_read(tmp_path):
+    from tracepaper.extract import text as text_module
+
+    path = tmp_path / "statement.xls"
+    path.write_text("Date,Narration,Amount\n01/02/2025,ATM WITHDRAWAL,200\n")
+
+    extracted = text_module.extract(path)
+
+    assert "ATM WITHDRAWAL" in extracted.text
+
+
+def test_html_tags_are_not_indexed_as_words(tmp_path):
+    """`<div class="row">` matches nothing anyone types, and crowds out the
+    words that do."""
+    from tracepaper.extract import text as text_module
+
+    path = tmp_path / "page.html"
+    path.write_text('<html><head><style>.x{color:red}</style></head>'
+                    '<body><div class="row">Policy number 88421</div>'
+                    '<script>var a=1;</script></body></html>')
+
+    extracted = text_module.extract(path)
+
+    assert "Policy number 88421" in extracted.text
+    assert "div" not in extracted.text.lower()
+    # Script and style bodies are not content either.
+    assert "color:red" not in extracted.text and "var a" not in extracted.text
+
+
+def test_a_real_binary_xls_without_xlrd_degrades_gracefully(tmp_path):
+    """FR-2: never reject a file. A missing reader means filename-only, not an
+    error."""
+    from tracepaper.extract import text as text_module
+
+    path = tmp_path / "old.xls"
+    path.write_bytes(b"\xd0\xcf\x11\xe0" + b"\x00" * 512)
+
+    extracted = text_module.extract(path)
+
+    assert extracted.status == "partial"
+    assert extracted.note

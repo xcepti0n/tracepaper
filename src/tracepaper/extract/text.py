@@ -44,6 +44,10 @@ CSV_SUFFIXES = {".csv", ".tsv"}
 PDF_SUFFIXES = {".pdf"}
 DOCX_SUFFIXES = {".docx"}
 XLSX_SUFFIXES = {".xlsx", ".xlsm"}
+# The old binary Excel format, which openpyxl cannot read. Banks also export
+# HTML tables and CSV under this extension, which is why the handler sniffs the
+# content rather than trusting the name.
+XLS_SUFFIXES = {".xls"}
 EML_SUFFIXES = {".eml"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".gif", ".tiff",
                   ".tif", ".webp", ".bmp"}
@@ -91,6 +95,8 @@ def extract(path: Path) -> ExtractedText:
             return _extract_docx(path)
         if suffix in XLSX_SUFFIXES:
             return _extract_xlsx(path)
+        if suffix in XLS_SUFFIXES:
+            return _extract_xls(path)
         if suffix in EML_SUFFIXES:
             return _extract_eml(path)
         if suffix in IMAGE_SUFFIXES:
@@ -119,7 +125,92 @@ def _decode(raw: bytes) -> str:
 
 def _extract_plaintext(path: Path) -> ExtractedText:
     text = _decode(_read_bytes(path))
+    # Markup is not content: `<div class="row">` in the index matches nothing
+    # anyone would type, and it crowds out the words that do.
+    if path.suffix.lower() in {".html", ".htm"}:
+        text = _html_to_text(text)
     return ExtractedText(text=text, pages=[text])
+
+
+def _html_to_text(markup: str) -> str:
+    """Visible text from HTML. Tags in the index match nothing anyone types."""
+    from html.parser import HTMLParser
+
+    class Collector(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.parts: list[str] = []
+            self._skip = 0
+
+        def handle_starttag(self, tag: str, attrs: object) -> None:
+            if tag in ("script", "style"):
+                self._skip += 1
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag in ("script", "style") and self._skip:
+                self._skip -= 1
+            elif tag in ("tr", "p", "div", "br", "li", "h1", "h2", "h3"):
+                self.parts.append("\n")
+            elif tag in ("td", "th"):
+                self.parts.append("\t")
+
+        def handle_data(self, data: str) -> None:
+            if not self._skip and data.strip():
+                self.parts.append(data.strip())
+
+    collector = Collector()
+    try:
+        collector.feed(markup)
+    except Exception:                                    # noqa: BLE001
+        return markup
+    lines = ("".join(collector.parts)).splitlines()
+    return "\n".join(line.strip() for line in lines if line.strip())
+
+
+def _extract_xls(path: Path) -> ExtractedText:
+    """The old Excel format, and the things banks mislabel as it.
+
+    A real .xls is a binary OLE file that openpyxl cannot open. But a large
+    share of files with this extension are not Excel at all: banks commonly
+    export an HTML table or a CSV and name it .xls, which is why the content
+    decides here rather than the extension. Four bank statements sat unindexed
+    under "no extractor" because of this.
+    """
+    sample = _read_bytes(path, 2048)
+
+    # A genuine OLE2 document starts with this signature.
+    if sample.startswith(b"\xd0\xcf\x11\xe0"):
+        try:
+            import xlrd
+        except ImportError:
+            return ExtractedText(
+                text="", status="partial",
+                note="old Excel format needs xlrd: indexed by filename only")
+        try:
+            book = xlrd.open_workbook(str(path))
+            pages = []
+            for sheet in book.sheets():
+                rows = ["\t".join(str(c.value) for c in sheet.row(i))
+                        for i in range(sheet.nrows)]
+                pages.append("\n".join(rows))
+            joined = "\n\n".join(pages)
+            return ExtractedText(text=joined, pages=pages or [""],
+                                 status="complete" if joined.strip() else "partial")
+        except Exception as exc:                          # noqa: BLE001
+            return ExtractedText(text="", status="partial",
+                                 note=f"could not read as Excel: {exc}")
+
+    text = _decode(_read_bytes(path))
+    lowered = text[:4000].lower()
+    if "<table" in lowered or "<html" in lowered:
+        cleaned = _html_to_text(text)
+        return ExtractedText(text=cleaned, pages=[cleaned], status="complete",
+                             note="HTML table saved as .xls")
+    if text.strip():
+        return ExtractedText(text=text, pages=[text], status="complete",
+                             note="plain text saved as .xls")
+    return ExtractedText(text="", status="partial",
+                         note="unreadable .xls: indexed by filename only")
 
 
 def _extract_unknown(path: Path) -> ExtractedText:

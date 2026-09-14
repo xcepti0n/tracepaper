@@ -17,6 +17,9 @@ formats = [
     "python-docx>=1.1",
     "openpyxl>=3.1",
     "pillow>=10.0",
+    # openpyxl reads .xlsx only. xlrd handles the old binary .xls that banks
+    # and government portals still hand out.
+    "xlrd>=2.0",
 ]
 # OCR for screenshots and scanned PDFs. On macOS the built-in Vision engine is
 # used and needs only these bindings; elsewhere install tesseract plus
