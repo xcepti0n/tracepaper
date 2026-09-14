@@ -569,7 +569,8 @@ function refreshPrune(options) {
 
   fetch('/api/prune').then(function (r) { return r.json(); })
     .then(function (data) {
-      if (!data.items) {
+      const orphans = data.orphans || 0;
+      if (!data.items && !orphans) {
         status.textContent = 'Nothing to clean up.';
         if (apply) { apply.hidden = true; }
         return;
@@ -577,12 +578,17 @@ function refreshPrune(options) {
       const reasons = (data.reasons || []).slice(0, 6).map(function (entry) {
         return escapeHtml(entry.reason) + ' (' + entry.items.toLocaleString() + ')';
       }).join(' · ');
-      status.innerHTML = '<b>' + data.items.toLocaleString() + '</b> of '
-        + data.total.toLocaleString() + ' indexed files would be removed.'
-        + '<br><span class="hint">' + reasons + '</span>';
+      const head = data.items
+        ? '<b>' + data.items.toLocaleString() + '</b> of '
+          + data.total.toLocaleString() + ' indexed files would be removed.'
+        : '<b>' + orphans.toLocaleString() + '</b> stale scan record(s) would '
+          + 'be cleared. No indexed file is affected.';
+      status.innerHTML = head + '<br><span class="hint">' + reasons + '</span>';
       if (apply) {
         apply.hidden = false;
-        apply.textContent = 'Remove ' + data.items.toLocaleString() + ' files';
+        apply.textContent = data.items
+          ? 'Remove ' + data.items.toLocaleString() + ' files'
+          : 'Clear ' + orphans.toLocaleString() + ' stale records';
       }
     })
     .catch(function (error) { status.textContent = error.message; });

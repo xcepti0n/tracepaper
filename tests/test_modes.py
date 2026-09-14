@@ -201,3 +201,49 @@ def test_a_scan_skips_folders_you_marked(conn, cfg, nas):
     assert any("keep.txt" in uri for uri in found)
     assert not any("readme.txt" in uri for uri in found), \
         "a folder marked as code should not be indexed at all"
+
+
+def test_prune_clears_orphaned_scan_bookkeeping(conn, cfg, nas):
+    """The rows the vanish guard actually counts.
+
+    `file_state` remembers every path a scan examined, including ones that
+    were excluded and so never became items. Those rows outlived the prune,
+    and because the guard measures against them, the index reached a state
+    where every scan aborted: 91,771 remembered paths against 9,505 real
+    files read as "the share is not mounted".
+    """
+    from tracepaper import prune
+
+    conn.execute("INSERT INTO items (id, kind, uri, title, extraction_status) "
+                 "VALUES (1, 'document', '/nas/keep.txt', 'keep.txt', 'complete')")
+    conn.execute("INSERT INTO file_state (uri, size_bytes, mtime, last_seen_scan) "
+                 "VALUES ('/nas/keep.txt', 10, 1.0, 1)")
+    # Remembered by a scan, never an item: what an excluded file leaves behind.
+    for n in range(5):
+        conn.execute("INSERT INTO file_state (uri, size_bytes, mtime, "
+                     "last_seen_scan) VALUES (?, 10, 1.0, 1)",
+                     (f"/nas/proj/node_modules/dep{n}/index.js",))
+    conn.commit()
+
+    prune.apply(conn, cfg)
+
+    remaining = {r["uri"] for r in conn.execute("SELECT uri FROM file_state")}
+    assert remaining == {"/nas/keep.txt"}, (
+        f"orphaned bookkeeping must go, or the vanish guard keeps aborting: "
+        f"{remaining}")
+
+
+def test_prune_leaves_bookkeeping_for_files_it_keeps(conn, cfg):
+    """The other direction: do not forget a file that is still indexed."""
+    from tracepaper import prune
+
+    conn.execute("INSERT INTO items (id, kind, uri, title, extraction_status) "
+                 "VALUES (1, 'document', '/nas/a.pdf', 'a.pdf', 'complete')")
+    conn.execute("INSERT INTO file_state (uri, size_bytes, mtime, last_seen_scan) "
+                 "VALUES ('/nas/a.pdf', 10, 1.0, 1)")
+    conn.commit()
+
+    prune.apply(conn, cfg)
+
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM file_state").fetchone()["n"] == 1

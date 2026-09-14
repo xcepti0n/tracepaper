@@ -72,8 +72,19 @@ def preview(conn: sqlite3.Connection, cfg: Config) -> dict:
         "SELECT COUNT(*) AS n FROM items WHERE deleted_at IS NULL"
     ).fetchone()["n"]
 
+    # Stale scan bookkeeping is counted separately. It holds no searchable
+    # content, so it is not an "item", but it is what the vanish guard
+    # measures against, and leaving it is what jams a scan.
+    orphans = conn.execute(
+        "SELECT COUNT(*) AS n FROM file_state f "
+        "LEFT JOIN items i ON i.uri = f.uri AND i.deleted_at IS NULL "
+        "WHERE i.id IS NULL").fetchone()["n"]
+    if orphans:
+        by_reason["stale scan records (no file indexed)"] = int(orphans)
+
     return {
         "items": len(doomed),
+        "orphans": int(orphans),
         "total": int(total),
         "reasons": sorted(({"reason": reason, "items": count}
                            for reason, count in by_reason.items()),
@@ -89,9 +100,9 @@ def apply(conn: sqlite3.Connection, cfg: Config) -> int:
     Your files are not touched. This removes index rows only.
     """
     doomed = prunable(conn, cfg)
-    if not doomed:
-        return 0
-
+    # No early return when `doomed` is empty: the orphaned bookkeeping below
+    # is the half that unsticks a scan, and it is exactly the case where
+    # there are no items left to delete.
     ids = [int(row["id"]) for row in doomed]
     with conn:
         conn.execute("PRAGMA foreign_keys = ON")
@@ -104,4 +115,24 @@ def apply(conn: sqlite3.Connection, cfg: Config) -> int:
                 f"DELETE FROM file_state WHERE uri IN "
                 f"(SELECT uri FROM items WHERE id IN ({placeholders}))", chunk)
             conn.execute(f"DELETE FROM items WHERE id IN ({placeholders})", chunk)
+
+        # file_state rows can outlive their item, and some never had one: an
+        # excluded file is remembered here so it is not re-examined, but no
+        # item row is created for it. The vanish guard counts THESE rather
+        # than items, so 82,266 orphans made every scan look like an
+        # unmounted share and abort.
+        #
+        # Every orphan goes, not only the excluded ones: with no item row
+        # there is nothing to search and nothing to show, so the bookkeeping
+        # entry is dead weight either way. A file still on disk and still
+        # wanted gets both rows back on the next scan.
+        orphans = [row["uri"] for row in conn.execute(
+            "SELECT f.uri FROM file_state f "
+            "LEFT JOIN items i ON i.uri = f.uri AND i.deleted_at IS NULL "
+            "WHERE i.id IS NULL")]
+        for start in range(0, len(orphans), 500):
+            chunk = orphans[start:start + 500]
+            placeholders = ",".join("?" * len(chunk))
+            conn.execute(
+                f"DELETE FROM file_state WHERE uri IN ({placeholders})", chunk)
     return len(ids)
