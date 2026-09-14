@@ -1704,6 +1704,15 @@ def _captions_panel(conn: sqlite3.Connection) -> str:
     if not cfg.llm_enabled:
         out.append('<p class="hint">Captions are off. Turn them on below, '
                    'then run the Describe photos job under General.</p>')
+    elif pending:
+        # Each run describes up to 200 photos and the timer is hourly, so a
+        # count that has not moved is usually a wait, not a fault. Saying so
+        # stops a working backlog reading as a stall.
+        hours = max(1, -(-pending // 200))
+        out.append(f'<p class="hint"><span class="pill">in progress</span> '
+                   f'Up to 200 photos are described each hour, so the rest '
+                   f'should be done in about {hours} hour(s). You can keep '
+                   f'using search while it runs.</p>')
 
     checked = " checked" if cfg.llm_enabled else ""
     out.append(f"""

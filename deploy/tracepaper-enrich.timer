@@ -1,10 +1,15 @@
 [Unit]
-Description=Tracepaper — nightly enrichment
+Description=Tracepaper - enrichment
 
 [Timer]
-OnCalendar=*-*-* 03:00:00
+# Hourly, not nightly. Each run is bounded (200 captions, and it yields when
+# the machine is busy), so a once-a-day timer turned a 1,065 photo backlog
+# into six days of waiting with nothing visibly happening in between. Hourly
+# clears the same backlog overnight and costs nothing when there is no work:
+# a run with nothing to do exits in seconds.
+OnCalendar=hourly
 Persistent=true
-RandomizedDelaySec=1800
+RandomizedDelaySec=300
 
 [Install]
 WantedBy=timers.target

@@ -831,3 +831,14 @@ def test_units_point_home_somewhere_writable():
                 if line.startswith("Environment=HOME=")][0]
         assert not home.startswith("/opt/"), (
             f"{name}: HOME={home} is not writable by the service")
+
+
+def test_enrichment_runs_often_enough_to_clear_a_backlog():
+    """Each run is bounded at 200 captions. Paired with a nightly timer that
+    turned a 1,065 photo backlog into six days, with the count sitting still
+    in between and looking broken."""
+    timer = (DEPLOY / "tracepaper-enrich.timer").read_text()
+
+    assert "OnCalendar=hourly" in timer, (
+        "a bounded run needs a cadence that can actually drain the queue")
+    assert "OnCalendar=*-*-* 03:00:00" not in timer
