@@ -6,10 +6,16 @@ that closed it. Anyone (you, me) can add here; keep entries short and say what
 
 ## Open
 
-- [ ] **Photo captions need a vision model running.** Captioning is wired up
-      and searchable, but it needs `llm_enabled` and an Ollama endpoint on the
-      Mac. Without it, photos are findable only by tag and filename.
-      *Done when:* captions exist for the bulk of the photo library.
+- [ ] **6,323 files are indexed by name only.** Two thirds of the index has
+      no searchable text: PDFs needing OCR, images, formats without an
+      extractor. They are findable by filename and nothing else.
+      *Done when:* the pending count is small, or Status says plainly which
+      formats are waiting and why.
+
+- [ ] **Photo captions need Ollama running.** Captioning is wired up and
+      searchable, but needs `llm_enabled` and an endpoint on the Mac. Without
+      it, photos are findable only by tag and filename.
+      *Done when:* captions exist for most of the photo library.
 
 - [ ] **No highlighting inside an opened document.** A result opens the file at
       the right page (`#page=N`), but the matching words are not marked. Needs
@@ -32,6 +38,10 @@ that closed it. Anyone (you, me) can add here; keep entries short and say what
       *Done when:* those NFS rules are removed and a scan still works.
 
 ## Done
+
+- [x] **Stale scan records jammed every scan.** 80,000 `file_state` rows with
+      no item made the vanish guard abort. Index was not updating at all.
+      (`b75a8ff`)
 
 - [x] **Prune and the scanner disagreed, so the index stopped updating.**
       Prune deleted files for "looks like code", the next scan re-added them,
