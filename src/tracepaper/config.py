@@ -117,6 +117,13 @@ class Config:
 
     extra: dict = field(default_factory=dict)
 
+    # The file this was loaded from, so anything saving settings writes back to
+    # the file the service actually reads. Without it the API guessed a
+    # relative "tracepaper.toml", which resolved against the working directory
+    # and tried to write into /opt/tracepaper: a PermissionError at best, and
+    # at worst a config the service would never read again.
+    source_path: Path | None = None
+
     @staticmethod
     def load(path: Path | str | None = None) -> "Config":
         cfg = Config()
@@ -128,6 +135,7 @@ class Config:
         if path is None:
             return cfg
 
+        cfg = replace(cfg, source_path=Path(path))
         data = tomllib.loads(Path(path).read_text())
         idx = data.get("index", {})
         scan = data.get("scan", {})

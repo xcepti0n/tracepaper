@@ -531,7 +531,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/api/settings")
     def api_save_settings(payload: dict) -> dict[str, Any]:
-        config_file = settings.find_config() or Path("tracepaper.toml")
+        # Write back to the file the service was actually started with. A
+        # guessed relative path resolves against the working directory, which
+        # on the container is /opt/tracepaper: not writable by the service
+        # user, and not the file it reads anyway.
+        config_file = (_config.source_path or settings.find_config()
+                       or Path("tracepaper.toml"))
         # A field the caller did not send keeps its current value. Settings is
         # more than one form now, and each sends only what it owns: defaulting
         # roots to [] instead made the captions form fail validation on a
@@ -545,12 +550,20 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if backup_dir is None:
             backup_dir = str(_config.backup_dir) if _config.backup_dir else None
 
-        ok, problems = settings.save(
-            config_file, roots=roots, db_path=db_path, backup_dir=backup_dir,
-            llm_enabled=payload.get("llm_enabled"),
-            llm_endpoint=payload.get("llm_endpoint"),
-            llm_model=payload.get("llm_model"),
-            vlm_model=payload.get("vlm_model"))
+        try:
+            ok, problems = settings.save(
+                config_file, roots=roots, db_path=db_path,
+                backup_dir=backup_dir,
+                llm_enabled=payload.get("llm_enabled"),
+                llm_endpoint=payload.get("llm_endpoint"),
+                llm_model=payload.get("llm_model"),
+                vlm_model=payload.get("vlm_model"))
+        except OSError as exc:
+            # A read-only or root-owned config file is a setup problem, and a
+            # 500 says nothing useful about it. Name the file and the reason.
+            return {"ok": False, "problems": [
+                f"Could not write {config_file}. {exc.strerror or exc}. "
+                f"Check that the service user may write this file."]}
         if not ok:
             return {"ok": False, "problems": problems}
 

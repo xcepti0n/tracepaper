@@ -716,3 +716,39 @@ def test_web_service_does_not_reach_the_network_for_the_model():
     past the health check. The model is already on disk; load it from there."""
     web = (DEPLOY / "tracepaper.service").read_text()
     assert "HF_HUB_OFFLINE=1" in web
+
+
+def test_saving_writes_through_a_symlink_not_over_it(tmp_path):
+    """/etc/tracepaper.toml is a symlink into a directory the service can
+    write. Replacing the link itself would leave a root-owned file in /etc and
+    break every save after the first."""
+    from tracepaper import settings as settings_module
+
+    real_dir = tmp_path / "etc" / "tracepaper"
+    real_dir.mkdir(parents=True)
+    real = real_dir / "tracepaper.toml"
+    real.write_text("[index]\n")
+    link = tmp_path / "etc" / "tracepaper.toml"
+    link.symlink_to(real)
+
+    settings_module.save(link, roots=[str(tmp_path)],
+                         db_path=str(tmp_path / "i.db"),
+                         vlm_model="gemma4:e4b", validate_paths=False)
+
+    assert link.is_symlink(), "the symlink must survive a save"
+    assert "gemma4:e4b" in real.read_text()
+
+
+def test_saving_keeps_the_file_mode(tmp_path):
+    """mkstemp creates 0600, which would lock out the group meant to read."""
+    from tracepaper import settings as settings_module
+
+    config = tmp_path / "tracepaper.toml"
+    config.write_text("[index]\n")
+    config.chmod(0o660)
+
+    settings_module.save(config, roots=[str(tmp_path)],
+                         db_path=str(tmp_path / "i.db"),
+                         validate_paths=False)
+
+    assert config.stat().st_mode & 0o777 == 0o660

@@ -1444,3 +1444,78 @@ def test_saving_one_settings_form_does_not_wipe_another(populated, cfg, tmp_path
     saved = Config.load(config_file)
     assert [str(r) for r in saved.roots] == [str(tmp_path)]
     assert saved.vlm_model == "gemma4:e4b"
+
+
+def test_settings_save_writes_the_file_the_service_reads(populated, cfg,
+                                                         tmp_path):
+    """A guessed relative path resolves against the working directory.
+
+    On the container that is /opt/tracepaper, which the service user cannot
+    write, so saving raised PermissionError. Worse than the crash: had it
+    succeeded it would have written a second config the service never reads,
+    and the save would have silently done nothing.
+    """
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from tracepaper.api import create_app
+    from tracepaper.config import Config
+
+    real_config = tmp_path / "etc" / "tracepaper.toml"
+    real_config.parent.mkdir(parents=True)
+    real_config.write_text("[index]\n")
+
+    configured = replace(cfg, roots=[tmp_path], source_path=real_config)
+    client = TestClient(create_app(configured))
+
+    result = client.post(
+        "/api/settings", json={"vlm_model": "gemma4:e4b"},
+        headers={"X-Tracepaper-Request": "1"}).json()
+
+    assert result.get("ok") is True, result.get("problems")
+    assert result["config_file"] == str(real_config)
+    assert Config.load(real_config).vlm_model == "gemma4:e4b"
+
+
+def test_config_remembers_where_it_was_loaded_from(tmp_path):
+    from tracepaper.config import Config
+
+    path = tmp_path / "custom.toml"
+    path.write_text('[index]\ndb_path = "/tmp/x.db"\n')
+
+    assert Config.load(path).source_path == path
+    assert Config.load(None).source_path is None
+
+
+def test_an_unwritable_config_explains_itself(populated, cfg, tmp_path):
+    """The container ships the config as 640 root:tracepaper, so this is the
+    likely real-world failure. A 500 tells the user nothing."""
+    import os
+    from dataclasses import replace
+
+    import pytest
+    from fastapi.testclient import TestClient
+
+    from tracepaper.api import create_app
+
+    if os.geteuid() == 0:
+        pytest.skip("root can write anything")
+
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    config_file = locked / "tracepaper.toml"
+    config_file.write_text("[index]\n")
+    locked.chmod(0o500)                      # no write on the directory
+    try:
+        configured = replace(cfg, roots=[tmp_path], source_path=config_file)
+        client = TestClient(create_app(configured))
+        result = client.post(
+            "/api/settings", json={"vlm_model": "gemma4:e4b"},
+            headers={"X-Tracepaper-Request": "1"}).json()
+
+        assert result["ok"] is False
+        assert "Could not write" in result["problems"][0]
+        assert str(config_file) in result["problems"][0]
+    finally:
+        locked.chmod(0o700)

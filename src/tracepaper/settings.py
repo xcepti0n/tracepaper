@@ -112,7 +112,17 @@ def save(path: Path | str, *, roots: list[str], db_path: str,
 
 
 def _write_atomic(path: Path, text: str) -> None:
-    """Replace the file in one step, so a crash cannot truncate the config."""
+    """Replace the file in one step, so a crash cannot truncate the config.
+
+    Writes through a symlink rather than over it. /etc/tracepaper.toml is a
+    link into a directory the service can write; replacing the link itself
+    would leave a root-owned file in /etc and break every save after the
+    first. The temp file must also land in the directory the real file lives
+    in, since os.replace cannot cross filesystems.
+    """
+    path = Path(path)
+    if path.is_symlink():
+        path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
@@ -120,6 +130,10 @@ def _write_atomic(path: Path, text: str) -> None:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
+        # Keep the mode the file already had; mkstemp creates 0600, which
+        # would lock out the group that is meant to read it.
+        if path.exists():
+            os.chmod(temp_name, path.stat().st_mode & 0o7777)
         os.replace(temp_name, path)
     except Exception:
         Path(temp_name).unlink(missing_ok=True)

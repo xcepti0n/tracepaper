@@ -449,7 +449,19 @@ model = \"gemma4:e4b-mlx\"
 load_threshold = 0.7
 EOF
 chown root:tracepaper /etc/tracepaper.toml
-chmod 640 /etc/tracepaper.toml"
+chmod 640 /etc/tracepaper.toml
+# Settings are editable from the web UI, and saving replaces the file rather
+# than writing into it, which needs write permission on the DIRECTORY. Giving
+# the service group write access to all of /etc would be indefensible, so the
+# config lives in its own directory with /etc/tracepaper.toml as a symlink for
+# anyone used to finding it there.
+install -d -o root -g tracepaper -m 775 /etc/tracepaper
+if [ ! -L /etc/tracepaper.toml ]; then
+  mv /etc/tracepaper.toml /etc/tracepaper/tracepaper.toml
+  ln -sfn /etc/tracepaper/tracepaper.toml /etc/tracepaper.toml
+fi
+chown root:tracepaper /etc/tracepaper/tracepaper.toml
+chmod 660 /etc/tracepaper/tracepaper.toml"
   msg_ok "Configuration written to /etc/tracepaper.toml"
 
   msg_info "Installing systemd units…"
