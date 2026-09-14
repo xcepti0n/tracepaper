@@ -596,3 +596,66 @@ def test_a_failed_scan_records_why(conn, cfg, nas):
     assert row["status"] == "failed"
     assert row["message"], "the reason must be stored, not just the failure"
     assert "disappeared" in row["message"]
+
+
+def test_marking_a_folder_as_code_does_not_look_like_a_vanished_share(
+        conn, cfg, nas):
+    """The guard could not tell "deliberately skipped" from "gone".
+
+    Marking one folder as code hid 7,212 files from the walk, the guard read
+    that as 76% of the share disappearing, and every scan aborted. The index
+    stopped updating because of a setting chosen on purpose.
+    """
+    from dataclasses import replace
+
+    from tracepaper import rules
+    from tracepaper.scan.scanner import Scanner
+
+    code_dir = nas / "Projects"
+    code_dir.mkdir(parents=True, exist_ok=True)
+    for index in range(12):
+        (code_dir / f"module{index}.py").write_text(f"x = {index}\n")
+    (nas / "letter.txt").write_text("a real document\n")
+
+    configured = replace(cfg, roots=[nas])
+    first = Scanner(conn, configured).scan(nas)
+    assert first.seen >= 13
+
+    # Now hide the folder, exactly as the Settings page does.
+    rules.add_rule(conn, str(code_dir), "code")
+
+    # The scan must succeed, not abort, and must not soft-delete the files it
+    # was told to skip: the rule is reversible.
+    Scanner(conn, replace(configured)).scan(nas)
+
+    still_there = conn.execute(
+        "SELECT COUNT(*) AS n FROM items WHERE deleted_at IS NULL "
+        "AND uri LIKE ?", (f"{code_dir}%",)).fetchone()["n"]
+    assert still_there > 0, (
+        "a folder marked as code is hidden from search, not deleted")
+
+
+def test_a_genuinely_unmounted_share_still_aborts(conn, cfg, nas):
+    """The guard must keep doing its job: the fix above must not disarm it."""
+    import shutil
+    from dataclasses import replace
+
+    from tracepaper.scan.scanner import Scanner
+
+    for index in range(20):
+        (nas / f"doc{index}.txt").write_text(f"content {index}\n")
+
+    configured = replace(cfg, roots=[nas])
+    Scanner(conn, configured).scan(nas)
+
+    # Everything gone, with no rule to explain it.
+    for item in nas.iterdir():
+        if item.is_file():
+            item.unlink()
+        else:
+            shutil.rmtree(item)
+
+    from tracepaper.scan.scanner import ScanAborted
+
+    with pytest.raises(ScanAborted, match="not mounted"):
+        Scanner(conn, configured).scan(nas)

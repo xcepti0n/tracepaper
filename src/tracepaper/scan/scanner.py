@@ -413,12 +413,31 @@ class Scanner:
         # under a new name and its file_state row is already gone.
         missing = [uri for uri in prior
                    if uri not in seen and uri not in result.moved_from]
+
+        # A path the walk deliberately skipped is not missing either, and this
+        # is the distinction the guard could not make. Marking one folder as
+        # code hid 7,212 files from the walk, the guard read that as 76% of the
+        # share vanishing, and every scan aborted: the index stopped updating
+        # because of a setting the user had chosen on purpose.
+        #
+        # Excluded paths are dropped from BOTH sides of the ratio. They are not
+        # evidence the share is gone, and they are not evidence it is present.
+        ruled = tuple(_ruled_prefixes(self.cfg))
+        skipped = set()
+        if ruled:
+            skipped = {uri for uri in missing if str(uri).startswith(ruled)}
+            if skipped:
+                log.info("%d path(s) skipped by a folder rule, not missing",
+                         len(skipped))
+                missing = [uri for uri in missing if uri not in skipped]
+
         if not missing:
             return
 
         # Survival is measured against paths that could still be found: a
         # reorganised folder shows up as moves, not as a vanished share.
         accounted = result.seen + len(result.moved_from)
+        prior_count = max(0, prior_count - len(skipped))
         if prior_count > 0 and accounted < prior_count:
             survival = accounted / prior_count
             if survival < self.cfg.vanish_guard:
