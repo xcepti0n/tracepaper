@@ -1113,6 +1113,9 @@ def _pending_formats(conn: sqlite3.Connection, limit: int = 12) -> list[dict]:
     from . import rules as rules_module
 
     counts: Counter[str] = Counter()
+    # A couple of real paths per type, because "258 jpg need OCR" does not say
+    # whether they are screenshots worth reading or scans of blank pages.
+    examples: dict[str, list[str]] = {}
     for row in conn.execute(
             "SELECT uri FROM items WHERE deleted_at IS NULL AND uri IS NOT NULL "
             "AND extraction_status IN ('pending','partial')"):
@@ -1127,6 +1130,8 @@ def _pending_formats(conn: sqlite3.Connection, limit: int = 12) -> list[dict]:
                 or rules_module.is_ruled(conn, uri, "hide")):
             continue
         counts[suffix] += 1
+        if len(examples.setdefault(suffix, [])) < 3:
+            examples[suffix].append(uri)
 
     out = []
     for suffix, total in counts.most_common(limit):
@@ -1134,5 +1139,6 @@ def _pending_formats(conn: sqlite3.Connection, limit: int = 12) -> list[dict]:
             suffix, ("no extractor", "No handler for this type yet, so only "
                                      "the file name is searchable."))
         out.append({"suffix": suffix or "(no extension)", "items": int(total),
-                    "reason": label, "detail": why})
+                    "reason": label, "detail": why,
+                    "examples": examples.get(suffix, [])})
     return out
