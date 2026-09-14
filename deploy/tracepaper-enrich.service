@@ -24,7 +24,18 @@ WorkingDirectory=/opt/tracepaper
 # from here, such as Ollama on another machine. Hardcoding --captions here would
 # put the control in two places, and a timer that did not pass it was why the
 # switch in the UI appeared to do nothing.
-ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper/tracepaper.toml enrich
+# Scan and enrich both write the index, and both now run hourly, so they will
+# meet. They are NOT made mutually exclusive with Conflicts=: that stops one by
+# KILLING the other, which loses a half-finished scan and is worse than
+# waiting.
+#
+# flock serialises them instead. Whichever starts second blocks until the first
+# finishes, then runs. Nothing is skipped and nothing is killed. The lock is a
+# file in the state directory rather than /tmp, so it is not cleared under the
+# service by something else, and -w bounds the wait: a job that cannot get the
+# lock within an hour has hit something stuck, and failing loudly beats piling
+# up runs that can never start.
+ExecStart=/usr/bin/flock -w 3600 /var/lib/tracepaper/index.lock /opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper/tracepaper.toml enrich
 
 # Embeddings are the memory-hungry part. Without semantic extras installed
 # this pass is nearly free, and this cap is simply never approached; with them

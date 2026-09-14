@@ -88,10 +88,14 @@ def test_execstart_binary_matches_installed_path(unit: Path):
         # A shell wrapper is legitimate when the command needs substitution
         # systemd cannot do (a dated filename, say) -- but the binary it runs
         # must still be one the installer creates, so check that too.
-        if binary in ("/bin/sh", "/usr/bin/sh", "/bin/bash"):
+        # flock is the same shape: a wrapper from the base system that must
+        # still end up running the installed binary. It ships in util-linux,
+        # which is Essential on Debian, so the path is safe to hardcode.
+        if binary in ("/bin/sh", "/usr/bin/sh", "/bin/bash", "/usr/bin/flock"):
             body = text[match.end():text.index("\n", match.end())]
             assert "/opt/tracepaper/.venv/bin/" in body, (
-                f"{unit.name}: shell ExecStart must invoke the installed binary")
+                f"{unit.name}: wrapper ExecStart must invoke the installed "
+                f"binary")
             continue
         allowed = ("/opt/tracepaper/.venv/bin/", "/opt/tracepaper/deploy/")
         assert binary.startswith(allowed), (
@@ -842,3 +846,44 @@ def test_enrichment_runs_often_enough_to_clear_a_backlog():
     assert "OnCalendar=hourly" in timer, (
         "a bounded run needs a cadence that can actually drain the queue")
     assert "OnCalendar=*-*-* 03:00:00" not in timer
+
+
+def test_scan_and_enrich_cannot_run_at_once():
+    """Both write the index and both run hourly, so they will meet.
+
+    Conflicts= would stop one by killing the other, losing a half-finished
+    scan. flock makes the second wait instead: nothing is skipped and nothing
+    is killed.
+    """
+    for name in ("tracepaper-scan.service", "tracepaper-enrich.service"):
+        text = (DEPLOY / name).read_text()
+        exec_line = [line for line in text.splitlines()
+                     if line.startswith("ExecStart=")][0]
+
+        assert "flock" in exec_line, f"{name} takes no lock"
+        assert "/var/lib/tracepaper/index.lock" in exec_line, (
+            f"{name}: the lock must be the same file in both units, and in "
+            f"the state directory rather than /tmp")
+        assert "-w " in exec_line, (
+            f"{name}: an unbounded wait piles up runs that never start")
+        # Killing a running scan is the outcome this avoids. Check directive
+        # lines only: the units explain in a comment why Conflicts= is wrong.
+        directives = [line for line in text.splitlines()
+                      if not line.lstrip().startswith("#")]
+        assert not any(line.startswith("Conflicts=") for line in directives)
+
+
+def test_the_lock_wait_is_bounded_and_equal_in_both_units():
+    """A job that cannot get the lock within the hour has hit something stuck,
+    and failing loudly beats queueing forever."""
+    import re
+
+    waits = []
+    for name in ("tracepaper-scan.service", "tracepaper-enrich.service"):
+        text = (DEPLOY / name).read_text()
+        match = re.search(r"flock -w (\d+)", text)
+        assert match, f"{name} has no bounded wait"
+        waits.append(int(match.group(1)))
+
+    assert waits[0] == waits[1], "an asymmetric wait starves one job"
+    assert 0 < waits[0] <= 7200

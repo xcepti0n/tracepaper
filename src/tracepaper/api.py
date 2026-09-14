@@ -10,8 +10,11 @@ the human-authored layer the whole design treats as authoritative (FR-10).
 
 from __future__ import annotations
 
+import logging
+import os
 import sqlite3
 import threading
+from hashlib import sha256
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -451,6 +454,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         except ImportError:
             return RedirectResponse(f"/file/{item_id}")
 
+        # Decoding a 12MP original for every request is most of the cost of a
+        # photo grid, and the browser cache does nothing for a cold load or a
+        # second viewer. The key includes size, mtime and the file size, so an
+        # edited or replaced photo gets a new thumbnail rather than a stale one.
+        cached = _thumb_cache_path(item_id, size, path)
+        if cached is not None and cached.exists():
+            return Response(content=cached.read_bytes(), media_type="image/jpeg",
+                            headers={"Cache-Control": "public, max-age=86400"})
+
         try:
             with Image.open(path) as image:
                 # EXIF orientation: a phone photo is often stored rotated, and
@@ -466,7 +478,21 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             raise HTTPException(status_code=422,
                                 detail=f"cannot render a preview: {exc}")
 
-        return Response(content=buffer.getvalue(), media_type="image/jpeg",
+        rendered = buffer.getvalue()
+        if cached is not None:
+            # Written via a temporary file in the same directory: a half-written
+            # thumbnail served to the next request would be a broken image, and
+            # two viewers can ask for the same one at once.
+            try:
+                cached.parent.mkdir(parents=True, exist_ok=True)
+                temp = cached.with_suffix(f".{os.getpid()}.tmp")
+                temp.write_bytes(rendered)
+                os.replace(temp, cached)
+            except OSError as exc:
+                # A cache that cannot be written is a slow page, not a failure.
+                log.debug("could not cache thumbnail %s: %s", cached, exc)
+
+        return Response(content=rendered, media_type="image/jpeg",
                         headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/api/items/{item_id}")
@@ -946,6 +972,30 @@ def _status(conn: sqlite3.Connection, *, max_age: float | None = None) -> dict[s
     _STATUS_CACHE["at"] = now
     _STATUS_CACHE["value"] = value
     return value
+
+
+log = logging.getLogger(__name__)
+
+# Rendered thumbnails live beside the index, not in /tmp: they are worth
+# keeping across a reboot, and /tmp on this host is small.
+THUMB_CACHE_DIR = Path("/var/lib/tracepaper/thumbs")
+
+
+def _thumb_cache_path(item_id: int, size: int, source: Path) -> Path | None:
+    """Where this thumbnail is cached, or None when it cannot be.
+
+    The key covers the source file's mtime and size, so replacing a photo with
+    a different one at the same path yields a different key rather than serving
+    the previous picture forever. Two levels of fan-out keep any single
+    directory small; a flat directory with 100k entries is slow to stat on ext4.
+    """
+    try:
+        stat = source.stat()
+    except OSError:
+        return None
+    key = f"{item_id}-{size}-{int(stat.st_mtime)}-{stat.st_size}"
+    digest = sha256(key.encode()).hexdigest()
+    return THUMB_CACHE_DIR / digest[:2] / digest[2:4] / f"{digest}.jpg"
 
 
 def _status_uncached(conn: sqlite3.Connection) -> dict[str, Any]:

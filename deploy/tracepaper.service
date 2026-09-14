@@ -97,7 +97,7 @@ MemoryMax=768M
 # while search silently fell back to keyword-only.
 # systemd creates these owned by User= before ExecStart, so the cache
 # directories exist on a fresh install without an installer chown.
-StateDirectory=tracepaper tracepaper/cache tracepaper/torch tracepaper/hf-cache
+StateDirectory=tracepaper tracepaper/cache tracepaper/torch tracepaper/hf-cache tracepaper/thumbs
 StateDirectoryMode=0750
 
 Environment=HOME=/var/lib/tracepaper

@@ -522,3 +522,54 @@ def test_photo_results_are_ordered_by_relevance_not_date(conn, cfg, nas):
     # The older photo wins because its description matches, despite the other
     # being newer.
     assert photos[0]["title"] == "old_match.jpg"
+
+
+def test_thumbnails_are_cached_on_disk(tmp_path, monkeypatch):
+    """Decoding a 12MP original per request is most of the cost of a photo
+    grid, and the browser cache does nothing for a cold load or a second
+    viewer."""
+    Image = pytest.importorskip("PIL.Image")
+    from tracepaper import api
+
+    source = tmp_path / "photo.jpg"
+    Image.new("RGB", (2000, 1500), "blue").save(source)
+    monkeypatch.setattr(api, "THUMB_CACHE_DIR", tmp_path / "thumbs")
+
+    first = api._thumb_cache_path(1, 320, source)
+
+    assert first is not None
+    assert first.suffix == ".jpg"
+    # Stable for the same file: a second request must hit the same entry.
+    assert api._thumb_cache_path(1, 320, source) == first
+    # Size is part of the key, or a 320px request would serve a 64px image.
+    assert api._thumb_cache_path(1, 64, source) != first
+
+
+def test_a_replaced_photo_does_not_serve_the_old_thumbnail(tmp_path,
+                                                           monkeypatch):
+    """Caching on item id alone would show the previous picture forever after
+    a file is replaced at the same path."""
+    Image = pytest.importorskip("PIL.Image")
+    from tracepaper import api
+
+    source = tmp_path / "photo.jpg"
+    Image.new("RGB", (800, 600), "blue").save(source)
+    monkeypatch.setattr(api, "THUMB_CACHE_DIR", tmp_path / "thumbs")
+    before = api._thumb_cache_path(1, 320, source)
+
+    # A different photo at the same path, with a different mtime and size.
+    import os
+    import time
+    time.sleep(0.01)
+    Image.new("RGB", (1600, 1200), "red").save(source)
+    os.utime(source, (time.time() + 10, time.time() + 10))
+
+    assert api._thumb_cache_path(1, 320, source) != before
+
+
+def test_a_missing_source_file_has_no_cache_entry(tmp_path, monkeypatch):
+    from tracepaper import api
+
+    monkeypatch.setattr(api, "THUMB_CACHE_DIR", tmp_path / "thumbs")
+
+    assert api._thumb_cache_path(1, 320, tmp_path / "gone.jpg") is None

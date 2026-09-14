@@ -28,7 +28,18 @@ Environment=XDG_CACHE_HOME=/var/lib/tracepaper/cache
 Environment=TORCH_HOME=/var/lib/tracepaper/torch
 Environment=HF_HOME=/var/lib/tracepaper/hf-cache
 
-ExecStart=/opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper/tracepaper.toml scan --index
+# Scan and enrich both write the index, and both now run hourly, so they will
+# meet. They are NOT made mutually exclusive with Conflicts=: that stops one by
+# KILLING the other, which loses a half-finished scan and is worse than
+# waiting.
+#
+# flock serialises them instead. Whichever starts second blocks until the first
+# finishes, then runs. Nothing is skipped and nothing is killed. The lock is a
+# file in the state directory rather than /tmp, so it is not cleared under the
+# service by something else, and -w bounds the wait: a job that cannot get the
+# lock within an hour has hit something stuck, and failing loudly beats piling
+# up runs that can never start.
+ExecStart=/usr/bin/flock -w 3600 /var/lib/tracepaper/index.lock /opt/tracepaper/.venv/bin/tracepaper --config /etc/tracepaper/tracepaper.toml scan --index
 
 # Extraction is heavier than the service's own ceiling — OCR rasterises pages
 # into memory — and it must not be killed halfway through a large PDF.
