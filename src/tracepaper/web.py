@@ -2068,6 +2068,18 @@ def _status_tab(conn: sqlite3.Connection) -> str:
         out.append(f'<p class="hint">{embedded} of {embeddings["passages"]} '
                    f'passages embedded. {action}</p>')
 
+    # A model that failed to load is the difference between semantic search and
+    # keyword-only, and nothing on this page used to say so. It went unnoticed
+    # for days: the service wrote one warning to the journal and carried on.
+    from . import embed as _embed_status
+
+    load_error = _embed_status.load_error()
+    if load_error:
+        out.append(
+            f'<p class="hint"><span class="pill warn">keyword only</span> '
+            f'The word-meaning model did not load, so search is matching exact '
+            f'words only. {_esc(load_error[:300])}</p>')
+
     scan = info["last_scan"]
     if scan:
         # A failure has to say why on the page. "failed" on its own sent you

@@ -90,6 +90,19 @@ MemoryMax=768M
 # The model cache must be writable by the service user. HuggingFace defaults it
 # to the working directory, which is root-owned by design -- so startup failed
 # with EACCES on every boot and search silently fell back to keyword-only.
+# HOME is unset for a systemd service, so it defaults to WorkingDirectory:
+# /opt/tracepaper, which is root-owned. Any library reaching for $HOME/.cache
+# then fails with EACCES. HF_HOME does not cover this, because torch.hub uses
+# $HOME/.cache unconditionally, and the failure surfaced only as a warning
+# while search silently fell back to keyword-only.
+# systemd creates these owned by User= before ExecStart, so the cache
+# directories exist on a fresh install without an installer chown.
+StateDirectory=tracepaper tracepaper/cache tracepaper/torch tracepaper/hf-cache
+StateDirectoryMode=0750
+
+Environment=HOME=/var/lib/tracepaper
+Environment=XDG_CACHE_HOME=/var/lib/tracepaper/cache
+Environment=TORCH_HOME=/var/lib/tracepaper/torch
 Environment=HF_HOME=/var/lib/tracepaper/hf-cache
 
 # Never reach the network to resolve the model at startup. HF_HUB_OFFLINE makes

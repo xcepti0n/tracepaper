@@ -812,3 +812,22 @@ def test_the_enrich_timer_does_not_second_guess_the_captions_setting():
     assert exec_lines, "no ExecStart in the enrich unit"
     for line in exec_lines:
         assert "--captions" not in line, line
+
+
+def test_units_point_home_somewhere_writable():
+    """HOME is unset for a systemd service, so it defaults to
+    WorkingDirectory: /opt/tracepaper, which is root-owned. Any library
+    reaching for $HOME/.cache then fails with EACCES, and HF_HOME does not
+    cover it because torch.hub uses $HOME/.cache unconditionally.
+
+    That is how the embedding model silently failed to load for days while
+    search quietly fell back to keyword-only.
+    """
+    for name in ("tracepaper.service", "tracepaper-enrich.service",
+                 "tracepaper-scan.service"):
+        text = (DEPLOY / name).read_text()
+        assert "Environment=HOME=" in text, f"{name} leaves HOME at /opt"
+        home = [line.split("=", 2)[2] for line in text.splitlines()
+                if line.startswith("Environment=HOME=")][0]
+        assert not home.startswith("/opt/"), (
+            f"{name}: HOME={home} is not writable by the service")

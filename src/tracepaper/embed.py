@@ -21,6 +21,7 @@ import sqlite3
 import struct
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,57 @@ log = logging.getLogger(__name__)
 DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 _model_cache: dict[str, object] = {}
+
+# Why the model is not loaded, when it is not. A warning in the journal is not
+# enough: semantic search degrading to keyword-only is invisible from the UI,
+# so the reason has to be reportable.
+_load_error: str | None = None
+
+# Where the downloaded model is kept.
+#
+# HF_HOME covers huggingface_hub, but NOT torch.hub, which uses $HOME/.cache
+# unconditionally. systemd leaves HOME unset, so it defaults to
+# WorkingDirectory: the service tried to write /opt/tracepaper/.cache, which is
+# root-owned by design, and failed with EACCES. That was reported as a warning
+# and search silently dropped to keyword-only on every scheduled run, which is
+# the worst shape for a bug like this -- nothing looked broken.
+#
+# So the directory is passed explicitly rather than inferred from whichever
+# environment variable each library happens to respect. A writable cache is not
+# optional: without it the model is re-downloaded on every run, or not loaded
+# at all.
+DEFAULT_CACHE_DIR = "/var/lib/tracepaper/hf-cache"
+
+
+def cache_dir() -> str:
+    """The model cache directory, preferring an explicit environment setting.
+
+    Falls back to a temporary directory when the configured one cannot be
+    written, so a bad deployment degrades to a slow start rather than to
+    keyword-only search with a warning nobody reads.
+    """
+    import os
+    import tempfile
+
+    for candidate in (os.environ.get("TRACEPAPER_MODEL_CACHE"),
+                      os.environ.get("HF_HOME"),
+                      DEFAULT_CACHE_DIR):
+        if not candidate:
+            continue
+        try:
+            Path(candidate).mkdir(parents=True, exist_ok=True)
+            probe = Path(candidate) / ".write-test"
+            probe.touch()
+            probe.unlink()
+            return str(candidate)
+        except OSError:
+            log.warning("model cache %s is not writable, trying the next one",
+                        candidate)
+    fallback = Path(tempfile.gettempdir()) / "tracepaper-models"
+    fallback.mkdir(parents=True, exist_ok=True)
+    log.warning("falling back to %s for the model cache; it will not survive "
+                "a reboot, so the model is re-downloaded", fallback)
+    return str(fallback)
 
 # An embedding model is not inference: it is a deterministic function from text
 # to a vector, and the same query embeds identically forever. So it IS allowed
@@ -59,6 +111,11 @@ def preload(model_id: str = DEFAULT_MODEL) -> bool:
     so later starts are offline and fast.
     """
     return load_model(model_id, force=True) is not None
+
+
+def load_error() -> str | None:
+    """Why the embedding model is unavailable, or None when it is fine."""
+    return _load_error
 
 
 def local_path(model_id: str = DEFAULT_MODEL) -> str | None:
@@ -94,16 +151,21 @@ def available() -> bool:
 
 def load_model(model_id: str = DEFAULT_MODEL, *, force: bool = False):
     """Return the cached model, loading it only when that is permitted."""
+    global _load_error
     if model_id in _model_cache:
         return _model_cache[model_id]
     if not force and not _allow_lazy_load:
         return None
     try:
         from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer(model_id)
+        # Explicit, so this does not depend on which cache variable each
+        # library in the chain happens to honour.
+        model = SentenceTransformer(model_id, cache_folder=cache_dir())
         _model_cache[model_id] = model
+        _load_error = None
         return model
     except Exception as exc:
+        _load_error = f"{type(exc).__name__}: {exc}"
         log.warning("cannot load embedding model %s: %s", model_id, exc)
         return None
 

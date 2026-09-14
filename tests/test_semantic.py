@@ -645,3 +645,56 @@ def test_paging_is_stable_across_the_fused_path(conn, cfg, nas):
     b = [h.item_id for h in second.hits]
     assert len(a) == 4 and len(b) == 4
     assert not set(a) & set(b), f"page 2 repeats page 1: {a} vs {b}"
+
+
+def test_the_model_cache_is_explicit_not_inherited(monkeypatch, tmp_path):
+    """HF_HOME does not cover torch.hub, which uses $HOME/.cache regardless.
+
+    systemd leaves HOME unset, so it defaults to WorkingDirectory. On the
+    container that is /opt/tracepaper, which is root-owned, so the load failed
+    with EACCES and search silently dropped to keyword-only for days.
+    """
+    from tracepaper import embed
+
+    wanted = tmp_path / "cache"
+    monkeypatch.setenv("TRACEPAPER_MODEL_CACHE", str(wanted))
+
+    assert embed.cache_dir() == str(wanted)
+    assert wanted.exists(), "the directory is created, not merely named"
+
+
+def test_an_unwritable_cache_falls_back_rather_than_failing(monkeypatch,
+                                                            tmp_path):
+    """A slow start beats keyword-only search with a warning nobody reads."""
+    import os
+
+    import pytest
+
+    from tracepaper import embed
+
+    if os.geteuid() == 0:
+        pytest.skip("root can write anything")
+
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o500)
+    try:
+        monkeypatch.setenv("TRACEPAPER_MODEL_CACHE", str(locked / "cache"))
+        monkeypatch.delenv("HF_HOME", raising=False)
+        resolved = embed.cache_dir()
+
+        assert resolved != str(locked / "cache")
+        assert Path(resolved).exists()
+    finally:
+        locked.chmod(0o700)
+
+
+def test_a_failed_model_load_is_reportable():
+    """The reason has to reach the UI. A journal warning is not enough: this
+    exact failure went unnoticed because nothing on the page said search had
+    degraded."""
+    from tracepaper import embed
+
+    embed.load_model("definitely/not-a-real-model-xyz", force=True)
+
+    assert embed.load_error(), "the failure reason must be retrievable"
