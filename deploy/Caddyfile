@@ -21,11 +21,30 @@
 # normal figure people expect. The CA root itself is unaffected and lasts
 # years, so trusting it once per device is still a one-time step.
 #
+# A leaf certificate can never outlive the CA that signed it, and Caddy's
+# internal INTERMEDIATE defaults to 7 days. Asking for 90-day leaves alone
+# silently gets you whatever is left of that week instead, so the global
+# `pki` block below gives the intermediate a longer life. Without it the
+# `lifetime` above is clamped and looks like it was ignored.
+#
+# The intermediate is set to 180d rather than 90d on purpose: it starts ageing
+# immediately, so an equal figure would clamp the leaf again after the first
+# day. It must be strictly longer than the leaf.
+#
 # There is deliberately no `log` directive. The Debian package runs Caddy under
 # ProtectSystem=full, which remounts /var/log read-only, so pointing a log
 # writer there fails at config load and Caddy exits before binding anything.
 # The default is journald, where the rest of this stack already logs:
 #   journalctl -u caddy -f
+
+# Global options. The intermediate must outlive the certificates it signs.
+{
+	pki {
+		ca local {
+			intermediate_lifetime 180d
+		}
+	}
+}
 
 https://{$TRACEPAPER_DOMAIN} {
 	tls {

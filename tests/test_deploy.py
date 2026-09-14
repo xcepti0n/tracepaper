@@ -393,10 +393,22 @@ def test_certificates_last_long_enough_to_not_look_like_an_outage():
 
     assert "issuer internal" in caddyfile, (
         "an explicit issuer block is what allows a lifetime to be set")
-    match = re.search(r"lifetime\s+(\d+)d", caddyfile)
-    assert match, "the internal issuer needs an explicit lifetime"
-    assert int(match.group(1)) >= 90, (
-        f"{match.group(1)}d is too short; 90 days or more")
+    leaf = re.search(r"^\s*lifetime\s+(\d+)d", caddyfile, re.MULTILINE)
+    assert leaf, "the internal issuer needs an explicit lifetime"
+    assert int(leaf.group(1)) >= 90, (
+        f"{leaf.group(1)}d is too short; 90 days or more")
+
+    # A leaf can never outlive its issuer, and Caddy's internal intermediate
+    # defaults to 7 days. Setting only the leaf lifetime silently yields
+    # whatever is left of that week: asking for 90d produced a 6-day cert on
+    # the live container, which read as the setting being ignored.
+    intermediate = re.search(r"intermediate_lifetime\s+(\d+)d", caddyfile)
+    assert intermediate, (
+        "without pki { ca local { intermediate_lifetime } } the leaf lifetime "
+        "is clamped to the intermediate's remaining life")
+    assert int(intermediate.group(1)) > int(leaf.group(1)), (
+        "the intermediate ages from the moment it is created, so an equal "
+        "lifetime clamps the leaf again after the first day")
 
 
 def test_tls_still_terminates_on_the_dns_name():
