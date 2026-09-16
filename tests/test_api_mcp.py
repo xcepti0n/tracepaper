@@ -1852,9 +1852,93 @@ def test_every_colour_token_is_themed_for_dark_mode():
     dark = set(re.findall(r"(--[a-z0-9-]+)\s*:", dark_block))
 
     # Geometry is shared on purpose; only colour needs a dark counterpart.
-    geometry = {"--radius"}
+    geometry = {"--radius", "--header-h"}
     assert light - dark <= geometry, f"not themed for dark: {light - dark - geometry}"
 
     defined = set(re.findall(r"(--[a-z0-9-]+)\s*:", STYLE))
     used = set(re.findall(r"var\((--[a-z0-9-]+)", STYLE))
     assert not (used - defined), f"undefined: {used - defined}"
+
+
+def _relative_luminance(hex_colour: str) -> float:
+    hex_colour = hex_colour.lstrip("#")
+    channels = [int(hex_colour[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    channels = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+                for c in channels]
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def _contrast(a: str, b: str) -> float:
+    la, lb = _relative_luminance(a), _relative_luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def _tokens(block: str) -> dict:
+    import re
+    return dict(re.findall(r"(--[a-z0-9-]+)\s*:\s*(#[0-9a-fA-F]{6})", block))
+
+
+def test_every_colour_pairing_is_readable():
+    """iOS forces dark mode on by default, so dark is a primary theme rather
+    than a fallback. A saturated mid-blue accent on a dark ground was reported
+    as unreadable, so every pairing is checked rather than eyeballed."""
+    import re
+    from tracepaper.web import STYLE
+
+    light = _tokens(STYLE[:STYLE.index("@media")])
+    dark = _tokens(STYLE[STYLE.index("@media"):STYLE.index("* { box-sizing")])
+
+    for name, theme in (("light", light), ("dark", dark)):
+        card = theme["--card"]
+        for token in ("--fg", "--muted", "--link", "--ok", "--warn", "--bad"):
+            ratio = _contrast(theme[token], card)
+            assert ratio >= 4.5, (
+                f"{name}: {token} on --card is {ratio:.2f}:1, below AA 4.5:1")
+        # Button text on the accent fill.
+        ratio = _contrast(theme["--accent-ink"], theme["--accent"])
+        assert ratio >= 4.5, (
+            f"{name}: --accent-ink on --accent is {ratio:.2f}:1")
+
+
+def test_the_palette_is_one_hue_plus_status():
+    """Teal buttons, a separate blue for links and amber accents read as three
+    themes at once. Interactive colour is one hue; red/amber/green stay only
+    because they carry meaning."""
+    import colorsys
+    from tracepaper.web import STYLE
+
+    for block in (STYLE[:STYLE.index("@media")],
+                  STYLE[STYLE.index("@media"):STYLE.index("* { box-sizing")]):
+        theme = _tokens(block)
+        hues = []
+        for token in ("--accent", "--accent-hover", "--link", "--link-hover"):
+            value = theme[token].lstrip("#")
+            r, g, b = (int(value[i:i + 2], 16) / 255 for i in (0, 2, 4))
+            hues.append(colorsys.rgb_to_hsv(r, g, b)[0] * 360)
+        assert max(hues) - min(hues) <= 25, (
+            f"interactive colours span {max(hues) - min(hues):.0f} degrees of "
+            f"hue; they should be one family")
+
+
+def test_the_settings_sections_stay_reachable_while_scrolling(client):
+    """Settings sections are long. A nav that scrolls away means going back to
+    the top to switch section."""
+    html = client.get("/?tab=settings&section=storage").text
+    style = html[html.index("<style>"):html.index("</style>")]
+
+    subnav = style[style.index(".subnav {"):]
+    assert "position:sticky" in subnav[:400]
+    assert "var(--header-h)" in subnav[:400], (
+        "the offset must follow the real header, which wraps on narrow screens")
+    assert "syncHeaderHeight" in html, "the header height must be measured"
+
+
+def test_no_colour_escapes_the_token_blocks():
+    """A literal hex in a rule keeps its value in the other theme. That is how
+    status reds stayed light-mode red on a dark background."""
+    import re
+    from tracepaper.web import STYLE
+
+    body = STYLE[STYLE.index("* { box-sizing"):]
+    stray = re.findall(r"[^-\w](#[0-9a-fA-F]{3,8})\b", body)
+    assert not stray, f"hardcoded colours outside the palette: {stray}"

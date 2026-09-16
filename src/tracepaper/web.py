@@ -24,32 +24,49 @@ from .query.search import SearchEngine
 
 STYLE = """
 :root {
-  /* One accent hue with real steps, so emphasis has somewhere to go. The old
-     palette had a single --accent doing every job, which is why links, active
-     tabs and buttons all read as the same flat green. */
-  --bg: #f7f8fa; --fg: #14161a; --muted: #5d6470; --line: #e4e7ec;
-  --card: #ffffff; --card-2: #fbfcfd;
-  --accent: #0f766e; --accent-hover: #0d5f59; --accent-ink: #ffffff;
-  --accent-soft: #e6f4f1; --accent-line: #a7d7cd;
-  --link: #0b6bcb; --link-hover: #094f97;
-  --ok: #15803d; --ok-soft: #e8f6ed;
+  /* ONE hue: indigo. Everything that means "interactive" is a step on the same
+     ramp, so links, tabs and buttons read as one family instead of the teal,
+     separate blue and amber that made this look like three themes at once.
+     Status colours are the only other hues, because red/amber/green carry
+     meaning no house colour can replace. Every pairing below is checked for
+     WCAG AA contrast by test_every_colour_pairing_is_readable. */
+  --bg: #f6f7fb; --fg: #14161a; --muted: #5b616e; --line: #e3e5ec;
+  --card: #ffffff; --card-2: #fafbfe;
+
+  --accent: #4f46e5; --accent-hover: #4338ca; --accent-ink: #ffffff;
+  --accent-soft: #eef0fe; --accent-line: #c3c7f7;
+  /* Links are the accent, one step darker for body-text contrast. */
+  --link: #4338ca; --link-hover: #3730a3;
+
+  --ok: #047857; --ok-soft: #e7f6f0;
   --warn: #b45309; --warn-soft: #fdf3e7;
   --bad: #be123c; --bad-soft: #fdebef;
-  --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.10);
-  --shadow-lg: 0 4px 12px rgba(16,24,40,.10), 0 2px 4px rgba(16,24,40,.06);
+
+  --shadow: 0 1px 2px rgba(20,22,26,.05), 0 1px 3px rgba(20,22,26,.08);
+  --shadow-lg: 0 6px 16px rgba(20,22,26,.10), 0 2px 5px rgba(20,22,26,.06);
   --radius: 10px;
+  --header-h: 92px;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg:#0f1115; --fg:#e7e9ee; --muted:#9aa2b1; --line:#262a33;
-          --card:#161922; --card-2:#1b1f29;
-          --accent:#2dd4bf; --accent-hover:#5eead4; --accent-ink:#06211e;
-          --accent-soft:#122b28; --accent-line:#1f4d47;
-          --link:#7cc0ff; --link-hover:#a5d5ff;
-          --ok:#4ade80; --ok-soft:#10241a;
-          --warn:#fbbf24; --warn-soft:#2a1f0d;
-          --bad:#fb7185; --bad-soft:#2c1119;
-          --shadow: 0 1px 2px rgba(0,0,0,.4), 0 1px 3px rgba(0,0,0,.3);
-          --shadow-lg: 0 4px 14px rgba(0,0,0,.5), 0 2px 6px rgba(0,0,0,.35); }
+  :root {
+    /* iOS forces this on by default, so it is the primary theme, not a
+       fallback. Saturated mid-blues vibrate on a dark ground and are what
+       felt unreadable, so the accent lightens to a desaturated indigo and
+       dark text sits on it rather than white. */
+    --bg:#0d0f14; --fg:#e7e9ee; --muted:#9aa2b1; --line:#252833;
+    --card:#161922; --card-2:#1b1e29;
+
+    --accent:#a5b4fc; --accent-hover:#c7d2fe; --accent-ink:#1e1b4b;
+    --accent-soft:#1c2039; --accent-line:#39406b;
+    --link:#a5b4fc; --link-hover:#c7d2fe;
+
+    --ok:#6ee7a8; --ok-soft:#0e2a1f;
+    --warn:#fcd34d; --warn-soft:#2c2310;
+    --bad:#fda4af; --bad-soft:#2e1319;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.5), 0 1px 3px rgba(0,0,0,.4);
+    --shadow-lg: 0 6px 18px rgba(0,0,0,.55), 0 2px 6px rgba(0,0,0,.4);
+  }
 }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--fg);
@@ -131,12 +148,33 @@ a:visited { color:var(--link); }
 .crumbs a { color:var(--accent); text-decoration:none; }
 .crumbs a:hover { text-decoration:underline; }
 code.dim { color:var(--muted); font-size:11.5px; margin-left:6px; }
-.subnav { display:flex; gap:4px; flex-wrap:wrap; margin:0 0 4px;
-  border-bottom:1px solid var(--line); padding-bottom:10px; }
+/* Sticks directly under the main tabs, which are themselves sticky at top:0.
+   Settings sections are long, so scrolling used to lose the section nav and
+   there was no way to switch without scrolling back up.
+   The offset is measured from the real header at runtime and written to
+   --header-h, because the header wraps to two lines on a narrow screen and a
+   hardcoded value would leave a gap or overlap. */
+.subnav { display:flex; gap:4px; flex-wrap:wrap; margin:0 0 14px;
+  border-bottom:1px solid var(--line); padding:8px 0 10px;
+  position:sticky; top:calc(var(--header-h) - 1px); z-index:9;
+  background:var(--bg);
+  /* The page background runs edge to edge, but .wrap is padded, so without
+     this the content shows through beside the bar as it scrolls under. */
+  box-shadow:0 0 0 20px var(--bg); }
 .subnav a { padding:6px 12px; text-decoration:none; color:var(--muted);
-  border-radius:6px; font-size:13.5px; }
-.subnav a:hover { color:var(--fg); background:var(--accent-soft); }
-.subnav a.on { color:var(--fg); background:var(--accent-soft); font-weight:600; }
+  border-radius:7px; font-size:13.5px; font-weight:500;
+  transition:background .12s, color .12s; }
+.subnav a:hover { color:var(--accent); background:var(--accent-soft); }
+.subnav a.on { color:var(--accent-ink); background:var(--accent);
+  font-weight:600; }
+@media (max-width:640px) {
+  /* Wrapping tabs on a phone would eat most of the screen before any content,
+     so they scroll sideways in one row instead. */
+  .subnav { flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none;
+    -webkit-overflow-scrolling:touch; }
+  .subnav::-webkit-scrollbar { display:none; }
+  .subnav a { flex:none; }
+}
 .tips { margin:8px 0 0; padding-left:18px; line-height:1.75; }
 .tips li { font-size:13.5px; color:var(--muted); }
 .tips li b { color:var(--fg); font-weight:600; }
@@ -904,6 +942,22 @@ document.addEventListener('click', function (event) {
     button.textContent = 'failed';
   });
 });
+
+// The sticky section nav sits under the sticky header, whose height changes
+// when it wraps on a narrow screen. Measure it rather than guessing: a
+// hardcoded offset leaves either a gap or an overlap at some width.
+function syncHeaderHeight() {
+  const header = document.querySelector('header');
+  if (!header) return;
+  document.documentElement.style.setProperty(
+    '--header-h', header.getBoundingClientRect().height + 'px');
+}
+syncHeaderHeight();
+window.addEventListener('resize', syncHeaderHeight);
+if (window.ResizeObserver) {
+  const header = document.querySelector('header');
+  if (header) new ResizeObserver(syncHeaderHeight).observe(header);
+}
 
 window.__tpOnReady = {push: function (fn) { fn(); }};
 """
