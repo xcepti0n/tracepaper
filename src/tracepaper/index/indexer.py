@@ -215,7 +215,7 @@ class Indexer:
                 )
             return "failed"
 
-        extracted = text_extract.extract(path)
+        extracted = text_extract.extract(path, cfg=self.cfg)
         mime = text_extract.guess_mime(path)
 
         parts = passage_split.split(

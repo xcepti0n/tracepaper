@@ -290,3 +290,93 @@ def to_tags(result: VisionTags) -> list[tuple[str, str, str, float]]:
     if result.caption:
         rows.append(("caption", result.caption, "vlm", 0.5))
     return rows
+
+
+# ---------------------------------------------------------------- VLM OCR ---
+# Tesseract reads clean scans well and photographed documents badly: a PAN
+# card at an angle, a visa stamp in a passport, a voter ID under glare. A
+# vision model handles those, so it runs only where Tesseract found nothing,
+# never instead of it. It is far slower, which is exactly why it is last.
+#
+# This is ingest, never the query path. Search itself stays deterministic.
+
+_OCR_PROMPT = (
+    "Transcribe all text visible in this image, exactly as it appears. "
+    "Preserve line breaks. Do not translate, summarise, correct or explain "
+    "anything. If there is no legible text, reply with exactly: NO_TEXT"
+)
+
+# A model asked to transcribe an image with no text tends to narrate instead
+# ("a photograph of a document on a table"). That prose would be indexed as if
+# it were the document's own text, so it is rejected.
+_NARRATION_MARKERS = (
+    "the image shows", "this image shows", "the image depicts",
+    "this appears to be", "the photo shows", "there is no legible",
+    "no text is visible", "i cannot", "i'm unable", "unable to read",
+    "no_text",
+)
+
+MIN_OCR_CHARS = 12
+
+
+def _usable_transcription(text: str) -> str:
+    """Keep a transcription only when it looks like transcribed text.
+
+    The failure this guards against is not a wrong character here and there,
+    it is the model describing the picture instead of reading it. That prose
+    is fluent, confident and completely fabricated as far as the index is
+    concerned, and it would be stored as the document's searchable text.
+    """
+    cleaned = text.strip()
+    if len(cleaned) < MIN_OCR_CHARS:
+        return ""
+
+    lowered = cleaned.lower()
+    for marker in _BLIND_MARKERS:
+        if marker in lowered:
+            log.warning("vlm ocr: model reported no image, discarding")
+            return ""
+    # Only a narration that OPENS the reply counts. A real form can easily
+    # contain "the image shows" partway through ("Attach a photograph. The
+    # image shows the damaged item"), and rejecting that would throw away a
+    # genuine transcription. A model that is describing rather than reading
+    # starts that way from the first word.
+    for marker in _NARRATION_MARKERS:
+        if lowered.startswith(marker):
+            log.info("vlm ocr: model described the image instead of reading "
+                     "it, discarding: %r", cleaned[:100])
+            return ""
+    return cleaned
+
+
+def transcribe(path: Path, *, endpoint: str, model: str,
+               timeout: int = 180) -> str:
+    """Read the text out of an image with a vision model. "" on any failure.
+
+    Deliberately separate from caption(): that one asks for a description and
+    is stored as a caption, this one asks for a transcription and is stored as
+    the document's text. Mixing them would put invented prose in the index.
+    """
+    import base64
+    import urllib.request
+
+    try:
+        encoded = base64.b64encode(_downscaled(path)).decode()
+        body = json.dumps({
+            "model": model,
+            "prompt": _OCR_PROMPT,
+            "images": [encoded],
+            "stream": False,
+            # Zero temperature: this is a reading task, and any sampling
+            # freedom here shows up as invented characters.
+            "options": {"temperature": 0.0, "seed": 42},
+        }).encode()
+        request = urllib.request.Request(
+            f"{endpoint}/api/generate", data=body,
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            reply = json.loads(response.read())
+        return _usable_transcription(str(reply.get("response", "")))
+    except Exception as exc:
+        log.debug("vlm ocr failed for %s: %s", path, exc)
+        return ""

@@ -118,8 +118,14 @@ def _tesseract_available() -> bool:
         return False
 
 
-def ocr_image(path: Path) -> OcrResult:
-    """OCR a single image file. Never raises."""
+def ocr_image(path: Path, *, cfg=None) -> OcrResult:
+    """OCR a single image file. Never raises.
+
+    Backends are tried cheapest first. The vision model is last because it is
+    orders of magnitude slower than the others, so it only ever sees images
+    the real OCR engines could not read: photographed documents at an angle,
+    under glare, or with a stamp across them.
+    """
     if _vision_available():
         result = _ocr_vision(path)
         if result.usable:
@@ -130,7 +136,41 @@ def ocr_image(path: Path) -> OcrResult:
         if result.usable:
             return result
 
+    if cfg is not None and _vlm_configured(cfg):
+        result = _ocr_vlm(path, cfg)
+        if result.usable:
+            return result
+
     return OcrResult(text="", backend="none", confidence=0.0)
+
+
+def _vlm_configured(cfg) -> bool:
+    """Only when the user has turned the LLM on and named an endpoint.
+
+    Same switch as photo captions: one control in Settings, not two.
+    """
+    return bool(getattr(cfg, "llm_enabled", False)
+                and getattr(cfg, "llm_endpoint", "")
+                and getattr(cfg, "vlm_model", ""))
+
+
+def _ocr_vlm(path: Path, cfg) -> OcrResult:
+    """Last resort: ask a vision model to read the image.
+
+    Confidence is fixed rather than reported. The model does not give a
+    calibrated score, and inventing one would let it clear MIN_CONFIDENCE
+    checks that exist to keep noise out. It is set just above the floor to
+    mean "accepted, but trust this less than a real OCR engine", and the
+    backend name records where the text came from.
+    """
+    from . import vision as vision_module
+
+    text = vision_module.transcribe(
+        path, endpoint=str(cfg.llm_endpoint).rstrip("/"),
+        model=str(cfg.vlm_model))
+    if not text:
+        return OcrResult(text="", backend="vlm", confidence=0.0)
+    return OcrResult(text=text, backend="vlm", confidence=MIN_CONFIDENCE + 0.05)
 
 
 def _ocr_vision(path: Path) -> OcrResult:

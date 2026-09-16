@@ -83,8 +83,13 @@ def guess_mime(path: Path) -> str:
     return "application/octet-stream"
 
 
-def extract(path: Path) -> ExtractedText:
-    """Extract text from a file. Never raises for content reasons."""
+def extract(path: Path, *, cfg=None) -> ExtractedText:
+    """Extract text from a file. Never raises for content reasons.
+
+    `cfg` is optional and only reaches the image path, where it enables the
+    vision-model fallback for photographed documents Tesseract cannot read.
+    Without it extraction behaves exactly as before.
+    """
     suffix = path.suffix.lower()
     try:
         if suffix in PDF_SUFFIXES:
@@ -100,7 +105,7 @@ def extract(path: Path) -> ExtractedText:
         if suffix in EML_SUFFIXES:
             return _extract_eml(path)
         if suffix in IMAGE_SUFFIXES:
-            return _extract_image(path)
+            return _extract_image(path, cfg=cfg)
         if suffix in TEXT_SUFFIXES:
             return _extract_plaintext(path)
         return _extract_unknown(path)
@@ -240,7 +245,7 @@ def _extract_unknown(path: Path) -> ExtractedText:
                          note="unrecognized format: indexed by filename only")
 
 
-def _extract_image(path: Path) -> ExtractedText:
+def _extract_image(path: Path, *, cfg=None) -> ExtractedText:
     """Images: OCR the text (screenshots, photographed receipts).
 
     An unreadable image is not a failure -- it stays partial and keeps its
@@ -248,7 +253,9 @@ def _extract_image(path: Path) -> ExtractedText:
     """
     from . import ocr
 
-    result = ocr.ocr_image(path)
+    # Pass cfg only when there is one, so anything holding the older
+    # single-argument signature (a stub, an out-of-tree caller) still works.
+    result = ocr.ocr_image(path, cfg=cfg) if cfg is not None else ocr.ocr_image(path)
     if result.usable:
         return ExtractedText(text=result.text, pages=[result.text],
                              status="complete",

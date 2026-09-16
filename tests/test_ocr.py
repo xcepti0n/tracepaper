@@ -115,3 +115,107 @@ def test_missing_backend_degrades_cleanly(tmp_path: Path, monkeypatch):
 
     assert result.status == "partial"
     assert result.needs_ocr
+
+
+# ------------------------------------------------- vision-model fallback ----
+
+class _Cfg:
+    """Minimal stand-in: _vlm_configured only reads these three."""
+    def __init__(self, enabled=True, endpoint="http://x:11434", model="gemma4:e4b"):
+        self.llm_enabled = enabled
+        self.llm_endpoint = endpoint
+        self.vlm_model = model
+
+
+def test_the_vision_model_only_runs_when_it_is_configured():
+    """Same switch as photo captions: one control in Settings, not two."""
+    assert ocr._vlm_configured(_Cfg())
+    assert not ocr._vlm_configured(_Cfg(enabled=False))
+    assert not ocr._vlm_configured(_Cfg(endpoint=""))
+    assert not ocr._vlm_configured(_Cfg(model=""))
+
+
+def test_the_vision_model_is_the_last_resort_not_the_first(tmp_path, monkeypatch):
+    """It is orders of magnitude slower than tesseract, and a real OCR engine
+    beats it on a clean scan. It must only see what the others could not read."""
+    Image = pytest.importorskip("PIL.Image", reason="pillow not installed")
+    path = tmp_path / "scan.png"
+    Image.new("RGB", (40, 40), "white").save(path)
+
+    called = []
+    monkeypatch.setattr(ocr, "_vision_available", lambda: False)
+    monkeypatch.setattr(ocr, "_tesseract_available", lambda: True)
+    monkeypatch.setattr(ocr, "_ocr_tesseract", lambda p: ocr.OcrResult(
+        text="a perfectly readable scan", backend="tesseract", confidence=0.9))
+    monkeypatch.setattr(ocr, "_ocr_vlm",
+                        lambda p, c: called.append(p) or ocr.OcrResult(
+                            text="x", backend="vlm", confidence=0.9))
+
+    result = ocr.ocr_image(path, cfg=_Cfg())
+    assert result.backend == "tesseract"
+    assert not called, "the vision model must not run when tesseract succeeded"
+
+
+def test_the_vision_model_runs_when_tesseract_finds_nothing(tmp_path, monkeypatch):
+    Image = pytest.importorskip("PIL.Image", reason="pillow not installed")
+    path = tmp_path / "visa.jpg"
+    Image.new("RGB", (40, 40), "white").save(path)
+
+    monkeypatch.setattr(ocr, "_vision_available", lambda: False)
+    monkeypatch.setattr(ocr, "_tesseract_available", lambda: True)
+    monkeypatch.setattr(ocr, "_ocr_tesseract",
+                        lambda p: ocr.OcrResult(text="", backend="tesseract"))
+    monkeypatch.setattr(ocr, "_ocr_vlm", lambda p, c: ocr.OcrResult(
+        text="H1B VISA UNITED STATES OF AMERICA", backend="vlm",
+        confidence=0.35))
+
+    result = ocr.ocr_image(path, cfg=_Cfg())
+    assert result.backend == "vlm"
+    assert "H1B" in result.text
+
+
+def test_a_described_image_is_never_stored_as_its_text():
+    """Asked to read an image with no text, a vision model narrates instead.
+    That prose is fluent and entirely invented, and storing it would make the
+    index claim a document says something it does not."""
+    from tracepaper.extract import vision
+
+    for narration in (
+            "The image shows a passport lying on a wooden table.",
+            "This appears to be a photograph of an identity document.",
+            "I cannot read any text in this image.",
+            "There is no legible text visible in the picture.",
+            "NO_TEXT",
+    ):
+        assert vision._usable_transcription(narration) == "", narration
+
+
+def test_a_real_transcription_survives_the_guard():
+    from tracepaper.extract import vision
+
+    real = ("INCOME TAX DEPARTMENT\nGOVT. OF INDIA\n"
+            "Permanent Account Number\nABCDE1234F")
+    assert vision._usable_transcription(real) == real
+
+
+def test_the_guard_does_not_reject_text_that_merely_mentions_an_image():
+    """Only the opening is checked: a transcription containing the phrase
+    further in is still a transcription."""
+    from tracepaper.extract import vision
+
+    text = ("CLAIM FORM SECTION 4\nAttach a photograph. "
+            "The image shows the damaged item as described above.")
+    assert vision._usable_transcription(text) == text
+
+
+def test_the_vision_model_never_claims_a_real_confidence(tmp_path, monkeypatch):
+    """The model gives no calibrated score. Inventing a high one would let it
+    clear the noise thresholds that exist to keep garbage out of the index."""
+    from tracepaper.extract import vision
+
+    monkeypatch.setattr(vision, "transcribe",
+                        lambda p, **kw: "SOME REAL DOCUMENT TEXT HERE")
+    result = ocr._ocr_vlm(tmp_path / "x.jpg", _Cfg())
+    assert result.usable
+    assert result.confidence < 0.5, "must not masquerade as a confident read"
+    assert result.backend == "vlm", "the source of the text must be recorded"
