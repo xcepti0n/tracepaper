@@ -2,13 +2,14 @@
 #
 # Attach one more read-only share to an existing Tracepaper container.
 #
-# Run this ON THE PROXMOX HOST:
+# Run this ON THE PROXMOX HOST. There is no checkout there, so fetch it:
 #
-#   ./add-share.sh <CTID> <nas-ip> <share-path> <mount-name>
+#   CTID=103 NAS_HOST=192.168.0.28 SHARE=/homes/you/Photos NAME=photos \
+#     bash -c "$(curl -fsSL https://raw.githubusercontent.com/xcepti0n/tracepaper/main/deploy/add-share.sh)"
 #
-# Example, for a Photos folder inside a Synology home directory:
+# From a checkout on the host, the positional form works too:
 #
-#   ./add-share.sh 103 192.168.0.28 /homes/vaibhav_bhatia/Photos photos
+#   ./add-share.sh 103 192.168.0.28 /homes/you/Photos photos
 #
 # That mounts it at /mnt/nas/photos inside the container, read-only, and adds
 # it to the indexed roots.
@@ -26,7 +27,10 @@
 # Safe to re-run: an existing fstab entry or mount point is left alone.
 set -Eeuo pipefail
 
-CTID="${1:-}"
+# Every argument is also an environment variable, because the documented way
+# to run this is piped from curl (`bash -c "$(curl ...)"`), where positional
+# arguments are awkward to pass and easy to get wrong.
+CTID="${1:-${CTID:-}}"
 NAS_HOST="${2:-${NAS_HOST:-}}"
 SHARE="${3:-${SHARE:-}}"
 NAME="${4:-${NAME:-}}"

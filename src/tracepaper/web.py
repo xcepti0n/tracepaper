@@ -610,10 +610,18 @@ function buildShareCommand() {
   const folder = share.startsWith('/') ? share : '/' + share;
   out.hidden = false;
   note.hidden = false;
+  // Fetched from the repo rather than run from a path: the Proxmox host has no
+  // checkout, and /opt/tracepaper lives inside THIS container, not there.
+  // Arguments go in as environment variables because the script arrives on a
+  // pipe, where positional arguments cannot be passed.
   out.textContent =
-    'cd /opt/tracepaper/deploy && ./add-share.sh ' +
-    ctid + ' ' + host + ' "' + folder + '" ' + name +
-    '\\n\\n# then add this folder below:\\n/mnt/nas/' + name;
+    'CTID=' + ctid + ' NAS_HOST=' + host +
+    " SHARE='" + folder + "' NAME=" + name + ' \\\n' +
+    '  bash -c "$(curl -fsSL ' +
+    'https://raw.githubusercontent.com/xcepti0n/tracepaper/main/' +
+    'deploy/add-share.sh)"';
+  document.getElementById('sh_path').textContent = '/mnt/nas/' + name;
+  document.getElementById('sh_after').hidden = false;
 }
 
 function escapeHtml(text) {
@@ -1837,10 +1845,13 @@ def _add_share_panel(known_sources: list[str]) -> str:
 <button type="button" class="ghost" onclick="buildShareCommand()">
   Build the command</button>
 <pre id="sh_out" class="share-out" hidden></pre>
-<p class="hint" id="sh_note" hidden>Run that on the Proxmox host, not in this
-  container. It mounts the folder read-only, so Tracepaper can never change
-  what is in it. Then add the path it prints under
-  <b>Documents to index</b> and run a scan.</p>"""
+<p class="hint" id="sh_note" hidden>Run that on the <b>Proxmox host</b>, not in
+  this container and not on the NAS. It downloads the mount script, mounts the
+  folder read-only so Tracepaper can never change what is in it, and restarts
+  the container so the folder appears.</p>
+<p class="hint" id="sh_after" hidden>Then add
+  <code id="sh_path"></code> under <b>Documents to index</b> below, press Save,
+  and run a scan from Settings, General.</p>"""
 
 
 def _rules_panel(conn: sqlite3.Connection) -> str:

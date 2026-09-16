@@ -15,6 +15,10 @@ from tracepaper.mcp_server import TOOLS, Handler
 from tracepaper.query.evidence import EvidenceQuery
 from tracepaper.scan.scanner import Scanner
 
+# Repo roots, for the tests that read shipped files rather than run them.
+SRC = Path(__file__).resolve().parent.parent / "src" / "tracepaper"
+DEPLOY_DIR = Path(__file__).resolve().parent.parent / "deploy"
+
 W2 = """Form W-2 Wage and Tax Statement
 Tax Year: 2023
 Employer name: ACME Corporation
@@ -1643,3 +1647,51 @@ def test_a_share_source_without_a_host_prefills_nothing():
     page = _add_share_panel(["/dev/sda1", "tmpfs"])
 
     assert 'id="sh_host" value=""' in page
+
+
+def test_the_built_command_does_not_assume_a_checkout_on_the_host():
+    """The first version of this printed
+
+        cd /opt/tracepaper/deploy && ./add-share.sh ...
+
+    which cannot work: /opt/tracepaper is inside the CONTAINER. The Proxmox
+    host has no checkout at all, because the installer clones into the
+    container, so the command failed on its first line.
+    """
+    import re
+
+    source = (SRC / "web.py").read_text()
+    builder = source[source.index("function buildShareCommand"):]
+    builder = builder[:builder.index("\n}")]
+
+    # Comments may name the path while explaining why it is wrong, so check
+    # the code rather than the whole function.
+    code = "\n".join(line for line in builder.splitlines()
+                     if not line.strip().startswith("//"))
+    assert "/opt/tracepaper" not in code, (
+        "that path exists only inside the container")
+    assert "cd /opt" not in code
+    assert "raw.githubusercontent.com" in builder, (
+        "the host must fetch the script, it has no copy")
+
+
+def test_the_built_command_passes_arguments_the_piped_script_can_read():
+    """A script arriving on a pipe cannot take positional arguments, so every
+    one has to be an environment variable."""
+    source = (SRC / "web.py").read_text()
+    builder = source[source.index("function buildShareCommand"):]
+    builder = builder[:builder.index("\n}")]
+
+    for variable in ("CTID=", "NAS_HOST=", "SHARE=", "NAME="):
+        assert variable in builder, f"{variable} is not passed"
+
+
+def test_add_share_accepts_every_argument_as_an_environment_variable():
+    """The other half of the same contract, on the script's side."""
+    script = (DEPLOY_DIR / "add-share.sh").read_text()
+
+    for line in ('CTID="${1:-${CTID:-}}"',
+                 'NAS_HOST="${2:-${NAS_HOST:-}}"',
+                 'SHARE="${3:-${SHARE:-}}"',
+                 'NAME="${4:-${NAME:-}}"'):
+        assert line in script, f"{line} is not settable from the environment"
