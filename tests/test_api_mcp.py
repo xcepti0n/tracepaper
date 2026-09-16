@@ -329,7 +329,9 @@ def test_api_update_apply_reports_when_it_cannot(client, monkeypatch):
     """With the unit absent, this must be a clean 409 naming the manual
     command -- not a 500."""
     from tracepaper import updates
-    monkeypatch.setattr(updates, "can_apply", lambda: False)
+    # Patch the gate apply() actually consults. Patching can_apply passed on a
+    # dev box only because no unit file exists there, so it proved nothing.
+    monkeypatch.setattr(updates, "apply_blocker", lambda: "unit")
     response = client.post("/api/updates/apply",
                            headers={"X-Tracepaper-Request": "1"})
     assert response.status_code == 409
@@ -1720,3 +1722,69 @@ def test_the_panel_falls_back_to_main_when_the_commit_is_unknown():
     page = _add_share_panel([])
 
     assert "data-revision=" in page
+
+
+def test_each_blocker_names_its_own_fix(monkeypatch):
+    """The generic "not installed, or polkit does not permit this user"
+    message cost a diagnostic session to discover the unit and rule were both
+    fine and only the daemon was stopped. Each cause must name one command."""
+    from tracepaper import updates
+
+    seen = set()
+    for blocker, (reason, fix) in updates.BLOCKER_FIXES.items():
+        assert reason and fix, blocker
+        message = updates.blocker_message(blocker)
+        assert reason in message
+        assert f"`{fix}`" in message
+        seen.add(fix)
+
+    assert updates.BLOCKER_FIXES["polkit"][1] == "systemctl enable --now polkit", (
+        "a stopped polkit daemon is fixed by starting it, not by starting the "
+        "update unit")
+    assert len(seen) > 1, "the fixes must differ, or naming the cause is pointless"
+
+
+def test_apply_blocker_distinguishes_a_stopped_daemon_from_a_denied_start(monkeypatch):
+    from tracepaper import updates
+
+    monkeypatch.setattr(Path, "exists", lambda self: True)
+
+    def daemon_down(args, cwd=None):
+        if "is-active" in args:
+            raise subprocess.CalledProcessError(3, args)
+        return ""
+
+    monkeypatch.setattr(updates, "_run", daemon_down)
+    assert updates.apply_blocker() == "polkit"
+
+    def start_denied(args, cwd=None):
+        if "--dry-run" in args:
+            raise subprocess.CalledProcessError(4, args)
+        return ""
+
+    monkeypatch.setattr(updates, "_run", start_denied)
+    assert updates.apply_blocker() == "permission"
+
+    monkeypatch.setattr(updates, "_run", lambda args, cwd=None: "")
+    assert updates.apply_blocker() == ""
+    assert updates.can_apply() is True
+
+
+def test_a_missing_unit_is_reported_before_polkit_is_consulted(monkeypatch):
+    """Checking polkit first would blame the daemon for an absent unit."""
+    from tracepaper import updates
+
+    monkeypatch.setattr(Path, "exists", lambda self: False)
+    monkeypatch.setattr(updates, "_run", lambda args, cwd=None: (_ for _ in ()).throw(
+        AssertionError("nothing should be shelled out to when the unit is absent")))
+    assert updates.apply_blocker() == "unit"
+
+
+def test_installer_enables_polkit_so_it_survives_a_reboot():
+    """Starting polkit lasts until the next reboot, and adding a NAS share
+    reboots the container. A box that had been applying updates fine came back
+    with polkit inactive and a message blaming the unit and the rule."""
+    installer = (Path(__file__).resolve().parents[1] / "deploy"
+                 / "proxmox-install.sh").read_text()
+    assert "systemctl enable polkit" in installer, (
+        "polkit must be enabled, not just started, or it dies at the next reboot")

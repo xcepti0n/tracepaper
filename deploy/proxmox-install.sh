@@ -517,7 +517,12 @@ chmod 640 /etc/tracepaper/tracepaper.toml"
   # This was silent before: the restart was swallowed by `|| true`, so a
   # container without polkitd installed looked like a clean install and only
   # failed when someone pressed a button.
-  inct "systemctl restart polkit >/dev/null 2>&1 || systemctl start polkit >/dev/null 2>&1 || true"
+  # `enable` as well as start: starting it only lasts until the next reboot,
+  # and adding a NAS share reboots the container. That left polkit inactive on
+  # a box that had been working, and the update button started refusing with a
+  # message that blamed the unit and the rule, both of which were fine.
+  inct "systemctl enable polkit >/dev/null 2>&1 || true
+        systemctl restart polkit >/dev/null 2>&1 || systemctl start polkit >/dev/null 2>&1 || true"
   if ! inct "systemctl is-active --quiet polkit"; then
     msg_warn "polkitd is not running: the app cannot start updates or jobs itself."
     msg_warn "Run them with 'systemctl start <unit>' in the container instead."

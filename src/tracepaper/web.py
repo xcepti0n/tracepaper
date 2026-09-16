@@ -2100,12 +2100,15 @@ place.</p>'''
                   '<span id="update_status" class="status"></span>')
     else:
         # A button that appears and then fails is worse than one that never
-        # appears, so say what to run instead.
-        action = ('<p class="hint">This server cannot apply updates itself '
-                  '<code>tracepaper-update.service</code> is not installed, '
-                  'or polkit does not permit this user to start it. Run '
-                  '<code>systemctl start tracepaper-update</code> in the '
-                  'container.</p>'
+        # appears, so say what to run instead. Name the one check that is
+        # actually failing: listing every possible cause meant the reader had
+        # to run diagnostics to find out which one applied.
+        reason, fix = updates.BLOCKER_FIXES.get(
+            status.blocker,
+            ("This server cannot apply updates itself.",
+             "systemctl start tracepaper-update"))
+        action = (f'<p class="hint">{_esc(reason)} Run '
+                  f'<code>{_esc(fix)}</code> in the container.</p>'
                   '<button type="button" onclick="checkUpdates()">Check again</button>'
                   '<span id="update_status" class="status"></span>')
 

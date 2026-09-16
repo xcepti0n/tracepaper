@@ -45,6 +45,9 @@ class UpdateStatus:
     commits: list[Commit] = field(default_factory=list)
     branch: str = ""
     reason: str = ""
+    # Which check blocks applying: "unit", "polkit", "permission", or "" when
+    # nothing does. The UI turns this into the one command that fixes it.
+    blocker: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -55,6 +58,7 @@ class UpdateStatus:
             "commits": [c.as_dict() for c in self.commits],
             "branch": self.branch,
             "reason": self.reason,
+            "blocker": self.blocker,
         }
 
 
@@ -75,14 +79,14 @@ def _git(args: list[str], cwd: Path) -> str:
     return _run(["git", *args], cwd=cwd)
 
 
-def can_apply() -> bool:
-    """Whether this process can actually trigger an update.
+def apply_blocker() -> str:
+    """Which check stops this process triggering an update, or "" if none.
 
-    Two things must be true and both are worth checking. The unit has to exist,
-    and polkit has to permit *this user* to start it -- the app runs as
-    `tracepaper`, and `systemctl start` is privileged. Checking only for the
-    file would light up a button that then fails with an authentication error,
-    which is worse than not offering it at all.
+    Three separate things must hold and they fail for different reasons, so
+    they are reported separately. A single "not installed, or polkit does not
+    permit this user" message forced a diagnostic session to learn that the
+    unit and the rule were both fine and only the daemon was stopped. The
+    caller turns each return value into the one command that fixes it.
 
     `--dry-run` plans the job without running it, but it does NOT go through
     polkit -- a container with no polkitd running passes the dry run and then
@@ -95,15 +99,45 @@ def can_apply() -> bool:
         for d in ("/etc/systemd/system", "/lib/systemd/system",
                   "/usr/lib/systemd/system"))
     if not installed:
-        return False
+        return "unit"
     try:
-        # polkit must be running to authorise an unprivileged start at all;
-        # `--dry-run` does not consult it, so it cannot see this on its own.
         _run(["systemctl", "is-active", "--quiet", "polkit"])
-        _run(["systemctl", "start", "--dry-run", "--no-block", UPDATE_UNIT])
-        return True
     except (subprocess.SubprocessError, OSError):
-        return False
+        # Installed but stopped, and installed-but-absent both land here. The
+        # fix is the same command either way, so they are not split further.
+        return "polkit"
+    try:
+        _run(["systemctl", "start", "--dry-run", "--no-block", UPDATE_UNIT])
+    except (subprocess.SubprocessError, OSError):
+        return "permission"
+    return ""
+
+
+# Each blocker paired with the single command that clears it, so the UI never
+# has to ask the user to work out which of several causes applies.
+BLOCKER_FIXES = {
+    "unit": ("tracepaper-update.service is not installed.",
+             "systemctl start tracepaper-update"),
+    "polkit": ("polkit is not running, so no unprivileged start can be "
+               "authorised.",
+               "systemctl enable --now polkit"),
+    "permission": ("polkit is running but does not permit this user to start "
+                   "the update.",
+                   "systemctl start tracepaper-update"),
+}
+
+
+def blocker_message(blocker: str) -> str:
+    """One sentence naming the cause, with the command that fixes it."""
+    reason, fix = BLOCKER_FIXES.get(
+        blocker, ("This server cannot apply updates itself.",
+                  "systemctl start tracepaper-update"))
+    return f"{reason} Run `{fix}` in the container."
+
+
+def can_apply() -> bool:
+    """Whether this process can actually trigger an update."""
+    return not apply_blocker()
 
 
 def check_local() -> UpdateStatus:
@@ -132,7 +166,8 @@ def check_local() -> UpdateStatus:
         status.reason = f"could not read local git state: {exc}"
         return status
 
-    status.can_apply = can_apply()
+    status.blocker = apply_blocker()
+    status.can_apply = not status.blocker
     return status
 
 
@@ -222,11 +257,9 @@ def apply() -> tuple[bool, str]:
     job to finish would mean waiting for our own process to be killed, and the
     HTTP response would never be sent.
     """
-    if not can_apply():
-        return False, (
-            f"{UPDATE_UNIT} is not installed or this user is not permitted to "
-            "start it, so the server cannot apply updates itself. Run "
-            "`systemctl start tracepaper-update` in the container.")
+    blocker = apply_blocker()
+    if blocker:
+        return False, blocker_message(blocker)
     try:
         _run(["systemctl", "start", "--no-block", UPDATE_UNIT])
     except (subprocess.SubprocessError, OSError) as exc:
