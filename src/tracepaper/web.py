@@ -24,14 +24,32 @@ from .query.search import SearchEngine
 
 STYLE = """
 :root {
-  --bg: #fbfbfa; --fg: #1a1a18; --muted: #6b6b66; --line: #e2e2dd;
-  --accent: #2d5f4f; --accent-soft: #eef4f1; --warn: #8a5a2b;
-  --card: #ffffff;
+  /* One accent hue with real steps, so emphasis has somewhere to go. The old
+     palette had a single --accent doing every job, which is why links, active
+     tabs and buttons all read as the same flat green. */
+  --bg: #f7f8fa; --fg: #14161a; --muted: #5d6470; --line: #e4e7ec;
+  --card: #ffffff; --card-2: #fbfcfd;
+  --accent: #0f766e; --accent-hover: #0d5f59; --accent-ink: #ffffff;
+  --accent-soft: #e6f4f1; --accent-line: #a7d7cd;
+  --link: #0b6bcb; --link-hover: #094f97;
+  --ok: #15803d; --ok-soft: #e8f6ed;
+  --warn: #b45309; --warn-soft: #fdf3e7;
+  --bad: #be123c; --bad-soft: #fdebef;
+  --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.10);
+  --shadow-lg: 0 4px 12px rgba(16,24,40,.10), 0 2px 4px rgba(16,24,40,.06);
+  --radius: 10px;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg:#16171a; --fg:#e8e8e4; --muted:#9a9a94; --line:#2c2e33;
-          --accent:#7fb3a0; --accent-soft:#1e2624; --warn:#d4a06a;
-          --card:#1c1d21; }
+  :root { --bg:#0f1115; --fg:#e7e9ee; --muted:#9aa2b1; --line:#262a33;
+          --card:#161922; --card-2:#1b1f29;
+          --accent:#2dd4bf; --accent-hover:#5eead4; --accent-ink:#06211e;
+          --accent-soft:#122b28; --accent-line:#1f4d47;
+          --link:#7cc0ff; --link-hover:#a5d5ff;
+          --ok:#4ade80; --ok-soft:#10241a;
+          --warn:#fbbf24; --warn-soft:#2a1f0d;
+          --bad:#fb7185; --bad-soft:#2c1119;
+          --shadow: 0 1px 2px rgba(0,0,0,.4), 0 1px 3px rgba(0,0,0,.3);
+          --shadow-lg: 0 4px 14px rgba(0,0,0,.5), 0 2px 6px rgba(0,0,0,.35); }
 }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--fg);
@@ -44,11 +62,18 @@ h1 small { color:var(--muted); font-weight:400; font-size:13px; margin-left:8px;
 nav { display:flex; gap:2px; padding-top:10px; }
 nav a { padding:7px 13px; text-decoration:none; color:var(--muted);
         border-radius:6px 6px 0 0; font-size:14px; }
-nav a.on { color:var(--fg); background:var(--accent-soft); font-weight:600; }
+nav a { transition:background .12s, color .12s; font-weight:500; }
+nav a:hover { background:var(--accent-soft); color:var(--accent); }
+nav a.on { color:var(--accent); background:var(--accent-soft); font-weight:650;
+  box-shadow:inset 0 -2px 0 var(--accent); }
 main { padding:22px 0 60px; }
 form.search { margin:0 0 6px; }
 input[type=text] { flex:1; padding:10px 13px; border:1px solid var(--line);
-       border-radius:7px; background:var(--card); color:var(--fg); font-size:15px; }
+  border-radius:8px; background:var(--card); color:var(--fg); font-size:15px;
+  transition:border-color .12s, box-shadow .12s; }
+input[type=text]:focus { border-color:var(--accent); outline:none;
+  box-shadow:0 0 0 3px var(--accent-soft); }
+input[type=text]::placeholder { color:var(--muted); opacity:.65; }
 /* The search box is the one control on this page that matters, so it is
    sized like it: a tall pill, the way every search engine draws one. */
 .search .row.main { gap:0; border:1px solid var(--line); border-radius:26px;
@@ -60,13 +85,40 @@ input[type=text] { flex:1; padding:10px 13px; border:1px solid var(--line);
   padding:13px 6px; font-size:17px; box-shadow:none; outline:none; }
 .search .row.main button { border-radius:22px; padding:11px 24px;
   font-size:15px; }
-button { padding:10px 17px; border:0; border-radius:7px; background:var(--accent);
-         color:#fff; font-size:14px; cursor:pointer; font-weight:500; }
-button.ghost { background:transparent; color:var(--accent);
-               border:1px solid var(--line); }
-.hint { color:var(--muted); font-size:13px; margin:0 0 20px; }
-.hit { background:var(--card); border:1px solid var(--line); border-radius:9px;
-       padding:14px 16px; margin-bottom:10px; }
+button { padding:10px 17px; border:1px solid transparent;
+  border-radius:8px; background:var(--accent); color:var(--accent-ink);
+  font-size:14px; cursor:pointer; font-weight:600; letter-spacing:.005em;
+  transition:background .12s, border-color .12s, transform .06s, box-shadow .12s;
+  box-shadow:var(--shadow); }
+button:hover { background:var(--accent-hover); }
+button:active { transform:translateY(1px); box-shadow:none; }
+/* Focus was invisible before, so the whole UI was unusable from the keyboard. */
+button:focus-visible, a:focus-visible, input:focus-visible,
+select:focus-visible { outline:2px solid var(--link); outline-offset:2px; }
+button.ghost { background:var(--card); color:var(--fg);
+  border-color:var(--line); box-shadow:none; font-weight:500; }
+button.ghost:hover { background:var(--accent-soft); color:var(--accent);
+  border-color:var(--accent-line); }
+button.primary { background:var(--accent); color:var(--accent-ink); }
+button[disabled] { opacity:.5; cursor:not-allowed; }
+button[disabled]:hover { background:var(--accent); }
+/* The folder list needs its own save, next to the control it belongs to: the
+   only Save used to sit two sections below, past Index location and Backups,
+   so from the folder list there was no visible way to commit a change. */
+.row-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+  margin-top:4px; }
+.hint.subtle { font-size:12.5px; margin:8px 0 22px; }
+a { color:var(--link); text-decoration-color:color-mix(in srgb, var(--link) 35%, transparent);
+    text-underline-offset:2px; }
+a:hover { color:var(--link-hover); text-decoration-color:currentColor; }
+a:visited { color:var(--link); }
+.hint { color:var(--muted); font-size:13.5px; margin:0 0 20px; max-width:68ch; }
+.hint code { background:var(--accent-soft); color:var(--accent);
+  padding:1px 5px; border-radius:4px; font-size:12.5px; }
+.hit { background:var(--card); border:1px solid var(--line);
+  border-radius:var(--radius); padding:15px 17px; margin-bottom:10px;
+  box-shadow:var(--shadow); transition:box-shadow .12s, border-color .12s; }
+.hit:hover { box-shadow:var(--shadow-lg); border-color:var(--accent-line); }
 .hit h3 { margin:0 0 3px; font-size:15px; }
 .hit .path a { color:var(--muted); text-decoration:none; }
 .hit .path a:hover { color:var(--accent); text-decoration:underline; }
@@ -133,7 +185,9 @@ table { width:100%; border-collapse:collapse; background:var(--card);
         border:1px solid var(--line); border-radius:9px; overflow:hidden; }
 th,td { text-align:left; padding:9px 13px; border-bottom:1px solid var(--line);
         font-size:14px; }
-th { background:var(--accent-soft); font-weight:600; font-size:13px; }
+th { background:var(--card-2); font-weight:600; font-size:12.5px;
+  color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+tbody tr:hover td { background:var(--accent-soft); }
 tr:last-child td { border-bottom:0; }
 /* File browser. One table for folders and files together, the way every file
    manager does it, because splitting them into two tables loses the sense of
@@ -177,8 +231,13 @@ tr:last-child td { border-bottom:0; }
   overflow-x:auto; white-space:pre; }
 .pill { display:inline-block; padding:1px 7px; border-radius:20px; font-size:11px;
         background:var(--accent-soft); color:var(--accent); font-weight:600; }
-.pill.human { background:#2d5f4f; color:#fff; }
-.pill.warn { background:var(--warn); color:#fff; }
+.pill { border:1px solid var(--accent-line); }
+.pill.human { background:var(--accent); color:var(--accent-ink);
+  border-color:transparent; }
+.pill.warn { background:var(--warn-soft); color:var(--warn);
+  border-color:color-mix(in srgb, var(--warn) 35%, transparent); }
+.pill.ok { background:var(--ok-soft); color:var(--ok);
+  border-color:color-mix(in srgb, var(--ok) 35%, transparent); }
 .stat { display:inline-block; margin-right:26px; margin-bottom:12px; }
 .stat b { display:block; font-size:22px; font-weight:600; }
 .stat span { color:var(--muted); font-size:12.5px; }
@@ -188,8 +247,11 @@ code { background:var(--accent-soft); padding:1px 5px; border-radius:4px;
 .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
 label.chk { color:var(--muted); font-size:13px; display:flex; gap:5px;
             align-items:center; white-space:nowrap; }
-h2 { font-size:13px; text-transform:uppercase; letter-spacing:.07em;
-     color:var(--muted); margin:26px 0 10px; font-weight:600; }
+h2 { font-size:15px; letter-spacing:-.01em; color:var(--fg);
+  margin:30px 0 10px; font-weight:650; display:flex; align-items:center;
+  gap:9px; flex-wrap:wrap; }
+h2::before { content:""; width:3px; height:15px; border-radius:2px;
+  background:var(--accent); flex:none; }
 h2 .count { background:var(--accent-soft); color:var(--accent); padding:1px 7px;
             border-radius:20px; font-size:11px; margin-left:6px; }
 .answer .lbl { color:var(--muted); font-size:12px; text-transform:uppercase;
@@ -208,28 +270,31 @@ button.fix:hover { color:var(--accent); border-color:var(--accent); }
 .excludes { line-height:2; }
 .photos { display:grid; gap:12px; margin:12px 0;
           grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); }
-.photo { margin:0; border:1px solid #e3e3e3; border-radius:6px;
-         overflow:hidden; background:#fff; }
+.photo { margin:0; border:1px solid var(--line); border-radius:var(--radius);
+  overflow:hidden; background:var(--card); box-shadow:var(--shadow);
+  transition:box-shadow .12s, transform .12s; }
+.photo:hover { box-shadow:var(--shadow-lg); transform:translateY(-2px); }
 .photo img { display:block; width:100%; height:150px; object-fit:cover;
-             background:#f3f3f3; }
+  background:var(--card-2); }
 .photo figcaption { padding:6px 8px; font-size:12px; word-break:break-word; }
 .photo .tags { margin-top:4px; }
 .excludes code { margin-right:4px; }
 .status { font-size:12.5px; margin-top:5px; min-height:17px; }
-.status .ok { color:var(--accent); font-weight:600; }
-.status .bad { color:#b3261e; font-weight:600; }
+.status .ok { color:var(--ok); font-weight:600; }
+.status .bad { color:var(--bad); font-weight:600; }
 .status .muted { color:var(--muted); }
-.bad-line { color:#b3261e; margin-top:4px; line-height:1.45; }
+.bad-line { color:var(--bad); margin-top:4px; line-height:1.45; }
 .warn-line { color:var(--warn); margin-top:4px; line-height:1.45; }
 .actions { display:flex; gap:12px; align-items:center; margin-top:26px;
            padding-top:18px; border-top:1px solid var(--line); }
-.problems { background:#fdeceb; color:#8c1d18; border-radius:8px;
-            padding:12px 15px; margin:14px 0; font-size:13.5px; }
-@media (prefers-color-scheme: dark) { .problems { background:#3a1f1d;
-            color:#f2b8b5; } }
+.problems { background:var(--bad-soft); color:var(--bad);
+  border:1px solid color-mix(in srgb, var(--bad) 30%, transparent);
+  border-left:3px solid var(--bad); border-radius:8px;
+  padding:12px 15px; margin:14px 0; font-size:13.5px; }
 .problems div { margin:3px 0; }
 .toast { position:fixed; bottom:22px; left:50%; transform:translateX(-50%);
-         background:var(--accent); color:#fff; padding:11px 20px; border-radius:8px;
+         background:var(--accent); color:var(--accent-ink); padding:11px 20px;
+         box-shadow:var(--shadow-lg); border-radius:8px;
          font-size:14px; box-shadow:0 4px 16px rgba(0,0,0,.2); z-index:50; }
 """
 
@@ -499,18 +564,43 @@ async function checkPath(input, kind, statusId) {
 
 async function saveSettings(event) {
   event.preventDefault();
-  const roots = [...document.querySelectorAll('#roots input')]
-    .map(i => i.value.trim()).filter(Boolean);
+  // Drop blank rows before sending. "+ add folder" appends an empty input, and
+  // one left empty used to fail validation for the WHOLE form, so the folders
+  // that were already correct were not saved either. An empty row means "I
+  // changed my mind", not "save nothing".
+  const inputs = [...document.querySelectorAll('#roots input')];
+  inputs.filter(i => !i.value.trim())
+        .forEach(i => { if (i.parentElement) i.parentElement.remove(); });
+  const roots = inputs.map(i => i.value.trim()).filter(Boolean);
 
-  const response = await fetch('/api/settings', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      roots: roots,
-      db_path: document.getElementById('db_path').value.trim(),
-      backup_dir: document.getElementById('backup_dir').value.trim() || null,
-    }),
-  });
-  const result = await response.json();
+  let result;
+  try {
+    const response = await fetch('/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json',
+                'X-Tracepaper-Request': '1'},
+      body: JSON.stringify({
+        roots: roots,
+        db_path: document.getElementById('db_path').value.trim(),
+        backup_dir: document.getElementById('backup_dir').value.trim() || null,
+      }),
+    });
+    // A restart mid-request gives 502 from the proxy with an HTML body, so
+    // json() throws and the old code showed nothing at all: the click looked
+    // like it did nothing. Say what happened instead.
+    if (!response.ok) {
+      showSettingsProblems(['The server returned ' + response.status + '. ' +
+        (response.status >= 500
+          ? 'It may be restarting after an update. Wait a moment and try again.'
+          : 'Nothing was saved.')]);
+      return;
+    }
+    result = await response.json();
+  } catch (error) {
+    showSettingsProblems(['Could not reach the server. Nothing was saved. ' +
+                          '(' + error + ')']);
+    return;
+  }
 
   document.querySelectorAll('.problems').forEach(el => el.remove());
   if (result.ok) {
@@ -519,12 +609,22 @@ async function saveSettings(event) {
       : 'Saved');
     setTimeout(() => location.reload(), 1200);
   } else {
-    const box = document.createElement('div');
-    box.className = 'problems';
-    box.innerHTML = '<b>Not saved:</b>' + (result.problems || [])
-      .map(p => `<div>${escapeHtml(p)}</div>`).join('');
-    document.getElementById('settings').prepend(box);
+    showSettingsProblems(result.problems || ['Not saved.']);
   }
+}
+
+// Problems are shown at the top of the form AND scrolled to. The form is
+// taller than a screen, so a message prepended to it was off-screen for
+// anyone whose Save button sat below the fold: the save looked silent.
+function showSettingsProblems(problems) {
+  document.querySelectorAll('.problems').forEach(el => el.remove());
+  const box = document.createElement('div');
+  box.className = 'problems';
+  box.innerHTML = '<b>Not saved:</b>' +
+    problems.map(p => `<div>${escapeHtml(p)}</div>`).join('');
+  const form = document.getElementById('settings');
+  form.prepend(box);
+  box.scrollIntoView({behavior: 'smooth', block: 'center'});
 }
 
 async function testLlm() {
@@ -1689,7 +1789,11 @@ def _storage_panel(conn: sqlite3.Connection) -> str:
   <p class="hint">The folder holding your files. Tracepaper only reads it.
     It never writes here, and never changes or deletes your files.</p>
   <div id="roots">{_root_rows(roots, checks["sources"])}</div>
-  <button type="button" class="ghost" onclick="addRoot()">+ add folder</button>
+  <div class="row-actions">
+    <button type="button" class="ghost" onclick="addRoot()">+ add folder</button>
+    <button type="submit" class="primary">Save folders</button>
+  </div>
+  <p class="hint subtle">A folder is only indexed after you save.</p>
 
   <h2>Index location <span class="pill warn">local disk only</span></h2>
   <p class="hint">Keep this on local disk. On a network share the index can

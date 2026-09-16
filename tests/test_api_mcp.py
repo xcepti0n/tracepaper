@@ -1788,3 +1788,73 @@ def test_installer_enables_polkit_so_it_survives_a_reboot():
                  / "proxmox-install.sh").read_text()
     assert "systemctl enable polkit" in installer, (
         "polkit must be enabled, not just started, or it dies at the next reboot")
+
+
+def test_the_folder_list_has_its_own_save_button(client):
+    """The only Save sat two sections below the folder list, past Index
+    location and Backups. From the folder list there was no visible way to
+    commit a change, so "+ add folder" looked like it did nothing."""
+    html = client.get("/?tab=settings&section=storage").text
+
+    roots = html.index('id="roots"')
+    save = html.index("Save folders", roots)
+    between = html[roots:save]
+    assert "<h2>" not in between, (
+        "the folder save must not be separated from the list by a section")
+
+
+def test_saving_drops_blank_folder_rows(client):
+    """An empty row failed validation for the whole form, so the folders that
+    were already correct were not saved either."""
+    html = client.get("/?tab=settings&section=storage").text
+    assert "i.parentElement.remove()" in html
+    assert "filter(i => !i.value.trim())" in html
+
+
+def test_a_failed_save_says_so(client):
+    """A restart mid-request gives 502 with an HTML body, so response.json()
+    threw and nothing was rendered: the click looked like it did nothing."""
+    html = client.get("/?tab=settings&section=storage").text
+    assert "showSettingsProblems" in html
+    assert "if (!response.ok)" in html
+    assert "scrollIntoView" in html, (
+        "the form is taller than a screen, so a message must be scrolled to")
+
+
+def test_links_have_an_explicit_colour(client):
+    """With no `a` rule links fell back to browser blue on a warm background
+    and stayed purple once visited."""
+    html = client.get("/").text
+    style = html[html.index("<style>"):html.index("</style>")]
+    assert "a:visited" in style
+    assert "--link:" in style
+
+
+def test_no_hardcoded_light_mode_reds_in_status_colours(client):
+    """Hardcoded hex stayed light-mode red on a dark background."""
+    html = client.get("/").text
+    style = html[html.index("<style>"):html.index("</style>")]
+    for dead in ("#b3261e", "#fdeceb", "#8c1d18", "#e3e3e3"):
+        assert dead not in style, f"{dead} ignores the dark theme"
+
+
+def test_every_colour_token_is_themed_for_dark_mode():
+    """A colour defined only on :root keeps its light value on a dark
+    background. That is how status reds stayed light-mode red."""
+    import re
+    from tracepaper.web import STYLE
+
+    assert STYLE.count("{") == STYLE.count("}"), "unbalanced braces"
+
+    light_block = STYLE[:STYLE.index("@media")]
+    dark_block = STYLE[STYLE.index("@media"):STYLE.index("* { box-sizing")]
+    light = set(re.findall(r"(--[a-z0-9-]+)\s*:", light_block))
+    dark = set(re.findall(r"(--[a-z0-9-]+)\s*:", dark_block))
+
+    # Geometry is shared on purpose; only colour needs a dark counterpart.
+    geometry = {"--radius"}
+    assert light - dark <= geometry, f"not themed for dark: {light - dark - geometry}"
+
+    defined = set(re.findall(r"(--[a-z0-9-]+)\s*:", STYLE))
+    used = set(re.findall(r"var\((--[a-z0-9-]+)", STYLE))
+    assert not (used - defined), f"undefined: {used - defined}"
