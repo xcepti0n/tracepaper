@@ -614,11 +614,15 @@ function buildShareCommand() {
   // checkout, and /opt/tracepaper lives inside THIS container, not there.
   // Arguments go in as environment variables because the script arrives on a
   // pipe, where positional arguments cannot be passed.
+  // The commit this build runs, not `main`: a branch path is CDN-cached for
+  // minutes, so a just-pushed fix comes back stale.
+  const rev = document.querySelector('[data-revision]')
+    ? document.querySelector('[data-revision]').dataset.revision : 'main';
   out.textContent =
     'CTID=' + ctid + ' NAS_HOST=' + host +
     " SHARE='" + folder + "' NAME=" + name + ' \\\n' +
     '  bash -c "$(curl -fsSL ' +
-    'https://raw.githubusercontent.com/xcepti0n/tracepaper/main/' +
+    'https://raw.githubusercontent.com/xcepti0n/tracepaper/' + rev + '/' +
     'deploy/add-share.sh)"';
   document.getElementById('sh_path').textContent = '/mnt/nas/' + name;
   document.getElementById('sh_after').hidden = false;
@@ -1814,6 +1818,22 @@ def _add_share_panel(known_sources: list[str]) -> str:
     The NAS address is pre-filled from a share already mounted, because it is
     almost always the same NAS.
     """
+    # Pin the script to the commit this app is running, not to `main`.
+    # raw.githubusercontent caches a branch path for minutes, so a freshly
+    # pushed fix is served stale: the user ran a corrected command twice and
+    # got the identical old error both times. A commit path is immutable and
+    # never cached wrong, and it also guarantees the script matches this build
+    # rather than whatever main happens to hold.
+    revision = "main"
+    try:
+        from . import updates
+
+        local = updates.check_local()
+        if getattr(local, "current", None) and local.current.sha:
+            revision = local.current.sha
+    except Exception:                                     # noqa: BLE001
+        pass
+
     guess = ""
     for source in known_sources:
         # A cifs source looks like //192.168.0.28/documents, an nfs one like
@@ -1842,7 +1862,8 @@ def _add_share_panel(known_sources: list[str]) -> str:
   <label>Container ID
     <input type="text" id="sh_ctid" value="103" placeholder="103"></label>
 </div>
-<button type="button" class="ghost" onclick="buildShareCommand()">
+<button type="button" class="ghost" onclick="buildShareCommand()"
+        data-revision="{_esc(revision)}">
   Build the command</button>
 <pre id="sh_out" class="share-out" hidden></pre>
 <p class="hint" id="sh_note" hidden>Run that on the <b>Proxmox host</b>, not in

@@ -1695,3 +1695,28 @@ def test_add_share_accepts_every_argument_as_an_environment_variable():
                  'SHARE="${3:-${SHARE:-}}"',
                  'NAME="${4:-${NAME:-}}"'):
         assert line in script, f"{line} is not settable from the environment"
+
+
+def test_the_mount_command_is_pinned_to_a_commit_not_a_branch():
+    """raw.githubusercontent caches a branch path for minutes, so a freshly
+    pushed fix is served stale. The user ran a corrected command twice and got
+    the identical old error both times, because the CDN was still handing out
+    the previous file. A commit path is immutable."""
+    source = (SRC / "web.py").read_text()
+    builder = source[source.index("function buildShareCommand"):]
+    builder = builder[:builder.index("\n}")]
+    code = "\n".join(line for line in builder.splitlines()
+                     if not line.strip().startswith("//"))
+
+    assert "/main/" not in code, "a branch path can be served stale"
+    assert "data-revision" in source, "the page must supply the commit"
+
+
+def test_the_panel_falls_back_to_main_when_the_commit_is_unknown():
+    """A copied install with no git metadata still has to produce a command
+    that works."""
+    from tracepaper.web import _add_share_panel
+
+    page = _add_share_panel([])
+
+    assert "data-revision=" in page
