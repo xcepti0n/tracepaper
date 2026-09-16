@@ -887,3 +887,40 @@ def test_the_lock_wait_is_bounded_and_equal_in_both_units():
 
     assert waits[0] == waits[1], "an asymmetric wait starves one job"
     assert 0 < waits[0] <= 7200
+
+
+def test_add_share_mounts_read_only_at_both_layers():
+    """A share Tracepaper only reads cannot be damaged by a bug in Tracepaper.
+    The kernel enforces that at the fstab mount AND the container bind, so
+    neither alone is a single point of failure."""
+    script = (DEPLOY / "add-share.sh").read_text()
+
+    assert 'options="ro,' in script, "the host mount must be read-only"
+    assert "ro=1" in script, "the container bind must be read-only too"
+    # No switch to make it writable: the backup share is the writable one.
+    assert "rw," not in script
+
+
+def test_add_share_cannot_be_talked_into_an_arbitrary_path():
+    """The mount name becomes a filesystem path, so it must not escape one."""
+    script = (DEPLOY / "add-share.sh").read_text()
+
+    assert '[[ "$NAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]]' in script
+
+
+def test_add_share_picks_a_free_mount_point():
+    """mp0 and mp1 are the documents and backup shares. Overwriting either
+    would unmount the index's own source."""
+    script = (DEPLOY / "add-share.sh").read_text()
+
+    assert "for candidate in mp2" in script
+    assert "mp0" not in script.split("for candidate in mp2")[1][:200]
+
+
+def test_add_share_is_executable():
+    """A script the instructions tell you to run has to be runnable."""
+    import os
+    import stat
+
+    mode = (DEPLOY / "add-share.sh").stat().st_mode
+    assert mode & stat.S_IXUSR, "add-share.sh is not executable"

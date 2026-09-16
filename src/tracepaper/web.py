@@ -168,6 +168,13 @@ tr:last-child td { border-bottom:0; }
 @media (max-width:640px) {
   .fb .hide-sm { display:none; }
 }
+.share-build { display:grid; gap:10px; margin:12px 0;
+  grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); }
+.share-build label { display:flex; flex-direction:column; gap:4px;
+  font-size:13px; color:var(--muted); }
+.share-out { background:var(--accent-soft); border:1px solid var(--line);
+  border-radius:7px; padding:12px 14px; margin:12px 0 6px; font-size:13px;
+  overflow-x:auto; white-space:pre; }
 .pill { display:inline-block; padding:1px 7px; border-radius:20px; font-size:11px;
         background:var(--accent-soft); color:var(--accent); font-weight:600; }
 .pill.human { background:#2d5f4f; color:#fff; }
@@ -570,6 +577,43 @@ async function saveCaptions(event) {
   } else {
     toast((result.problems || ['Not saved']).join(' '));
   }
+}
+
+function buildShareCommand() {
+  const host = document.getElementById('sh_host').value.trim();
+  const share = document.getElementById('sh_share').value.trim();
+  const name = document.getElementById('sh_name').value.trim().toLowerCase();
+  const ctid = document.getElementById('sh_ctid').value.trim() || '103';
+  const out = document.getElementById('sh_out');
+  const note = document.getElementById('sh_note');
+
+  const missing = [];
+  if (!host) missing.push('the NAS address');
+  if (!share) missing.push('the folder on the NAS');
+  if (!name) missing.push('a short name');
+  if (missing.length) {
+    out.hidden = false;
+    note.hidden = true;
+    out.textContent = 'Still need ' + missing.join(', ') + '.';
+    return;
+  }
+  // The name becomes a path, so refuse anything that could escape one rather
+  // than printing a command that would.
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) {
+    out.hidden = false;
+    note.hidden = true;
+    out.textContent =
+      'The short name can use lowercase letters, digits, dash and underscore.';
+    return;
+  }
+
+  const folder = share.startsWith('/') ? share : '/' + share;
+  out.hidden = false;
+  note.hidden = false;
+  out.textContent =
+    'cd /opt/tracepaper/deploy && ./add-share.sh ' +
+    ctid + ' ' + host + ' "' + folder + '" ' + name +
+    '\\n\\n# then add this folder below:\\n/mnt/nas/' + name;
 }
 
 function escapeHtml(text) {
@@ -1611,11 +1655,11 @@ def _storage_panel(conn: sqlite3.Connection) -> str:
     found_mounts = storage.mounts()
 
     out = ['<h2>Storage</h2>']
-    out.append('<p class="hint">Mount your NAS shares in the operating '
-               'system, using <code>/etc/fstab</code> or a systemd mount '
-               'unit. Mounts made there survive a reboot. Your password '
-               'stays out of this app. Then point Tracepaper at the '
-               'mounted folder below.</p>')
+    out.append('<p class="hint">A share has to be mounted by the operating '
+               'system before Tracepaper can read it. Use the builder below '
+               'to get the exact command, then add the folder under '
+               '<b>Documents to index</b>.</p>')
+    out.append(_add_share_panel([str(m["source"]) for m in found_mounts]))
 
     if found_mounts:
         rows = "".join(
@@ -1746,6 +1790,57 @@ def _captions_panel(conn: sqlite3.Connection) -> str:
   rather than storing them, so a bad model means no captions, never wrong
   ones. <b>gemma4:e4b</b> was tested and works.</p>""")
     return "".join(out)
+
+
+def _add_share_panel(known_sources: list[str]) -> str:
+    """Build the command that mounts another NAS folder.
+
+    Not a button that mounts it, and this is a kernel limit rather than a
+    decision: the app runs in an unprivileged LXC, where mount(2) is refused
+    for cifs and nfs outright. Only a handful of filesystems (proc, tmpfs,
+    devpts and friends) may be mounted in a user namespace at all. Mounting
+    happens on the Proxmox host, which the container cannot reach by design,
+    since reaching it would mean handing the app root outside its own box.
+    What the UI can do is stop making you look up the syntax.
+
+    The NAS address is pre-filled from a share already mounted, because it is
+    almost always the same NAS.
+    """
+    guess = ""
+    for source in known_sources:
+        # A cifs source looks like //192.168.0.28/documents, an nfs one like
+        # 192.168.0.28:/volume1/documents. Either way the host is what matters.
+        text = str(source).lstrip("/")
+        host = text.split("/")[0].split(":")[0]
+        if host and any(ch.isdigit() for ch in host):
+            guess = host
+            break
+
+    return f"""
+<h2>Add another folder from the NAS</h2>
+<p class="hint">Tracepaper cannot mount a share itself. It runs in a
+  container that the kernel does not allow to mount network drives, which is
+  also what stops a bug here from touching your files. Fill this in and it
+  writes the command to run on your Proxmox host, once per share.</p>
+<div class="share-build">
+  <label>NAS address
+    <input type="text" id="sh_host" value="{_esc(guess)}"
+           placeholder="192.168.0.28"></label>
+  <label>Folder on the NAS
+    <input type="text" id="sh_share"
+           placeholder="/homes/your_name/Photos"></label>
+  <label>Short name
+    <input type="text" id="sh_name" placeholder="photos"></label>
+  <label>Container ID
+    <input type="text" id="sh_ctid" value="103" placeholder="103"></label>
+</div>
+<button type="button" class="ghost" onclick="buildShareCommand()">
+  Build the command</button>
+<pre id="sh_out" class="share-out" hidden></pre>
+<p class="hint" id="sh_note" hidden>Run that on the Proxmox host, not in this
+  container. It mounts the folder read-only, so Tracepaper can never change
+  what is in it. Then add the path it prints under
+  <b>Documents to index</b> and run a scan.</p>"""
 
 
 def _rules_panel(conn: sqlite3.Connection) -> str:

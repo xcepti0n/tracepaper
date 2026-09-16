@@ -1606,3 +1606,40 @@ def test_the_breakdown_adds_up_to_the_headline(client):
     listed = sum(f["items"] for f in info.get("pending_formats", []))
     assert listed <= info["pending"], (
         "the table cannot show more files than the count it explains")
+
+
+def test_storage_settings_builds_the_mount_command():
+    """Tracepaper cannot mount a share: it runs in an unprivileged LXC where
+    the kernel refuses mount(2) for cifs and nfs. What the UI can do is stop
+    making the user look up the syntax."""
+    from tracepaper.web import _add_share_panel
+
+    page = _add_share_panel([])
+
+    for field in ("sh_host", "sh_share", "sh_name", "sh_ctid"):
+        assert f'id="{field}"' in page
+    assert "add-share.sh" not in page, (
+        "the command is built in the browser, not baked into the page")
+    # The reason has to be stated, or it reads as a missing feature.
+    assert "cannot mount" in page
+
+
+def test_the_nas_address_is_prefilled_from_a_mounted_share():
+    """It is almost always the same NAS, and retyping an address is a typo
+    waiting to happen."""
+    from tracepaper.web import _add_share_panel
+
+    cifs = _add_share_panel(["//192.168.0.28/documents"])
+    nfs = _add_share_panel(["192.168.0.28:/volume1/documents"])
+
+    assert 'value="192.168.0.28"' in cifs
+    assert 'value="192.168.0.28"' in nfs
+
+
+def test_a_share_source_without_a_host_prefills_nothing():
+    """A bind mount or local path must not be offered as a NAS address."""
+    from tracepaper.web import _add_share_panel
+
+    page = _add_share_panel(["/dev/sda1", "tmpfs"])
+
+    assert 'id="sh_host" value=""' in page
