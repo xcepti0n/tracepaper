@@ -136,12 +136,28 @@ def ocr_image(path: Path, *, cfg=None) -> OcrResult:
         if result.usable:
             return result
 
-    if cfg is not None and _vlm_configured(cfg):
+    if (cfg is not None and _vlm_configured(cfg)
+            and _vlm_budget["spent"] < MAX_VLM_PER_RUN):
+        _vlm_budget["spent"] += 1
         result = _ocr_vlm(path, cfg)
         if result.usable:
             return result
 
     return OcrResult(text="", backend="none", confidence=0.0)
+
+
+# A budget per indexing run, not per image. Each call is roughly 20 seconds,
+# so an uncapped fallback on a large photo import would occupy the model for
+# weeks and starve photo captions, which share the same Ollama. The queue is
+# durable: whatever is not reached this run is picked up by the next one.
+MAX_VLM_PER_RUN = 120
+
+_vlm_budget = {"spent": 0}
+
+
+def reset_vlm_budget() -> None:
+    """Called at the start of an indexing run."""
+    _vlm_budget["spent"] = 0
 
 
 def _vlm_configured(cfg) -> bool:

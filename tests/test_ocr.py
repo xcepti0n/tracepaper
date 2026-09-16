@@ -219,3 +219,31 @@ def test_the_vision_model_never_claims_a_real_confidence(tmp_path, monkeypatch):
     assert result.usable
     assert result.confidence < 0.5, "must not masquerade as a confident read"
     assert result.backend == "vlm", "the source of the text must be recorded"
+
+
+def test_the_vision_fallback_is_budgeted_per_run(tmp_path, monkeypatch):
+    """Each call is ~20 seconds. A photo import queued 51,031 images at once,
+    which uncapped would occupy the model for weeks and starve captions, which
+    share the same Ollama."""
+    Image = pytest.importorskip("PIL.Image", reason="pillow not installed")
+    path = tmp_path / "x.jpg"
+    Image.new("RGB", (30, 30), "white").save(path)
+
+    monkeypatch.setattr(ocr, "_vision_available", lambda: False)
+    monkeypatch.setattr(ocr, "_tesseract_available", lambda: True)
+    monkeypatch.setattr(ocr, "_ocr_tesseract",
+                        lambda p: ocr.OcrResult(text="", backend="tesseract"))
+    monkeypatch.setattr(ocr, "MAX_VLM_PER_RUN", 3)
+
+    calls = []
+    monkeypatch.setattr(ocr, "_ocr_vlm", lambda p, c: calls.append(1) or
+                        ocr.OcrResult(text="", backend="vlm"))
+
+    ocr.reset_vlm_budget()
+    for _ in range(10):
+        ocr.ocr_image(path, cfg=_Cfg())
+    assert len(calls) == 3, "the budget must cap calls within one run"
+
+    ocr.reset_vlm_budget()
+    ocr.ocr_image(path, cfg=_Cfg())
+    assert len(calls) == 4, "a new run must get a fresh budget"

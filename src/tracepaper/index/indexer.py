@@ -62,6 +62,12 @@ class Indexer:
 
     def run_pending(self, limit: int | None = None) -> IndexResult:
         """Process queued extract_text jobs."""
+        # The vision-model OCR fallback is budgeted per run, so a large photo
+        # import cannot occupy the model indefinitely. The queue is durable:
+        # what is not reached now is picked up by the next run.
+        from ..extract import ocr as ocr_module
+        ocr_module.reset_vlm_budget()
+
         result = IndexResult()
         remaining = self._queued_count()
         if remaining:
