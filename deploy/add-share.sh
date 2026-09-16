@@ -38,7 +38,11 @@ NAME="${4:-${NAME:-}}"
 PROTOCOL="${PROTOCOL:-smb}"
 SMB_VERS="${SMB_VERS:-3.0}"
 NFS_VERS="${NFS_VERS:-4.1}"
-SMB_CREDENTIALS="${SMB_CREDENTIALS:-/etc/tracepaper-smb.cred}"
+# The same path add-nas.sh uses. A second share on the same NAS needs the
+# same login, so it reuses the file rather than asking for the password
+# again. Getting this default wrong sent the user to create a file that
+# already existed under another name.
+SMB_CREDENTIALS="${SMB_CREDENTIALS:-/etc/samba/tracepaper.cred}"
 CONFIG="${CONFIG:-/etc/tracepaper/tracepaper.toml}"
 
 RD=$'\033[01;31m'; GN=$'\033[1;92m'; YW=$'\033[33m'; BL=$'\033[36m'; CL=$'\033[m'
@@ -58,7 +62,7 @@ Usage: ./add-share.sh <CTID> <nas-ip> <share-path> <mount-name>
 
 Environment:
   PROTOCOL=smb|nfs          default smb
-  SMB_CREDENTIALS=<path>    default /etc/tracepaper-smb.cred
+  SMB_CREDENTIALS=<path>    default /etc/samba/tracepaper.cred
   SMB_VERS / NFS_VERS       protocol version
 EOF
   exit 1
@@ -115,14 +119,24 @@ case "$PROTOCOL" in
       DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cifs-utils >/dev/null 2>&1 || true
 
     if [[ ! -f "$SMB_CREDENTIALS" ]]; then
-      msg_error "no credentials file at ${SMB_CREDENTIALS}."
-      msg_warn  "The documents share already uses one; this reuses it."
-      msg_warn  "If it is missing, create it readable only by root:"
-      echo
-      echo "    install -m600 /dev/null ${SMB_CREDENTIALS}"
-      echo "    printf 'username=%s\\npassword=%s\\n' USER PASS > ${SMB_CREDENTIALS}"
-      echo
-      exit 1
+      # A share that already works names its credentials file in fstab. Read
+      # it rather than asking for a password that is already on this host.
+      found=$(grep -hoE 'credentials=[^, ]+' /etc/fstab 2>/dev/null |
+              head -1 | cut -d= -f2- || true)
+      if [[ -n "$found" && -f "$found" ]]; then
+        msg_info "Using the credentials the existing share uses: ${found}"
+        SMB_CREDENTIALS="$found"
+      else
+        msg_error "no credentials file at ${SMB_CREDENTIALS}."
+        msg_warn  "Create it on this host, readable only by root:"
+        echo
+        echo "    install -d -m755 /etc/samba"
+        echo "    install -m600 /dev/null ${SMB_CREDENTIALS}"
+        echo "    printf 'username=%s\\npassword=%s\\n' USER PASS > ${SMB_CREDENTIALS}"
+        echo
+        msg_warn "Use the same NAS account the documents share uses."
+        exit 1
+      fi
     fi
     chmod 600 "$SMB_CREDENTIALS" 2>/dev/null || true
 

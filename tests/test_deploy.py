@@ -924,3 +924,43 @@ def test_add_share_is_executable():
 
     mode = (DEPLOY / "add-share.sh").stat().st_mode
     assert mode & stat.S_IXUSR, "add-share.sh is not executable"
+
+
+def test_add_share_uses_the_same_credentials_file_as_add_nas():
+    """A second share on the same NAS needs the same login. Defaulting to a
+    different path sent the user to create a file that already existed under
+    another name."""
+    import re
+
+    share = (DEPLOY / "add-share.sh").read_text()
+    nas = (DEPLOY / "add-nas.sh").read_text()
+
+    def default(script: str) -> str:
+        match = re.search(r'SMB_CREDENTIALS="\$\{SMB_CREDENTIALS:-([^}]+)\}"',
+                          script)
+        assert match, "no SMB_CREDENTIALS default"
+        return match.group(1)
+
+    assert default(share) == default(nas)
+
+
+def test_add_share_finds_credentials_an_existing_mount_already_uses():
+    """A share that works names its credentials file in fstab. Reading it
+    beats asking for a password that is already on the host."""
+    script = (DEPLOY / "add-share.sh").read_text()
+
+    assert "credentials=[^, ]+" in script, (
+        "the existing fstab entry is the authority on where the file is")
+    assert "/etc/fstab" in script
+
+
+def test_the_usage_text_matches_the_actual_default():
+    """Help that names a different path than the code uses is worse than no
+    help."""
+    import re
+
+    script = (DEPLOY / "add-share.sh").read_text()
+    match = re.search(r'SMB_CREDENTIALS="\$\{SMB_CREDENTIALS:-([^}]+)\}"',
+                      script)
+    assert match
+    assert f"default {match.group(1)}" in script
