@@ -31,6 +31,13 @@ from .query.fields import FieldQuery
 from .query.search import SearchEngine
 from .scan.scanner import ScanAborted, Scanner
 from . import rules
+
+# The rules the scanner refuses to descend into, taken from the same query it
+# uses in scan/scanner.py::_ruled_prefixes. Adding one of these means the
+# folder should not be in the index at all, so the rows it already has are
+# cleaned up when the rule is created. Kept as a named constant because the two
+# lists silently disagreeing is how a prune and a scan ended up fighting.
+_SKIPPED_BY_SCANNER = ("code", "hide")
 from .web import render_page
 
 _config: Config = Config()
@@ -194,7 +201,18 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             covered = conn.execute(
                 "SELECT COUNT(*) AS n FROM items WHERE deleted_at IS NULL "
                 "AND uri LIKE ? || '%'", (created["prefix"],)).fetchone()["n"]
-            return {"ok": True, "rule": created, "items": int(covered)}
+            # A rule the scanner honours governs what happens next; it does not
+            # touch what is already indexed. Clear that here, or the rows sit
+            # in the cleanup panel forever: the scanner cannot remove them
+            # because it excludes ruled paths from the missing set, which is
+            # what stops the vanish guard aborting every scan.
+            removed = 0
+            if rule in _SKIPPED_BY_SCANNER:
+                from . import prune as prune_module
+                removed = prune_module.prune_prefix(conn, created["prefix"])
+                _STATUS_CACHE["value"] = None
+            return {"ok": True, "rule": created, "items": int(covered),
+                    "removed": int(removed)}
         finally:
             conn.close()
 

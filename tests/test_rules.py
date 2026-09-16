@@ -181,3 +181,77 @@ def test_the_stored_prefix_is_resolved(tmp_path):
     # should not stop you writing one.
     missing = str(tmp_path / "not_mounted" / "docs")
     assert rules_module.canonical_prefix(missing).endswith("not_mounted/docs")
+
+
+def test_marking_a_folder_as_code_clears_what_it_already_indexed(corpus, nas, cfg):
+    """A rule governed only future scans, so 7,212 rows sat in the cleanup
+    panel indefinitely. The scanner cannot clear them: it excludes ruled paths
+    from the missing set, which is what keeps the vanish guard from aborting."""
+    from tracepaper import prune
+
+    before = corpus.execute(
+        "SELECT COUNT(*) AS n FROM items WHERE uri LIKE ?",
+        (str(nas / "Projects") + "/%",)).fetchone()["n"]
+    assert before, "the fixture must have indexed something to clear"
+
+    removed = prune.prune_prefix(corpus, str(nas / "Projects"))
+    assert removed == before
+
+    after = corpus.execute(
+        "SELECT COUNT(*) AS n FROM items WHERE uri LIKE ?",
+        (str(nas / "Projects") + "/%",)).fetchone()["n"]
+    assert after == 0, "the rows the rule orphaned must be gone"
+
+    # The rest of the index is untouched.
+    assert corpus.execute(
+        "SELECT COUNT(*) AS n FROM items WHERE uri LIKE ?",
+        (str(nas / "Personal") + "/%",)).fetchone()["n"], "unrelated rows must stay"
+
+    # Nothing is left claiming these paths were seen, or removing the rule
+    # later would leave the files permanently un-reindexable.
+    assert corpus.execute(
+        "SELECT COUNT(*) AS n FROM file_state WHERE uri LIKE ?",
+        (str(nas / "Projects") + "/%",)).fetchone()["n"] == 0
+
+    # And it no longer shows up as pending cleanup, which is the whole point.
+    assert prune.preview(corpus, cfg)["items"] == 0
+
+
+def test_clearing_a_prefix_does_not_touch_a_sibling_with_the_same_start(corpus, nas):
+    """A plain LIKE on the prefix would match /Projects2 as well."""
+    from tracepaper import prune
+
+    prune.prune_prefix(corpus, str(nas / "Project"))
+    assert corpus.execute(
+        "SELECT COUNT(*) AS n FROM items WHERE uri LIKE ?",
+        (str(nas / "Projects") + "/%",)).fetchone()["n"], (
+            "/Project must not match /Projects")
+
+
+def test_only_rules_the_scanner_skips_delete_anything():
+    """`boost` and friends change ranking, not membership. Deleting for those
+    would remove files the next scan re-adds, forever."""
+    from tracepaper.api import _SKIPPED_BY_SCANNER
+    from tracepaper import rules as rules_module
+
+    assert set(_SKIPPED_BY_SCANNER) <= set(rules_module.RULES)
+    for rule in rules_module.RULES:
+        if rule not in ("code", "hide"):
+            assert rule not in _SKIPPED_BY_SCANNER, (
+                f"{rule} does not stop the scanner, so it must not delete rows")
+
+
+def test_the_skip_list_matches_what_the_scanner_actually_queries():
+    """These are two lists in two files. When they disagree, a prune and a
+    scan fight over the same rows."""
+    import re
+    from pathlib import Path
+    from tracepaper.api import _SKIPPED_BY_SCANNER
+
+    source = (Path(__file__).resolve().parents[1] / "src" / "tracepaper"
+              / "scan" / "scanner.py").read_text()
+    match = re.search(r"WHERE rule IN \(([^)]*)\)", source)
+    assert match, "could not find the scanner's rule query"
+    in_scanner = set(re.findall(r"'([a-z]+)'", match.group(1)))
+    assert in_scanner == set(_SKIPPED_BY_SCANNER), (
+        f"scanner skips {in_scanner}, api deletes for {set(_SKIPPED_BY_SCANNER)}")

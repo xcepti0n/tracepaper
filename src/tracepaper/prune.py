@@ -136,3 +136,46 @@ def apply(conn: sqlite3.Connection, cfg: Config) -> int:
             conn.execute(
                 f"DELETE FROM file_state WHERE uri IN ({placeholders})", chunk)
     return len(ids)
+
+
+def prune_prefix(conn: sqlite3.Connection, prefix: str) -> int:
+    """Remove indexed rows under one path prefix. Returns how many went.
+
+    Called when a folder is marked as code or hidden. Without it the rule only
+    governs what happens NEXT: the scanner stops descending and search stops
+    returning the folder, but everything indexed before the rule stays as dead
+    rows, showing up in the cleanup panel indefinitely. The scanner cannot
+    clear them either, because it deliberately excludes ruled paths from the
+    missing set -- counting them as deleted is what tripped the vanish guard
+    and jammed every scan.
+
+    So the cleanup has to happen at the moment the rule is added, which is also
+    when the intent is unambiguous: you just said you do not want this folder
+    indexed.
+
+    file_state goes with it for the same reason prune.apply removes it: a path
+    remembered as seen but with no item row is never re-indexed if the rule is
+    later removed and the files are wanted again.
+    """
+    prefix = prefix.rstrip("/")
+    if not prefix:
+        return 0
+    pattern = prefix + "/%"
+    with conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        ids = [int(row["id"]) for row in conn.execute(
+            "SELECT id FROM items WHERE uri = ? OR uri LIKE ?",
+            (prefix, pattern))]
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            placeholders = ",".join("?" * len(chunk))
+            conn.execute(
+                f"DELETE FROM file_state WHERE uri IN "
+                f"(SELECT uri FROM items WHERE id IN ({placeholders}))", chunk)
+            conn.execute(f"DELETE FROM items WHERE id IN ({placeholders})", chunk)
+        # file_state rows for files that were walked but never indexed, such as
+        # anything excluded by type. They have no item row to join through, so
+        # the loop above cannot reach them.
+        conn.execute("DELETE FROM file_state WHERE uri = ? OR uri LIKE ?",
+                     (prefix, pattern))
+    return len(ids)

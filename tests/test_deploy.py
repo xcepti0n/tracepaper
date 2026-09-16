@@ -843,9 +843,14 @@ def test_enrichment_runs_often_enough_to_clear_a_backlog():
     in between and looking broken."""
     timer = (DEPLOY / "tracepaper-enrich.timer").read_text()
 
-    assert "OnCalendar=hourly" in timer, (
+    # Hourly, however it is spelled. `hourly` and `*-*-* *:30:00` are the same
+    # cadence; the second also keeps it off scan's slot, since they share a
+    # lock. What matters is that it is not daily.
+    assert ("OnCalendar=hourly" in timer
+            or re.search(r"OnCalendar=\*-\*-\* \*:\d\d:\d\d", timer)), (
         "a bounded run needs a cadence that can actually drain the queue")
     assert "OnCalendar=*-*-* 03:00:00" not in timer
+    assert "OnCalendar=daily" not in timer
 
 
 def test_scan_and_enrich_cannot_run_at_once():
@@ -964,3 +969,22 @@ def test_the_usage_text_matches_the_actual_default():
                       script)
     assert match
     assert f"default {match.group(1)}" in script
+
+
+def test_scan_and_enrich_do_not_fire_at_the_same_time():
+    """They share one index lock, so firing together means one always waits.
+    Scan produces the work enrich consumes, so enrich runs after it."""
+    scan = (DEPLOY / "tracepaper-scan.timer").read_text()
+    enrich = (DEPLOY / "tracepaper-enrich.timer").read_text()
+
+    assert "OnCalendar=hourly" in scan
+    assert "OnCalendar=hourly" not in enrich, (
+        "enrich on the hour collides with scan on the hour")
+    assert "*:30:00" in enrich
+
+    # Jitter must not be wide enough to overlap them again. Scan can start up
+    # to its jitter past the hour; enrich starts at :30 at the earliest.
+    scan_jitter = int(re.search(r"RandomizedDelaySec=(\d+)", scan).group(1))
+    enrich_jitter = int(re.search(r"RandomizedDelaySec=(\d+)", enrich).group(1))
+    assert scan_jitter < 1800, "scan jitter could reach enrich's slot"
+    assert enrich_jitter < 1800

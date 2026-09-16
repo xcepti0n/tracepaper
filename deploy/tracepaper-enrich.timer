@@ -7,9 +7,16 @@ Description=Tracepaper - enrichment
 # into six days of waiting with nothing visibly happening in between. Hourly
 # clears the same backlog overnight and costs nothing when there is no work:
 # a run with nothing to do exits in seconds.
-OnCalendar=hourly
+# Half past, not on the hour. Both jobs take the same index lock, so firing
+# them together meant one always blocked waiting for the other: on a real box
+# they landed 14 seconds apart. Scan is also what PRODUCES the work enrich
+# consumes, so running enrich half an hour later picks up what scan just found
+# instead of racing it for the lock.
+OnCalendar=*-*-* *:30:00
 Persistent=true
-RandomizedDelaySec=300
+# Small, because the offset is doing the separating now. Five minutes of jitter
+# on both was enough to overlap them again.
+RandomizedDelaySec=120
 
 [Install]
 WantedBy=timers.target
